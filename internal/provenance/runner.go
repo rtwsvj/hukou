@@ -46,6 +46,8 @@ func DefaultRunner() *Runner {
 		NewComposerDetector(),
 		NewKrewDetector(),
 		NewCurlInstallerDetector(),
+		NewMacOSAppDetector(),
+		NewLocalProjectDetector(),
 		NewPipxDetector(),
 		NewUVDetector(),
 		NewGoDetector(), // includes buildinfo via gobin.go (unmodified vendor)

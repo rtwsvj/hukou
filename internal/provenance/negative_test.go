@@ -39,6 +39,8 @@ func TestTier1Detectors_unrelatedBinaryNil(t *testing.T) {
 		NewComposerDetector(),
 		NewKrewDetector(),
 		NewCurlInstallerDetector(),
+		NewMacOSAppDetector(),
+		NewLocalProjectDetector(),
 		NewPipxDetector(),
 		NewUVDetector(),
 		NewGoDetector(),
