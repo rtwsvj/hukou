@@ -77,5 +77,27 @@ func (d *BrewDetector) Match(b scan.Binary) *Attribution {
 			}
 		}
 	}
+
+	// share tree: <prefix>/share/<pkg>/... (not Cellar/Caskroom — inferred)
+	for _, p := range binaryPaths(b) {
+		for _, prefix := range d.prefixes {
+			share := filepath.Join(prefix, "share")
+			rel, ok := pathRelUnder(p, share)
+			if !ok {
+				continue
+			}
+			parts := pathParts(rel)
+			if len(parts) < 1 {
+				continue
+			}
+			pkg := parts[0]
+			return &Attribution{
+				Source:     "brew",
+				Package:    pkg,
+				Confidence: "inferred",
+				Evidence:   "inferred via brew share tree " + filepath.Join(share, pkg),
+			}
+		}
+	}
 	return nil
 }
