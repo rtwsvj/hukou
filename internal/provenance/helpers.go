@@ -70,36 +70,62 @@ func nodePackageFromPath(path, nodeModules string) string {
 	return nodePackageFromRel(rel)
 }
 
+// pnpmPackageVersion extracts package name and version from a path under a
+// pnpm store (.pnpm/<entry>/...). Scoped packages use @scope+name@version;
+// peer-dep encodings after '_' on the version are stripped.
+//
+// Version separator is the first '@' for unscoped names, or the first '@'
+// after the leading scope marker for scoped names — never LastIndex, because
+// peer-dep segments also contain '@' (e.g. react@18.2.0_react-dom@18.2.0).
 func pnpmPackageVersion(path string) (string, string) {
 	parts := pathParts(path)
 	for i := 0; i+1 < len(parts); i++ {
 		if parts[i] != ".pnpm" {
 			continue
 		}
-		entry := parts[i+1]
-		pkg := entry
-		if strings.HasPrefix(entry, "@") {
-			if at := strings.LastIndex(entry, "@"); at > 0 {
-				pkg = strings.ReplaceAll(entry[:at], "+", "/")
-				return pkg, entry[at+1:]
-			}
-			return strings.ReplaceAll(entry, "+", "/"), ""
-		}
-		if at := strings.LastIndex(entry, "@"); at > 0 {
-			return entry[:at], entry[at+1:]
-		}
-		return pkg, ""
+		return parsePnpmEntry(parts[i+1])
 	}
 	return "", ""
 }
 
-func splitNameVersion(s string) (string, string) {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] != '-' || i+1 >= len(s) {
-			continue
+func parsePnpmEntry(entry string) (string, string) {
+	if entry == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(entry, "@") {
+		// @scope+name@version[_peers...]
+		rest := entry[1:]
+		at := strings.IndexByte(rest, '@')
+		if at < 0 {
+			return strings.ReplaceAll(entry, "+", "/"), ""
 		}
-		c := s[i+1]
-		if (c >= '0' && c <= '9') || c == 'v' {
+		pkg := "@" + strings.ReplaceAll(rest[:at], "+", "/")
+		return pkg, stripPnpmPeerDeps(rest[at+1:])
+	}
+	// name@version[_peers...]
+	at := strings.IndexByte(entry, '@')
+	if at <= 0 {
+		return entry, ""
+	}
+	return entry[:at], stripPnpmPeerDeps(entry[at+1:])
+}
+
+// stripPnpmPeerDeps removes the peer-dependency encoding suffix after '_'.
+// e.g. "18.2.0_react-dom@18.2.0" → "18.2.0"
+func stripPnpmPeerDeps(ver string) string {
+	if i := strings.IndexByte(ver, '_'); i >= 0 {
+		return ver[:i]
+	}
+	return ver
+}
+
+// splitNameVersion splits a nix-style name-version string: package name is
+// everything before the first '-' that is followed by a digit; the rest is
+// the version. No such hyphen → whole string is the name, empty version.
+// e.g. glibc-2.39-5 → (glibc, 2.39-5); python3.11 → (python3.11, "").
+func splitNameVersion(s string) (string, string) {
+	for i := 0; i < len(s)-1; i++ {
+		if s[i] == '-' && s[i+1] >= '0' && s[i+1] <= '9' {
 			return s[:i], s[i+1:]
 		}
 	}

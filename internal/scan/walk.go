@@ -79,7 +79,12 @@ func Walk(dirs []string) (*Result, error) {
 			continue
 		}
 		id, err := identifyDir(dir)
-		if err == nil {
+		if err != nil {
+			// Dedup identity failed — still scan, but record the failure.
+			res.FileErrors = append(res.FileErrors, FileError{
+				Path: dir, Reason: "identify dir: " + err.Error(),
+			})
+		} else {
 			scannedDirs = append(scannedDirs, id)
 		}
 
@@ -135,6 +140,9 @@ func Walk(dirs []string) (*Result, error) {
 			realPath, err := filepath.EvalSymlinks(full)
 			if err != nil {
 				realPath = ""
+				res.FileErrors = append(res.FileErrors, FileError{
+					Path: full, Reason: "eval symlinks: " + err.Error(),
+				})
 			}
 
 			_, shadowed := seen[name]

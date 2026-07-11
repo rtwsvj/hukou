@@ -31,6 +31,8 @@ func NewCargoDetector() *CargoDetector { return &CargoDetector{} }
 
 func (d *CargoDetector) Name() string { return "cargo" }
 
+// Load always succeeds. Missing, unreadable, or malformed .crates2.json
+// degrades to pure path-prefix attribution (Confidence=inferred).
 func (d *CargoDetector) Load(env Env) error {
 	d.home = env.CargoHome
 	d.crates = make(map[string]cargoCrate)
@@ -40,14 +42,13 @@ func (d *CargoDetector) Load(env Env) error {
 	d.bin = filepath.Join(d.home, "bin")
 	data, err := os.ReadFile(filepath.Join(d.home, ".crates2.json"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
+		// missing / permission / any IO error: path-prefix fallback only
+		return nil
 	}
 	var file crates2File
 	if err := json.Unmarshal(data, &file); err != nil {
-		return err
+		// malformed JSON: path-prefix fallback only
+		return nil
 	}
 	for key, install := range file.Installs {
 		crate := parseCargoCrateKey(key)

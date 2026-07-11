@@ -46,6 +46,10 @@ func (d *SystemDetector) Match(b scan.Binary) *Attribution {
 		}
 		// Clean for stable prefix checks.
 		p = filepath.Clean(p)
+		// /System/Volumes/* is user data (Data volume), not OS system files.
+		if pathHasPrefix(p, "/System/Volumes") {
+			continue
+		}
 		for _, prefix := range d.prefixes {
 			if pathHasPrefix(p, prefix) {
 				return &Attribution{

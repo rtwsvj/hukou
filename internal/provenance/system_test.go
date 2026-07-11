@@ -1,6 +1,7 @@
 package provenance
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rtwsvj/hukou/internal/scan"
@@ -22,7 +23,8 @@ func TestSystemDetector(t *testing.T) {
 		{"/usr/sbin/cron", true},
 		{"/usr/libexec/something", true},
 		{"/System/Library/CoreServices/foo", true},
-		{"/Library/Apple/usr/bin/python3", true}, // Fix #11
+		{"/System/Volumes/Data/usr/local/bin/foo", false}, // /System/Volumes = user data
+		{"/Library/Apple/usr/bin/python3", true},          // Fix #11
 		{"/Library/Developer/CommandLineTools/usr/bin/clang", true},
 		{"/opt/homebrew/bin/fzf", false},
 		{"/usr/local/bin/custom", false},
@@ -53,9 +55,7 @@ func TestUnknownDetector(t *testing.T) {
 
 func TestRunner_chain(t *testing.T) {
 	r := DefaultRunner()
-	if err := r.Load(DefaultEnv()); err != nil {
-		t.Fatal(err)
-	}
+	_ = r.Load(DefaultEnv())
 	// system first
 	a := r.Match(scan.Binary{Name: "ls", Path: "/bin/ls", RealPath: "/bin/ls"})
 	if a == nil || a.Source != "system" {
@@ -80,16 +80,66 @@ func TestRunner_chain(t *testing.T) {
 	}
 	// go detector present before system
 	goIdx, sysIdx := -1, -1
+	miseIdx, asdfIdx, cargoIdx := -1, -1, -1
 	for i, n := range names {
-		if n == "go" {
+		switch n {
+		case "go":
 			goIdx = i
-		}
-		if n == "system" {
+		case "system":
 			sysIdx = i
+		case "mise":
+			miseIdx = i
+		case "asdf":
+			asdfIdx = i
+		case "cargo":
+			cargoIdx = i
 		}
 	}
 	if goIdx < 0 || sysIdx < 0 || goIdx >= sysIdx {
 		t.Fatalf("go should precede system in chain: %v", names)
+	}
+	// Round2 H: mise/asdf before language PMs (cargo)
+	if miseIdx < 0 || asdfIdx < 0 || cargoIdx < 0 {
+		t.Fatalf("missing mise/asdf/cargo in chain: %v", names)
+	}
+	if !(miseIdx < cargoIdx && asdfIdx < cargoIdx) {
+		t.Fatalf("mise/asdf should precede cargo: %v", names)
+	}
+}
+
+// failingDetector always errors on Load — used to test Runner resilience.
+type failingDetector struct{ name string }
+
+func (f *failingDetector) Name() string                  { return f.name }
+func (f *failingDetector) Load(env Env) error             { return errLoadFailed }
+func (f *failingDetector) Match(b scan.Binary) *Attribution {
+	return &Attribution{Source: f.name, Package: "should-not-run"}
+}
+
+var errLoadFailed = errString("load boom")
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
+func TestRunner_LoadSkipsFailedDetector(t *testing.T) {
+	r := NewRunner(
+		&failingDetector{name: "bad"},
+		NewUnknownDetector(),
+	)
+	warns := r.Load(Env{})
+	if len(warns) != 1 || !strings.Contains(warns[0], "bad") || !strings.Contains(warns[0], "load boom") {
+		t.Fatalf("warnings=%v", warns)
+	}
+	// failed detector removed from chain
+	for _, d := range r.Detectors() {
+		if d.Name() == "bad" {
+			t.Fatal("failed detector should be skipped/removed")
+		}
+	}
+	a := r.Match(scan.Binary{Name: "x", Path: "/tmp/x", RealPath: "/tmp/x"})
+	if a == nil || a.Source != "unknown" {
+		t.Fatalf("expected unknown after skip: %+v", a)
 	}
 }
 

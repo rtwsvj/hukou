@@ -1,12 +1,17 @@
 package provenance
 
-import "github.com/rtwsvj/hukou/internal/scan"
+import (
+	"fmt"
+
+	"github.com/rtwsvj/hukou/internal/scan"
+)
 
 // Runner runs a detector responsibility chain: first non-nil Match wins.
 //
 // DefaultRunner order (Phase-1, all wired):
-// path-prefix / package-manager detectors (brew → … → uv) →
-// go (path prefix + debug/buildinfo via gobin) → system → unknown.
+// path-prefix package managers (brew/macports) → version managers (mise/asdf) →
+// language package managers (cargo/npm/gem/…) → go (path + buildinfo) →
+// system → unknown.
 // First non-nil Match wins; unknown is always last and never returns nil.
 type Runner struct {
 	detectors []Detector
@@ -18,10 +23,14 @@ func NewRunner(detectors ...Detector) *Runner {
 }
 
 // DefaultRunner returns the full Phase-1 detector chain (Tier-1 complete).
+// Version managers (mise, asdf) precede language package managers so their
+// directory trees are claimed first.
 func DefaultRunner() *Runner {
 	return NewRunner(
 		NewBrewDetector(),
 		NewMacPortsDetector(),
+		NewMiseDetector(),
+		NewAsdfDetector(),
 		NewCargoDetector(),
 		NewRustupDetector(),
 		NewNpmDetector(),
@@ -29,8 +38,6 @@ func DefaultRunner() *Runner {
 		NewYarnDetector(),
 		NewBunDetector(),
 		NewPipUserDetector(),
-		NewMiseDetector(),
-		NewAsdfDetector(),
 		NewGemDetector(),
 		NewNixDetector(),
 		NewVoltaDetector(),
@@ -47,14 +54,20 @@ func DefaultRunner() *Runner {
 	)
 }
 
-// Load calls Load(env) on every detector. Stops on first error.
-func (r *Runner) Load(env Env) error {
+// Load calls Load(env) on every detector. A detector that returns error is
+// skipped (removed from the chain) and recorded as a warning; remaining
+// detectors continue. Never aborts the whole scan.
+func (r *Runner) Load(env Env) (warnings []string) {
+	loaded := make([]Detector, 0, len(r.detectors))
 	for _, d := range r.detectors {
 		if err := d.Load(env); err != nil {
-			return err
+			warnings = append(warnings, fmt.Sprintf("detector %s load failed: %v", d.Name(), err))
+			continue
 		}
+		loaded = append(loaded, d)
 	}
-	return nil
+	r.detectors = loaded
+	return warnings
 }
 
 // Match runs the chain until a detector returns non-nil Attribution.

@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/rtwsvj/hukou/internal/output"
@@ -35,8 +33,8 @@ func init() {
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
-	pathEnv := os.Getenv("PATH")
-	pathDirs, pathWarnings := scan.SplitPATHWithWarnings(pathEnv)
+	env := provenance.DefaultEnv()
+	pathDirs, pathWarnings := scan.SplitPATHWithWarnings(env.Path)
 	pathDirs = append(pathDirs, scanDirs...)
 
 	result, err := scan.Walk(pathDirs)
@@ -47,10 +45,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 		result.Warnings = append(pathWarnings, result.Warnings...)
 	}
 
-	env := provenance.DefaultEnv()
 	runner := provenance.DefaultRunner()
-	if err := runner.Load(env); err != nil {
-		return fail(fmt.Errorf("load detectors: %w", err))
+	loadWarnings := runner.Load(env)
+	if len(loadWarnings) > 0 {
+		result.Warnings = append(result.Warnings, loadWarnings...)
 	}
 
 	rows := make([]output.Row, 0, len(result.Binaries))

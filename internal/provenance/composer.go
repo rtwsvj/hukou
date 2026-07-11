@@ -23,17 +23,39 @@ func (d *ComposerDetector) Load(env Env) error {
 	return nil
 }
 
+// Match only attributes binaries that live in vendor/bin (not the whole vendor tree).
+// Package name may still be inferred from RealPath under the sibling vendor packages.
 func (d *ComposerDetector) Match(b scan.Binary) *Attribution {
 	for _, bin := range d.bins {
-		vendor := filepath.Dir(bin)
+		if bin == "" {
+			continue
+		}
+		inBin := false
 		for _, p := range binaryPaths(b) {
-			if pathInDir(p, bin) || pathHasPrefix(filepath.Clean(p), vendor) {
-				pkg := composerPackageFromPath(p, vendor)
-				if pkg == "" {
-					pkg = b.Name
-				}
-				return &Attribution{Source: "composer", Package: pkg, Confidence: "inferred", Evidence: "composer vendor bin " + filepath.Clean(bin)}
+			if pathInDir(p, bin) {
+				inBin = true
+				break
 			}
+		}
+		if !inBin {
+			continue
+		}
+		vendor := filepath.Dir(bin)
+		pkg := ""
+		for _, p := range binaryPaths(b) {
+			if got := composerPackageFromPath(p, vendor); got != "" {
+				pkg = got
+				break
+			}
+		}
+		if pkg == "" {
+			pkg = b.Name
+		}
+		return &Attribution{
+			Source:     "composer",
+			Package:    pkg,
+			Confidence: "inferred",
+			Evidence:   "composer vendor bin " + filepath.Clean(bin),
 		}
 	}
 	return nil
@@ -45,6 +67,7 @@ func composerPackageFromPath(path, vendor string) string {
 		return ""
 	}
 	parts := pathParts(rel)
+	// vendor/<vendor>/<package>/... — not vendor/bin/...
 	if len(parts) >= 2 && parts[0] != "bin" {
 		return parts[0] + "/" + parts[1]
 	}

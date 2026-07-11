@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/rtwsvj/hukou/internal/provenance"
@@ -92,15 +93,16 @@ func WriteTable(w io.Writer, r Report) error {
 		if evidence == "" && b.Evidence != "" {
 			evidence = b.Evidence
 		}
+		// Sanitize free-text columns so control chars / ANSI cannot break the table.
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			b.Name,
-			b.Path,
+			sanitizeField(b.Name),
+			sanitizeField(b.Path),
 			b.Kind,
 			a.Source,
-			a.Package,
+			sanitizeField(a.Package),
 			a.Version,
 			shadowed,
-			truncate(evidence, 60),
+			truncate(sanitizeField(evidence), 60),
 		)
 	}
 	if err := tw.Flush(); err != nil {
@@ -129,6 +131,24 @@ func WriteTable(w io.Writer, r Report) error {
 		fmt.Fprintf(w, "by source: %s\n", strings.Join(parts, " "))
 	}
 	return nil
+}
+
+// sanitizeField replaces control characters (tab/newline/CR, ANSI ESC, other
+// non-printable runes) with '?' so table columns cannot be shifted or spoofed.
+// JSON output uses encoding/json and does not need this.
+func sanitizeField(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r == utf8.RuneError {
+			return '?'
+		}
+		if !unicode.IsPrint(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // truncate returns s shortened to at most n bytes without splitting a UTF-8 rune.

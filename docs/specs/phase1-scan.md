@@ -108,3 +108,10 @@ Tier 2(时间允许尽量做,同样标准):opam(~/.opam)、ghcup/stack(~/.ghcup�
 - 禁止复制 topgrade/pacaptr/meta-package-manager(GPL)的任何代码
 - 禁止网络请求、禁止写用户目录(scan 是纯只读命令)
 - 禁止在探测器里 shell 出去调 brew/npm 等外部命令(慢且不可测;一切靠文件系统证据)。唯一例外:Env 构造时允许一次性读取环境变量与固定候选路径
+
+## 已知限制
+
+1. **TOCTOU**：`Walk` 中 `Stat` 与后续 `Open`/`DetectKind` 之间存在时间窗；扫描过程中文件被替换、删除或改权限时，结果可能与最终打开时不一致（记入 `FileErrors` 或 `Kind=Other`），不做重试或锁。
+2. **npm `.bin` 包装脚本无法反查包名**：全局 `node_modules/.bin` 下的 shim 若无法解析到真实包目录，只能回退为二进制名，不能可靠还原 npm 包名。
+3. **nvm / 自定义 npm prefix 未覆盖**：仅识别 `npm_config_prefix` / `NPM_CONFIG_PREFIX` 与 brew 前缀下的全局布局；nvm 版本目录、用户手改 prefix 等未枚举。
+4. **PATH 空段刻意不按 POSIX 当作 CWD**：POSIX 将 `PATH` 中空段视为当前目录；hukou 跳过空段并写入 `Report.Warnings`（与 shell 语义不一致，属有意选择）。

@@ -32,6 +32,10 @@ func (d *NixDetector) Match(b scan.Binary) *Attribution {
 		if len(parts) == 0 {
 			continue
 		}
+		// Require a /bin/ path component so non-binary store content is ignored.
+		if !nixPathHasBin(parts) {
+			continue
+		}
 		entry := parts[0]
 		if dash := stringsIndexByte(entry, '-'); dash >= 0 && dash+1 < len(entry) {
 			entry = entry[dash+1:]
@@ -46,6 +50,15 @@ func (d *NixDetector) Match(b scan.Binary) *Attribution {
 		}
 	}
 	return nil
+}
+
+func nixPathHasBin(parts []string) bool {
+	for _, p := range parts {
+		if p == "bin" {
+			return true
+		}
+	}
+	return false
 }
 
 func stringsIndexByte(s string, c byte) int {

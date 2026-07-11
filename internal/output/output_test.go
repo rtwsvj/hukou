@@ -124,6 +124,60 @@ func TestSummarize(t *testing.T) {
 	}
 }
 
+// Round2 C: control chars / ANSI in table fields become '?'.
+func TestWriteTable_sanitizesControlChars(t *testing.T) {
+	r := Report{
+		Rows: []Row{
+			{
+				Binary: scan.Binary{
+					Name: "evil\tname", Path: "/tmp/a\nb", Kind: scan.KindOther,
+				},
+				Attribution: provenance.Attribution{
+					Source: "unknown", Package: "pkg\rX",
+					Evidence: "has\x1b[31mANSI\x1b[0m",
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Raw control/ANSI must not appear (tabwriter may still use tabs as padding).
+	if strings.Contains(out, "evil\tname") || strings.Contains(out, "/tmp/a\nb") || strings.Contains(out, "pkg\rX") {
+		t.Fatalf("raw control chars leaked into table:\n%q", out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("ANSI escape leaked into table:\n%q", out)
+	}
+	if !strings.Contains(out, "evil?name") {
+		t.Fatalf("expected sanitized name, got:\n%s", out)
+	}
+	if !strings.Contains(out, "pkg?X") {
+		t.Fatalf("expected sanitized package, got:\n%s", out)
+	}
+	if !strings.Contains(out, "/tmp/a?b") {
+		t.Fatalf("expected sanitized path, got:\n%s", out)
+	}
+}
+
+func TestSanitizeField(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain", "plain"},
+		{"a\tb", "a?b"},
+		{"a\nb", "a?b"},
+		{"a\rb", "a?b"},
+		{"x\x1by", "x?y"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := sanitizeField(tc.in); got != tc.want {
+			t.Errorf("sanitizeField(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // Fix #8: truncate must not split multi-byte UTF-8 runes.
 func TestTruncate_utf8Safe(t *testing.T) {
 	// Each Chinese rune is 3 bytes in UTF-8.
