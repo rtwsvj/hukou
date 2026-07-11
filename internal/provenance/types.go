@@ -16,6 +16,6 @@ type Attribution struct {
 // Implementations must not call os.Getenv; use Env only.
 type Detector interface {
 	Name() string
-	Load(env Env) error          // preload manifests once
+	Load(env Env) error               // preload manifests once
 	Match(b scan.Binary) *Attribution // nil if cannot attribute
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/scan"
@@ -46,6 +47,12 @@ func sampleReport() Report {
 		},
 		Skipped:     1,
 		TotalWalked: 3,
+		FileErrors: []scan.FileError{
+			{Path: "/tmp/pipe", Reason: "non-regular file (not opened): prw-"},
+		},
+		Warnings: []string{
+			"empty PATH segment skipped (deliberate: not treated as current directory, unlike POSIX)",
+		},
 	}
 }
 
@@ -66,6 +73,10 @@ func TestWriteTable_summary(t *testing.T) {
 	}
 	if !strings.Contains(out, "system=1") || !strings.Contains(out, "unknown=2") {
 		t.Fatalf("missing by-source breakdown:\n%s", out)
+	}
+	// Table shows count only — not per-file error paths.
+	if strings.Contains(out, "/tmp/pipe") {
+		t.Fatalf("table must not dump file error paths:\n%s", out)
 	}
 }
 
@@ -93,6 +104,16 @@ func TestWriteJSON_roundtrip(t *testing.T) {
 	if len(decoded.Rows) != 3 {
 		t.Fatalf("rows=%d", len(decoded.Rows))
 	}
+	// Fix #8: JSON includes per-file error details.
+	if len(decoded.FileErrors) != 1 || decoded.FileErrors[0].Path != "/tmp/pipe" {
+		t.Fatalf("file_errors=%+v", decoded.FileErrors)
+	}
+	if decoded.FileErrors[0].Reason == "" {
+		t.Fatal("file_errors reason empty")
+	}
+	if len(decoded.Warnings) != 1 {
+		t.Fatalf("warnings=%v", decoded.Warnings)
+	}
 }
 
 func TestSummarize(t *testing.T) {
@@ -100,5 +121,45 @@ func TestSummarize(t *testing.T) {
 	Summarize(&r)
 	if r.Summary.Total != 3 || r.Summary.Unknown != 2 || r.Summary.Shadowed != 1 {
 		t.Fatalf("%+v", r.Summary)
+	}
+}
+
+// Fix #8: truncate must not split multi-byte UTF-8 runes.
+func TestTruncate_utf8Safe(t *testing.T) {
+	// Each Chinese rune is 3 bytes in UTF-8.
+	s := "你好世界测试字符串内容更多"
+	// n=10: body budget 7 after "..." → at most 2 runes (6 bytes) + "..."
+	got := truncate(s, 10)
+	if !utf8.ValidString(got) {
+		t.Fatalf("invalid utf8: %q bytes=%v", got, []byte(got))
+	}
+	if strings.Contains(got, "\ufffd") {
+		t.Fatalf("replacement char in truncate result: %q", got)
+	}
+	if len(got) > 10 {
+		t.Fatalf("len=%d > 10: %q", len(got), got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis: %q", got)
+	}
+	// Ensure we didn't cut mid-rune: stripping "..." should be valid and short.
+	body := strings.TrimSuffix(got, "...")
+	if !utf8.ValidString(body) || body == "" {
+		t.Fatalf("body invalid: %q", body)
+	}
+	for _, r := range body {
+		if r == utf8.RuneError {
+			t.Fatalf("rune error in body %q", body)
+		}
+	}
+
+	// Exact fit: no truncate
+	if truncate("abc", 3) != "abc" {
+		t.Fatal("short string should pass through")
+	}
+	// Single multi-byte at start with tiny budget
+	got = truncate("世界", 4)
+	if !utf8.ValidString(got) {
+		t.Fatalf("invalid: %q", got)
 	}
 }

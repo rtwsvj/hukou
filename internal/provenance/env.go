@@ -21,24 +21,37 @@ type Env struct {
 	BrewPrefixes []string
 
 	// Optional roots for package managers (filled by DefaultEnv / tests).
-	CargoHome   string // ~/.cargo
-	RustupHome  string // ~/.rustup
-	LocalShare  string // ~/.local/share
-	LocalBin    string // ~/.local/bin
-	NpmPrefix   string
-	PnpmHome    string
-	YarnBin     string
-	BunHome     string
-	VoltaHome   string
-	DenoHome    string
-	DotnetTools string
-	ComposerBin string
-	KrewRoot    string
-	MiseData    string
-	AsdfDir     string
-	NixStore    string // /nix/store
-	MacPorts    string // /opt/local
-	XcodeCLT    string // /Library/Developer/CommandLineTools
+	CargoHome          string // ~/.cargo
+	RustupHome         string // ~/.rustup
+	LocalShare         string // ~/.local/share
+	LocalBin           string // ~/.local/bin
+	NpmPrefix          string
+	NpmPrefixes        []string
+	PnpmHome           string
+	YarnBin            string
+	BunHome            string
+	VoltaHome          string
+	DenoHome           string
+	DotnetTools        string
+	ComposerBin        string
+	ComposerBins       []string
+	KrewRoot           string
+	MiseData           string
+	AsdfDir            string
+	NixStore           string // /nix/store
+	MacPorts           string // /opt/local
+	XcodeCLT           string // /Library/Developer/CommandLineTools
+	PipxVenvs          []string
+	UVTools            string
+	PipUserBase        string
+	GemRoots           []string
+	GemBinDirs         []string
+	CurlInstallerRoots []CurlInstallerRoot
+}
+
+type CurlInstallerRoot struct {
+	Dir     string
+	Package string
 }
 
 // DefaultEnv builds Env from the process environment and fixed candidate paths.
@@ -48,42 +61,90 @@ func DefaultEnv() Env {
 	if home == "" {
 		home = os.Getenv("HOME")
 	}
-	e := Env{
-		Home:       home,
-		Path:       os.Getenv("PATH"),
-		GoBin:      os.Getenv("GOBIN"),
-		GoPath:     os.Getenv("GOPATH"),
-		NixStore:   "/nix/store",
-		MacPorts:   "/opt/local",
-		XcodeCLT:   "/Library/Developer/CommandLineTools",
-		CargoHome:  filepath.Join(home, ".cargo"),
-		RustupHome: filepath.Join(home, ".rustup"),
-		LocalShare: filepath.Join(home, ".local", "share"),
-		LocalBin:   filepath.Join(home, ".local", "bin"),
-		VoltaHome:  filepath.Join(home, ".volta"),
-		DenoHome:   filepath.Join(home, ".deno"),
-		DotnetTools: filepath.Join(home, ".dotnet", "tools"),
-		KrewRoot:   filepath.Join(home, ".krew"),
-		MiseData:   filepath.Join(home, ".local", "share", "mise"),
-		AsdfDir:    filepath.Join(home, ".asdf"),
+	xdgData := os.Getenv("XDG_DATA_HOME")
+	if xdgData == "" && home != "" {
+		xdgData = filepath.Join(home, ".local", "share")
 	}
-	if e.GoPath == "" && home != "" {
-		// empty GoPath is fine; GoBinDir handles defaults via home
+	xdgConfig := os.Getenv("XDG_CONFIG_HOME")
+	if xdgConfig == "" && home != "" {
+		xdgConfig = filepath.Join(home, ".config")
+	}
+	e := Env{
+		Home:        home,
+		Path:        os.Getenv("PATH"),
+		GoBin:       os.Getenv("GOBIN"),
+		GoPath:      os.Getenv("GOPATH"),
+		NixStore:    "/nix/store",
+		MacPorts:    "/opt/local",
+		XcodeCLT:    "/Library/Developer/CommandLineTools",
+		CargoHome:   filepath.Join(home, ".cargo"),
+		RustupHome:  filepath.Join(home, ".rustup"),
+		LocalShare:  xdgData,
+		LocalBin:    filepath.Join(home, ".local", "bin"),
+		VoltaHome:   filepath.Join(home, ".volta"),
+		DenoHome:    filepath.Join(home, ".deno"),
+		DotnetTools: filepath.Join(home, ".dotnet", "tools"),
+		KrewRoot:    filepath.Join(home, ".krew"),
+		MiseData:    filepath.Join(xdgData, "mise"),
+		AsdfDir:     filepath.Join(home, ".asdf"),
+		UVTools:     filepath.Join(xdgData, "uv", "tools"),
+		PipUserBase: filepath.Join(home, "Library", "Python"),
 	}
 	if runtime.GOOS == "darwin" {
 		e.BrewPrefixes = []string{"/opt/homebrew", "/usr/local"}
 		e.PnpmHome = filepath.Join(home, "Library", "pnpm")
 	} else {
 		e.BrewPrefixes = []string{"/home/linuxbrew/.linuxbrew", "/usr/local"}
-		e.PnpmHome = filepath.Join(home, ".local", "share", "pnpm")
+		e.PnpmHome = filepath.Join(xdgData, "pnpm")
 	}
 	e.YarnBin = filepath.Join(home, ".yarn", "bin")
 	e.BunHome = filepath.Join(home, ".bun")
-	// Composer: XDG or ~/.composer
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		e.ComposerBin = filepath.Join(xdg, "composer", "vendor", "bin")
-	} else {
-		e.ComposerBin = filepath.Join(home, ".composer", "vendor", "bin")
+	if p := firstEnv("npm_config_prefix", "NPM_CONFIG_PREFIX"); p != "" {
+		e.NpmPrefix = p
+	}
+	e.NpmPrefixes = uniquePaths(append([]string{e.NpmPrefix}, e.BrewPrefixes...))
+	composerBins := []string{
+		filepath.Join(xdgConfig, "composer", "vendor", "bin"),
+		filepath.Join(home, ".composer", "vendor", "bin"),
+	}
+	e.ComposerBins = uniquePaths(composerBins)
+	if len(e.ComposerBins) > 0 {
+		e.ComposerBin = e.ComposerBins[0]
+	}
+	pipxVenvs := []string{
+		filepath.Join(home, ".local", "pipx", "venvs"),
+		filepath.Join(xdgData, "pipx", "venvs"),
+	}
+	if p := os.Getenv("PIPX_HOME"); p != "" {
+		pipxVenvs = append([]string{filepath.Join(p, "venvs")}, pipxVenvs...)
+	}
+	e.PipxVenvs = uniquePaths(pipxVenvs)
+	gemRoots := []string{
+		filepath.Join(home, ".gem", "ruby"),
+		"/Library/Ruby/Gems",
+	}
+	for _, prefix := range e.BrewPrefixes {
+		gemRoots = append(gemRoots, filepath.Join(prefix, "lib", "ruby", "gems"))
+	}
+	e.GemRoots = uniquePaths(gemRoots)
+	if gemHome := os.Getenv("GEM_HOME"); gemHome != "" {
+		e.GemBinDirs = append(e.GemBinDirs, filepath.Join(gemHome, "bin"))
+	}
+	if gemPath := os.Getenv("GEM_PATH"); gemPath != "" {
+		for _, p := range strings.Split(gemPath, string(os.PathListSeparator)) {
+			if p != "" {
+				e.GemBinDirs = append(e.GemBinDirs, filepath.Join(p, "bin"))
+			}
+		}
+	}
+	e.GemBinDirs = uniquePaths(e.GemBinDirs)
+	e.CurlInstallerRoots = []CurlInstallerRoot{
+		{Dir: filepath.Join(home, ".opencode", "bin"), Package: "opencode"},
+		{Dir: filepath.Join(home, ".kimi-code", "bin"), Package: "kimi"},
+		{Dir: filepath.Join(home, ".claude", "local"), Package: "claude"},
+		{Dir: filepath.Join(home, ".codeium"), Package: "codeium"},
+		{Dir: filepath.Join(home, ".foundry", "bin"), Package: "foundry"},
+		{Dir: filepath.Join(home, ".bun", "install"), Package: "bun"},
 	}
 	return e
 }
@@ -100,6 +161,32 @@ func (e Env) PathDirs() []string {
 		if p != "" {
 			out = append(out, p)
 		}
+	}
+	return out
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func uniquePaths(paths []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
 	}
 	return out
 }

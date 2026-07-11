@@ -4,9 +4,10 @@ import "github.com/rtwsvj/hukou/internal/scan"
 
 // Runner runs a detector responsibility chain: first non-nil Match wins.
 //
-// Spec order: path-prefix detectors → symlink-resolution → buildinfo (gobin)
-// → system → unknown. Skeleton wires system + unknown; gobin slot is reserved
-// for a future go detector that calls ReadGoBinary from gobin.go.
+// DefaultRunner order (Phase-1, all wired):
+// path-prefix / package-manager detectors (brew → … → uv) →
+// go (path prefix + debug/buildinfo via gobin) → system → unknown.
+// First non-nil Match wins; unknown is always last and never returns nil.
 type Runner struct {
 	detectors []Detector
 }
@@ -16,16 +17,31 @@ func NewRunner(detectors ...Detector) *Runner {
 	return &Runner{detectors: detectors}
 }
 
-// DefaultRunner returns the Phase-1 skeleton chain:
-//
-//	[/* Tier-1 detectors reserved */ system, unknown]
-//
-// Slot for go/buildinfo: insert a Detector that uses ReadGoBinary / GoBinDir
-// before system. Other Tier-1 detectors insert before system as well.
+// DefaultRunner returns the full Phase-1 detector chain (Tier-1 complete).
 func DefaultRunner() *Runner {
 	return NewRunner(
-		// --- reserved: path-prefix / symlink / buildinfo detectors ---
-		// e.g. brew, cargo, go (uses gobin.go), npm, ...
+		NewBrewDetector(),
+		NewMacPortsDetector(),
+		NewCargoDetector(),
+		NewRustupDetector(),
+		NewNpmDetector(),
+		NewPnpmDetector(),
+		NewYarnDetector(),
+		NewBunDetector(),
+		NewPipUserDetector(),
+		NewMiseDetector(),
+		NewAsdfDetector(),
+		NewGemDetector(),
+		NewNixDetector(),
+		NewVoltaDetector(),
+		NewDenoDetector(),
+		NewDotnetDetector(),
+		NewComposerDetector(),
+		NewKrewDetector(),
+		NewCurlInstallerDetector(),
+		NewPipxDetector(),
+		NewUVDetector(),
+		NewGoDetector(), // includes buildinfo via gobin.go (unmodified vendor)
 		NewSystemDetector(),
 		NewUnknownDetector(),
 	)

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/scan"
@@ -20,22 +21,24 @@ type Row struct {
 
 // Report is the full scan output (table or JSON).
 type Report struct {
-	Rows        []Row    `json:"rows"`
-	Skipped     int      `json:"skipped"`
-	ScanErrors  []string `json:"scan_errors,omitempty"`
-	TotalWalked int      `json:"total_walked"` // binaries before source filters
+	Rows        []Row            `json:"rows"`
+	Skipped     int              `json:"skipped"`
+	ScanErrors  []string         `json:"scan_errors,omitempty"`
+	FileErrors  []scan.FileError `json:"file_errors,omitempty"` // per-file path+reason (JSON only)
+	Warnings    []string         `json:"warnings,omitempty"`
+	TotalWalked int              `json:"total_walked"` // binaries before source filters
 	// Summary is filled by Summarize / Write* helpers.
 	Summary Summary `json:"summary"`
 }
 
 // Summary aggregates counts for the footer / JSON.
 type Summary struct {
-	Total     int            `json:"total"`
-	Sources   map[string]int `json:"sources"` // source name → count
-	Unknown   int            `json:"unknown"`
-	Shadowed  int            `json:"shadowed"`
-	SourceN   int            `json:"source_count"` // number of distinct sources
-	Skipped   int            `json:"skipped"`
+	Total    int            `json:"total"`
+	Sources  map[string]int `json:"sources"` // source name → count
+	Unknown  int            `json:"unknown"`
+	Shadowed int            `json:"shadowed"`
+	SourceN  int            `json:"source_count"` // number of distinct sources
+	Skipped  int            `json:"skipped"`
 }
 
 // Summarize fills report.Summary from Rows and Skipped.
@@ -72,6 +75,7 @@ func WriteJSON(w io.Writer, r Report) error {
 
 // WriteTable writes a human-readable table plus a summary footer line:
 // 总数 / 来源数 / unknown 数 / shadowed 数.
+// Per-file error details are omitted (count only via skipped=N).
 func WriteTable(w io.Writer, r Report) error {
 	Summarize(&r)
 
@@ -84,6 +88,10 @@ func WriteTable(w io.Writer, r Report) error {
 		if b.Shadowed {
 			shadowed = "yes"
 		}
+		evidence := a.Evidence
+		if evidence == "" && b.Evidence != "" {
+			evidence = b.Evidence
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			b.Name,
 			b.Path,
@@ -92,7 +100,7 @@ func WriteTable(w io.Writer, r Report) error {
 			a.Package,
 			a.Version,
 			shadowed,
-			truncate(a.Evidence, 60),
+			truncate(evidence, 60),
 		)
 	}
 	if err := tw.Flush(); err != nil {
@@ -123,9 +131,38 @@ func WriteTable(w io.Writer, r Report) error {
 	return nil
 }
 
+// truncate returns s shortened to at most n bytes without splitting a UTF-8 rune.
+// If shortened, the result ends with "..." and total length is ≤ n.
 func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	if len(s) <= n {
 		return s
 	}
-	return s[:n-3] + "..."
+	if n <= 3 {
+		// Degenerate width: just fit what we can without splitting runes.
+		return truncateRunes(s, n)
+	}
+	bodyBudget := n - 3
+	return truncateRunes(s, bodyBudget) + "..."
+}
+
+func truncateRunes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk valid UTF-8 boundaries; never cut mid-rune.
+	i := 0
+	for i < len(s) {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if i+size > maxBytes {
+			break
+		}
+		i += size
+	}
+	return s[:i]
 }

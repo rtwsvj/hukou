@@ -36,12 +36,15 @@ func init() {
 
 func runScan(cmd *cobra.Command, args []string) error {
 	pathEnv := os.Getenv("PATH")
-	pathDirs := scan.SplitPATH(pathEnv)
+	pathDirs, pathWarnings := scan.SplitPATHWithWarnings(pathEnv)
 	pathDirs = append(pathDirs, scanDirs...)
 
 	result, err := scan.Walk(pathDirs)
 	if err != nil {
 		return fail(err)
+	}
+	if len(pathWarnings) > 0 {
+		result.Warnings = append(pathWarnings, result.Warnings...)
 	}
 
 	env := provenance.DefaultEnv()
@@ -74,6 +77,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 		Rows:        rows,
 		Skipped:     result.Skipped,
 		ScanErrors:  result.Errors,
+		FileErrors:  result.FileErrors,
+		Warnings:    result.Warnings,
 		TotalWalked: len(result.Binaries),
 	}
 

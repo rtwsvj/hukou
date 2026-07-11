@@ -17,4 +17,12 @@ type Binary struct {
 	RealPath string  // EvalSymlinks result; empty if evaluation failed
 	Kind     BinKind // MachO | ELF | Script | Other
 	Shadowed bool    // true if a same-named binary earlier on PATH takes precedence
+	// Evidence holds scan-time notes (e.g. unreadable but +x); not provenance.
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// FileError is a per-path non-fatal walk diagnostic.
+type FileError struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }

@@ -28,6 +28,7 @@ func (d *SystemDetector) Load(env Env) error {
 		"/usr/sbin",
 		"/usr/libexec",
 		"/System",
+		"/Library/Apple",
 	}
 	if env.XcodeCLT != "" {
 		d.prefixes = append(d.prefixes, env.XcodeCLT)
