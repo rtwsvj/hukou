@@ -16,6 +16,7 @@ hukou list
 ```
 
 - **adopt**:登记一个已存在的二进制。repo 推导:Go 二进制经 buildinfo 的 ModulePath(github.com/owner/repo 前缀直接取);其余必须显式给 owner/repo。二进制已被其他管理器认领(scan 归属非 unknown/curl-installer)时拒绝,`--force` 才放行。登记时记录当前 sha256 并把原始二进制**备份**进 store(original/)。
+- **adopt --local <name|path>**:无上游登记(Eric 自有脚本等):manifest 条目 repo 留空、tag="local",照常 sha256+备份;upgrade 对 local 条目自动跳过并在输出中注明。
 - **upgrade**:仅对已收编工具。查最新 release → 比较 tag(字符串不等即视为可升级,不做 semver 猜测)→ 选资产 → 下载到 store → 校验 → 原子替换。`--dry-run` 只报告不动手。
 - **rollback**:软链切回 store 中上一个(或 --to 指定)版本。
 - **list**:收编清单(名称/版本/repo/路径/store 版本数)。
