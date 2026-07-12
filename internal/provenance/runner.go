@@ -46,6 +46,8 @@ func DefaultRunner() *Runner {
 		NewComposerDetector(),
 		NewKrewDetector(),
 		NewCurlInstallerDetector(),
+		NewMacOSAppDetector(),
+		NewLocalProjectDetector(),
 		NewPipxDetector(),
 		NewUVDetector(),
 		NewGoDetector(), // includes buildinfo via gobin.go (unmodified vendor)
@@ -57,6 +59,7 @@ func DefaultRunner() *Runner {
 // Load calls Load(env) on every detector. A detector that returns error is
 // skipped (removed from the chain) and recorded as a warning; remaining
 // detectors continue. Never aborts the whole scan.
+// Runner is not safe for concurrent use during Load or between Load and Match.
 func (r *Runner) Load(env Env) (warnings []string) {
 	loaded := make([]Detector, 0, len(r.detectors))
 	for _, d := range r.detectors {

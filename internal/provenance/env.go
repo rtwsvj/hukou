@@ -47,6 +47,10 @@ type Env struct {
 	GemRoots           []string
 	GemBinDirs         []string
 	CurlInstallerRoots []CurlInstallerRoot
+
+	// macOS .app bundles and local project trees.
+	ApplicationsDirs []string // /Applications, ~/Applications
+	ProjectsDir      string   // ~/Projects
 }
 
 type CurlInstallerRoot struct {
@@ -145,7 +149,15 @@ func DefaultEnv() Env {
 		{Dir: filepath.Join(home, ".codeium"), Package: "codeium"},
 		{Dir: filepath.Join(home, ".foundry", "bin"), Package: "foundry"},
 		{Dir: filepath.Join(home, ".bun", "install"), Package: "bun"},
+		{Dir: filepath.Join(home, ".grok", "downloads"), Package: "grok"},
+		{Dir: filepath.Join(home, ".codex", "packages"), Package: "codex"},
+		{Dir: filepath.Join(home, ".hermes"), Package: "hermes"},
 	}
+	e.ApplicationsDirs = []string{
+		"/Applications",
+		filepath.Join(home, "Applications"),
+	}
+	e.ProjectsDir = filepath.Join(home, "Projects")
 	return e
 }
 
