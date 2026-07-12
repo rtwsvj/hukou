@@ -61,7 +61,7 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256, adopt
 ## 安全红线
 
 - 永不触碰未收编的二进制;upgrade/rollback 前验证 manifest 中 sha256 与磁盘现状一致,不一致(被外部改过)时中止并提示
-- 所有文件替换原子化;任何失败路径不得留下半损状态(临时文件统一放 store/.tmp/,启动时清理)
+- 所有文件替换原子化;任何失败路径不得留下半损状态(下载/解压等临时文件统一放 store/.tmp/、启动时清理;临时软链允许放在 linkPath 同目录的隐藏名 `.hukou-tmp-*` 再 rename——同文件系统原子性要求)
 - scan 保持纯只读,不受 Phase 2 影响
 
 ## 验收
@@ -77,3 +77,7 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256, adopt
 - 禁抄 GPL 项目代码(topgrade/pacaptr/mpm)
 - 探测器与 scan 路径保持无网络;网络只存在于 ghrelease
 - 不做 self-update、不做 Homebrew/npm 等他人地盘的升级代理
+
+## 已知限制(实现期追加)
+
+- **tar.xz 暂不支持**:Go 标准库无 xz 解码器,与"零第三方依赖"约束冲突;主流 release 均有 tar.gz/zip 资产。遇到 xz-only 的上游时再评估引入依赖。

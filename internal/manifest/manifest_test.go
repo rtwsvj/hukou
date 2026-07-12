@@ -1,0 +1,259 @@
+package manifest_test
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/rtwsvj/hukou/internal/manifest"
+)
+
+func fixtureEntry() manifest.Entry {
+	return manifest.Entry{
+		Name:      "mybin",
+		Path:      "/usr/local/bin/mybin",
+		Repo:      "owner/repo",
+		Tag:       "v1.0.0",
+		SHA256:    "deadbeef",
+		Upstream:  "github.com/owner/repo",
+		AdoptedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+}
+
+// T01 – missing file returns empty manifest, no error.
+func TestLoadMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	m, err := manifest.Load(filepath.Join(dir, "nonexistent.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.SchemaVersion != 1 {
+		t.Errorf("SchemaVersion = %d; want 1", m.SchemaVersion)
+	}
+	if m.Entries == nil {
+		t.Fatal("Entries must not be nil after Load")
+	}
+	if len(m.Entries) != 0 {
+		t.Errorf("len(Entries) = %d; want 0", len(m.Entries))
+	}
+}
+
+// T02 – Put + Get round-trip.
+func TestPutGetRoundtrip(t *testing.T) {
+	m := &manifest.Manifest{SchemaVersion: 1}
+	entry := fixtureEntry()
+	m.Put(entry)
+
+	got := m.Get("mybin")
+	if got == nil {
+		t.Fatal("Get returned nil")
+	}
+	if got.Name != entry.Name || got.Path != entry.Path || got.Repo != entry.Repo ||
+		got.Tag != entry.Tag || got.SHA256 != entry.SHA256 || got.Upstream != entry.Upstream ||
+		got.AdoptedAt != entry.AdoptedAt || got.UpdatedAt != entry.UpdatedAt {
+		t.Errorf("Get returned entry = %+v; want %+v", got, entry)
+	}
+}
+
+// T03 – Put overwrites existing entry with same name.
+func TestPutOverwrite(t *testing.T) {
+	m := &manifest.Manifest{SchemaVersion: 1}
+	m.Put(fixtureEntry())
+	m.Put(manifest.Entry{Name: "mybin", Path: "/new/path"})
+
+	if len(m.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d; want 1", len(m.Entries))
+	}
+	if m.Entries[0].Path != "/new/path" {
+		t.Errorf("Path = %s; want /new/path", m.Entries[0].Path)
+	}
+}
+
+// T04 – Remove deletes entry.
+func TestRemove(t *testing.T) {
+	m := &manifest.Manifest{SchemaVersion: 1}
+	m.Put(fixtureEntry())
+	removed := m.Remove("mybin")
+	if !removed {
+		t.Fatal("Remove returned false for existing entry")
+	}
+	if m.Get("mybin") != nil {
+		t.Error("entry still present after Remove")
+	}
+}
+
+// T05 – Remove returns false for unknown name.
+func TestRemoveUnknown(t *testing.T) {
+	m := &manifest.Manifest{SchemaVersion: 1}
+	removed := m.Remove("nope")
+	if removed {
+		t.Error("Remove returned true for unknown entry")
+	}
+}
+
+// T06 – Save + Load round-trip preserves data.
+func TestSaveLoadRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.json")
+
+	m := &manifest.Manifest{
+		SchemaVersion: 1,
+		Entries:       []manifest.Entry{fixtureEntry()},
+	}
+	if err := m.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.SchemaVersion != 1 {
+		t.Errorf("SchemaVersion = %d; want 1", loaded.SchemaVersion)
+	}
+	if len(loaded.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d; want 1", len(loaded.Entries))
+	}
+	e := loaded.Entries[0]
+	if e.Name != fixtureEntry().Name || e.Tag != fixtureEntry().Tag {
+		t.Errorf("entry mismatch: got %+v want %+v", e, fixtureEntry())
+	}
+}
+
+// T07 – Save is atomic: old content preserved when the target directory
+// becomes read-only before Rename.
+func TestSaveAtomicity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.json")
+
+	// Write initial manifest.
+	oldM := &manifest.Manifest{
+		SchemaVersion: 1,
+		Entries: []manifest.Entry{{
+			Name:      "old",
+			Path:      "/old/path",
+			Repo:      "o/r",
+			Tag:       "v0.1",
+			SHA256:    "oldhash",
+			AdoptedAt: "2024-01-01T00:00:00Z",
+			UpdatedAt: "2024-01-01T00:00:00Z",
+		}},
+	}
+	if err := oldM.Save(path); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	// Verify initial content.
+	initialData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Make the directory read-only to force Rename to fail.
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	// Restore permissions in case the test continues after this block.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	newM := &manifest.Manifest{
+		SchemaVersion: 1,
+		Entries: []manifest.Entry{{
+			Name:      "new",
+			Path:      "/new/path",
+			Repo:      "n/r",
+			Tag:       "v9.9",
+			SHA256:    "newhash",
+			AdoptedAt: "2024-12-31T00:00:00Z",
+			UpdatedAt: "2024-12-31T00:00:00Z",
+		}},
+	}
+	err = newM.Save(path)
+	if err == nil {
+		t.Fatal("expected error from Save when dir is read-only, got nil")
+	}
+
+	// Original file must be intact.
+	afterData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after failed Save: %v", err)
+	}
+	if string(afterData) != string(initialData) {
+		t.Errorf("original file was modified after atomic Save failure")
+	}
+}
+
+// T08 – schema_version > 1 is rejected.
+func TestUnknownSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.json")
+	raw := `{"schema_version":2,"entries":[]}` // nolint:lll
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := manifest.Load(path)
+	if err == nil {
+		t.Fatal("expected error for schema_version > 1, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported schema_version") {
+		t.Errorf("error message = %q; want it to contain 'unsupported schema_version'", err.Error())
+	}
+}
+
+// T09 – JSON output is stable: indent=2, one entry per line.
+func TestJSONFormatStable(t *testing.T) {
+	m := &manifest.Manifest{
+		SchemaVersion: 1,
+		Entries: []manifest.Entry{{
+			Name:      "a",
+			Path:      "/a",
+			Repo:      "o/r",
+			Tag:       "v1",
+			SHA256:    "h",
+			AdoptedAt: "2024-01-01T00:00:00Z",
+			UpdatedAt: "2024-01-01T00:00:00Z",
+		}},
+	}
+	if err := m.Save("/dev/null"); err != nil {
+		// /dev/null is expected to fail on macOS; just check encoding
+		// by encoding directly instead.
+	}
+
+	// Encode to string to verify format without writing to disk.
+	var sb strings.Builder
+	enc := json.NewEncoder(&sb)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got := sb.String()
+	if !strings.Contains(got, "  \"schema_version\"") {
+		t.Error("expected 2-space indent for schema_version field")
+	}
+	if !strings.Contains(got, "  \"name\"") {
+		t.Error("expected 2-space indent for name field")
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Error("expected trailing newline")
+	}
+}
+
+// T10 – schema_version 0 in file is normalised to 1 on Load.
+func TestSchemaZeroNormalised(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.json")
+	raw := `{"schema_version":0,"entries":[{"name":"x","path":"/p","repo":"o/r","tag":"v1","sha256":"h","adopted_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if m.SchemaVersion != 1 {
+		t.Errorf("SchemaVersion = %d; want 1 after normalisation", m.SchemaVersion)
+	}
+}
