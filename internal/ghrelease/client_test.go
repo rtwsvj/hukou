@@ -119,6 +119,43 @@ func TestRetry429TwiceThenSuccess(t *testing.T) {
 	}
 }
 
+func TestNetworkErrorRetry(t *testing.T) {
+	calls := 0
+	client := &Client{
+		BaseURL: "https://api.example.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls <= 2 {
+				return nil, errors.New("network down")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v4.0.0","assets":[]}`)),
+				Request:    req,
+			}, nil
+		})},
+	}
+	var sleeps []time.Duration
+	client.Sleep = func(d time.Duration) { sleeps = append(sleeps, d) }
+
+	release, err := client.Latest("owner", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release.TagName != "v4.0.0" {
+		t.Fatalf("TagName=%q", release.TagName)
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d", calls)
+	}
+	wantSleeps := []time.Duration{time.Second, 2 * time.Second}
+	if !reflect.DeepEqual(sleeps, wantSleeps) {
+		t.Fatalf("sleeps=%v want %v", sleeps, wantSleeps)
+	}
+}
+
 func Test5xxRetryExhausted(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +253,12 @@ func TestDownloadWritesTempFileNotFinalName(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "asset.tar.gz")); !os.IsNotExist(err) {
 		t.Fatalf("final name exists or unexpected stat err: %v", err)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func testClient(server *httptest.Server) *Client {
