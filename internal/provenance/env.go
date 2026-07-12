@@ -51,6 +51,8 @@ type Env struct {
 	// macOS .app bundles and local project trees.
 	ApplicationsDirs []string // /Applications, ~/Applications
 	ProjectsDir      string   // ~/Projects
+
+	HukouManifest string // hukou 自身户口清单(manifest.json)路径
 }
 
 type CurlInstallerRoot struct {
@@ -93,6 +95,11 @@ func DefaultEnv() Env {
 		AsdfDir:     filepath.Join(home, ".asdf"),
 		UVTools:     filepath.Join(xdgData, "uv", "tools"),
 		PipUserBase: filepath.Join(home, "Library", "Python"),
+	}
+	if v := os.Getenv("HUKOU_DATA_DIR"); v != "" {
+		e.HukouManifest = filepath.Join(v, "manifest.json")
+	} else {
+		e.HukouManifest = filepath.Join(xdgData, "hukou", "manifest.json")
 	}
 	if runtime.GOOS == "darwin" {
 		e.BrewPrefixes = []string{"/opt/homebrew", "/usr/local"}

@@ -27,6 +27,7 @@ func NewRunner(detectors ...Detector) *Runner {
 // directory trees are claimed first.
 func DefaultRunner() *Runner {
 	return NewRunner(
+		NewHukouDetector(), // 自家户口本最权威,链首
 		NewBrewDetector(),
 		NewMacPortsDetector(),
 		NewMiseDetector(),
