@@ -76,3 +76,7 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256, adopt
 - 禁抄 GPL 项目代码(topgrade/pacaptr/mpm)
 - 探测器与 scan 路径保持无网络;网络只存在于 ghrelease
 - 不做 self-update、不做 Homebrew/npm 等他人地盘的升级代理
+
+## 已知限制(实现期追加)
+
+- **tar.xz 暂不支持**:Go 标准库无 xz 解码器,与"零第三方依赖"约束冲突;主流 release 均有 tar.gz/zip 资产。遇到 xz-only 的上游时再评估引入依赖。
