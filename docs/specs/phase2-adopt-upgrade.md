@@ -60,7 +60,7 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256, adopt
 ## 安全红线
 
 - 永不触碰未收编的二进制;upgrade/rollback 前验证 manifest 中 sha256 与磁盘现状一致,不一致(被外部改过)时中止并提示
-- 所有文件替换原子化;任何失败路径不得留下半损状态(临时文件统一放 store/.tmp/,启动时清理)
+- 所有文件替换原子化;任何失败路径不得留下半损状态(下载/解压等临时文件统一放 store/.tmp/、启动时清理;临时软链允许放在 linkPath 同目录的隐藏名 `.hukou-tmp-*` 再 rename——同文件系统原子性要求)
 - scan 保持纯只读,不受 Phase 2 影响
 
 ## 验收

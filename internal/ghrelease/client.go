@@ -1,6 +1,7 @@
 package ghrelease
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,9 +14,22 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.github.com"
-	maxRetries     = 3
+	defaultBaseURL     = "https://api.github.com"
+	maxRetries         = 3
+	apiTimeout         = 30 * time.Second
+	downloadTimeout    = 10 * time.Minute
+	maxRedirects       = 5
+	maxRetryAfter      = 60 * time.Second
+	defaultMaxDownload = 512 << 20 // 512 MiB
 )
+
+// Production hosts allowed for HTTPS requests and redirects.
+var allowedHosts = map[string]struct{}{
+	"api.github.com":                     {},
+	"github.com":                         {},
+	"objects.githubusercontent.com":      {},
+	"release-assets.githubusercontent.com": {},
+}
 
 type Release struct {
 	TagName string  `json:"tag_name"`
@@ -64,12 +78,16 @@ func (e *RateLimitError) Error() string {
 }
 
 func New(token string) *Client {
-	return &Client{
-		BaseURL:    defaultBaseURL,
-		Token:      token,
-		HTTPClient: http.DefaultClient,
-		Sleep:      time.Sleep,
+	c := &Client{
+		BaseURL: defaultBaseURL,
+		Token:   token,
+		Sleep:   time.Sleep,
 	}
+	c.HTTPClient = &http.Client{
+		Timeout:       apiTimeout,
+		CheckRedirect: c.checkRedirect,
+	}
+	return c
 }
 
 func NewClient(token string) *Client {
@@ -84,8 +102,23 @@ func (c *Client) ByTag(owner, repo, tag string) (Release, error) {
 	return c.fetchRelease("/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases/tags/" + url.PathEscape(tag))
 }
 
-func (c *Client) Download(downloadURL, destDir string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, downloadURL, nil)
+// Download streams downloadURL into a temporary file under destDir.
+// expectedSize, when > 0, is the Asset.Size from the release API: the body is
+// limited to expectedSize+1 bytes and the actual count must match exactly.
+// When expectedSize is 0, a global cap of 512 MiB applies.
+func (c *Client) Download(downloadURL, destDir string, expectedSize int64) (string, error) {
+	u, err := url.Parse(downloadURL)
+	if err != nil {
+		return "", err
+	}
+	if err := c.validateURL(u); err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -101,16 +134,32 @@ func (c *Client) Download(downloadURL, destDir string) (string, error) {
 		return "", responseStatusError(resp)
 	}
 
+	limit := expectedSize
+	if limit <= 0 {
+		limit = defaultMaxDownload
+	}
+
 	file, err := os.CreateTemp(destDir, ".ghrelease-*")
 	if err != nil {
 		return "", err
 	}
 	tmpPath := file.Name()
 
-	if _, err := io.Copy(file, resp.Body); err != nil {
+	n, err := io.Copy(file, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
 		file.Close()
 		os.Remove(tmpPath)
 		return "", err
+	}
+	if n > limit {
+		file.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("download exceeded size limit of %d bytes", limit)
+	}
+	if expectedSize > 0 && n != expectedSize {
+		file.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("download size mismatch: got %d bytes, expected %d", n, expectedSize)
 	}
 	if err := file.Close(); err != nil {
 		os.Remove(tmpPath)
@@ -124,6 +173,9 @@ func (c *Client) fetchRelease(path string) (Release, error) {
 	var release Release
 	req, err := http.NewRequest(http.MethodGet, c.apiURL(path), nil)
 	if err != nil {
+		return release, err
+	}
+	if err := c.validateURL(req.URL); err != nil {
 		return release, err
 	}
 	c.applyHeaders(req)
@@ -147,6 +199,7 @@ func (c *Client) fetchRelease(path string) (Release, error) {
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Re-apply headers each attempt; body is nil for our GET requests.
 		resp, err := c.httpClient().Do(req)
 		if err != nil {
 			lastErr = err
@@ -163,14 +216,41 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		}
 
 		if retryStatus(resp.StatusCode) && attempt < maxRetries {
+			delay := retryDelay(resp, attempt)
 			drainClose(resp.Body)
-			c.sleep(backoff(attempt))
+			c.sleep(delay)
 			continue
 		}
 
 		return resp, nil
 	}
 	return nil, lastErr
+}
+
+// retryDelay prefers Retry-After (capped at 60s) for 429; otherwise exponential backoff.
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+				d := time.Duration(secs) * time.Second
+				if d > maxRetryAfter {
+					d = maxRetryAfter
+				}
+				return d
+			}
+			if t, err := http.ParseTime(ra); err == nil {
+				d := time.Until(t)
+				if d < 0 {
+					d = 0
+				}
+				if d > maxRetryAfter {
+					d = maxRetryAfter
+				}
+				return d
+			}
+		}
+	}
+	return backoff(attempt)
 }
 
 func (c *Client) apiURL(path string) string {
@@ -186,7 +266,15 @@ func (c *Client) baseURL() string {
 
 func (c *Client) httpClient() *http.Client {
 	if c.HTTPClient == nil {
-		return http.DefaultClient
+		return &http.Client{
+			Timeout:       apiTimeout,
+			CheckRedirect: c.checkRedirect,
+		}
+	}
+	// Ensure CheckRedirect is set when callers supply a custom client without one
+	// (e.g. httptest). Preserve an already-configured CheckRedirect.
+	if c.HTTPClient.CheckRedirect == nil {
+		c.HTTPClient.CheckRedirect = c.checkRedirect
 	}
 	return c.HTTPClient
 }
@@ -199,11 +287,74 @@ func (c *Client) sleep(d time.Duration) {
 	time.Sleep(d)
 }
 
+// applyHeaders sets Accept always. Authorization is only attached when the
+// request host is allowed to receive the token (api.github.com, or a custom
+// BaseURL host used in tests).
 func (c *Client) applyHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if c.Token != "" {
+	if c.Token != "" && c.authHostAllowed(req.URL.Host) {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
+}
+
+func (c *Client) authHostAllowed(host string) bool {
+	if host == "api.github.com" {
+		return true
+	}
+	// Custom BaseURL (tests / mirrors): allow auth only to that host.
+	if c.baseURL() != defaultBaseURL {
+		if base, err := url.Parse(c.baseURL()); err == nil && base.Host == host {
+			return true
+		}
+	}
+	return false
+}
+
+// validateURL enforces HTTPS + host whitelist for production, and allows the
+// custom BaseURL host (http or https) for tests/mirrors.
+func (c *Client) validateURL(u *url.URL) error {
+	if u == nil || u.Host == "" {
+		return fmt.Errorf("invalid URL: missing host")
+	}
+	if c.hostAllowed(u) {
+		return nil
+	}
+	return fmt.Errorf("refusing request to disallowed host %q (scheme %q)", u.Host, u.Scheme)
+}
+
+func (c *Client) hostAllowed(u *url.URL) bool {
+	host := u.Hostname() // strip port for comparison where relevant
+	// Full host (with port) for custom BaseURL matching (httptest uses host:port).
+	fullHost := u.Host
+
+	// Custom BaseURL host is permitted (tests).
+	if c.baseURL() != defaultBaseURL {
+		if base, err := url.Parse(c.baseURL()); err == nil && base.Host != "" {
+			if fullHost == base.Host || host == base.Hostname() {
+				return u.Scheme == "http" || u.Scheme == "https"
+			}
+		}
+	}
+
+	if u.Scheme != "https" {
+		return false
+	}
+	_, ok := allowedHosts[host]
+	return ok
+}
+
+func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if err := c.validateURL(req.URL); err != nil {
+		return err
+	}
+	// Never forward Authorization to non-auth hosts (e.g. download CDNs).
+	if !c.authHostAllowed(req.URL.Host) {
+		req.Header.Del("Authorization")
+	}
+	return nil
 }
 
 func retryStatus(code int) bool {

@@ -32,7 +32,7 @@ func runRollback(cmd *cobra.Command, args []string) error {
 	return doRollback(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], rollbackTo)
 }
 
-func doRollback(stdout, _ io.Writer, name, to string) error {
+func doRollback(stdout, stderr io.Writer, name, to string) error {
 	m, err := loadManifest()
 	if err != nil {
 		return fail(err)
@@ -66,18 +66,20 @@ func doRollback(stdout, _ io.Writer, name, to string) error {
 
 	if target == "original" {
 		if err := activateOriginal(s, name, e.Path); err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("activate original: %w", err))
 		}
 	} else {
 		if err := s.Activate(name, target, e.Path); err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("activate %s: %w", target, err))
 		}
 	}
 
 	newSHA, err := store.SHA256File(e.Path)
 	if err != nil {
-		return fail(fmt.Errorf("读取新版本失败: %w", err))
+		return fail(fmt.Errorf("读取回滚后文件失败: %w", err))
 	}
+
+	// Rewrite manifest tag + sha256 to match the newly active binary.
 	e.Tag = target
 	e.SHA256 = newSHA
 	e.UpdatedAt = rfc3339Now()
@@ -87,6 +89,7 @@ func doRollback(stdout, _ io.Writer, name, to string) error {
 	}
 
 	fmt.Fprintf(stdout, "已回滚 %s → %s\n", name, target)
+	_ = stderr // reserved for future diagnostics
 	return nil
 }
 
@@ -114,7 +117,9 @@ func previousVersion(s *store.Store, name, current string) (string, error) {
 
 	origPath := filepath.Join(s.Root, name, "original", name)
 	if info, err := os.Stat(origPath); err == nil {
-		list = append(list, version{tag: "original", mtime: info.ModTime()})
+		if current != "original" {
+			list = append(list, version{tag: "original", mtime: info.ModTime()})
+		}
 	}
 
 	if len(list) == 0 {

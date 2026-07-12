@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -195,7 +196,7 @@ func TestPruneKeepsOriginal(t *testing.T) {
 	}
 
 	// keep the two most recent versions (v3.0 and v2.0)
-	if err := s.Prune("mybin", 2); err != nil {
+	if err := s.Prune("mybin", 2, ""); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 
@@ -335,5 +336,107 @@ func TestSHA256File(t *testing.T) {
 	want := hex.EncodeToString(h[:])
 	if got != want {
 		t.Fatalf("SHA256File = %q, want %q", got, want)
+	}
+}
+
+func TestPruneProtectsActiveVersion(t *testing.T) {
+	root := t.TempDir()
+	s := &store.Store{Root: root}
+
+	tags := []string{"v1.0", "v2.0", "v3.0", "v4.0"}
+	for i, tag := range tags {
+		src := writeFile(t, t.TempDir(), "mybin", tag)
+		if err := s.Put("tool", tag, src); err != nil {
+			t.Fatalf("Put %s: %v", tag, err)
+		}
+		mtime := time.Date(2020, 1, 1+i, 0, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(filepath.Join(root, "tool", tag), mtime, mtime); err != nil {
+			t.Fatalf("Chtimes: %v", err)
+		}
+	}
+
+	linkPath := filepath.Join(t.TempDir(), "mybin")
+	// Activate the oldest version so it would be pruned without protection.
+	if err := s.Activate("tool", "v1.0", linkPath); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+
+	// keep=1 would normally leave only v4.0; active v1.0 must survive.
+	if err := s.Prune("tool", 1, linkPath); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	versions, err := s.Versions("tool")
+	if err != nil {
+		t.Fatalf("Versions: %v", err)
+	}
+	found := map[string]bool{}
+	for _, v := range versions {
+		found[v] = true
+	}
+	if !found["v1.0"] {
+		t.Fatalf("active version v1.0 was pruned: %v", versions)
+	}
+	if !found["v4.0"] {
+		t.Fatalf("newest version v4.0 missing: %v", versions)
+	}
+	if found["v2.0"] || found["v3.0"] {
+		t.Fatalf("expected only active+newest, got %v", versions)
+	}
+
+	got, err := os.ReadFile(linkPath)
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	if string(got) != "v1.0" {
+		t.Fatalf("active content = %q", got)
+	}
+}
+
+func TestValidateNameTagRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	s := &store.Store{Root: root}
+	src := writeFile(t, t.TempDir(), "bin", "x")
+
+	for _, bad := range []string{"../escape", "a/b", "a\\b", "..", ""} {
+		if err := s.Put(bad, "v1", src); err == nil {
+			t.Fatalf("Put name %q: expected error", bad)
+		}
+		if err := s.Put("tool", bad, src); err == nil {
+			t.Fatalf("Put tag %q: expected error", bad)
+		}
+		if err := s.Activate(bad, "v1", filepath.Join(t.TempDir(), "l")); err == nil {
+			t.Fatalf("Activate name %q: expected error", bad)
+		}
+		if err := s.AdoptOriginal(bad, src); err == nil {
+			t.Fatalf("AdoptOriginal name %q: expected error", bad)
+		}
+	}
+}
+
+func TestActivateTmpSymlinkSameDir(t *testing.T) {
+	root := t.TempDir()
+	s := &store.Store{Root: root}
+	src := writeFile(t, t.TempDir(), "mybin", "v1")
+	if err := s.Put("tool", "v1.0", src); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	linkDir := t.TempDir()
+	linkPath := filepath.Join(linkDir, "mybin")
+	if err := s.Activate("tool", "v1.0", linkPath); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	// No leftover .hukou-tmp-* in linkDir.
+	entries, err := os.ReadDir(linkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".hukou-tmp-") {
+			t.Fatalf("leftover temp symlink: %s", e.Name())
+		}
+	}
+	if len(entries) != 1 || entries[0].Name() != "mybin" {
+		t.Fatalf("linkDir entries = %v", entries)
 	}
 }

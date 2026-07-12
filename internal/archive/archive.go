@@ -18,18 +18,25 @@ import (
 	"strings"
 )
 
+// MaxEntryBytes is the maximum size of a single extracted archive entry (512 MiB).
+const MaxEntryBytes int64 = 512 << 20
+
+// MaxTotalBytes is the maximum total extracted bytes across all entries (512 MiB).
+const MaxTotalBytes int64 = 512 << 20
+
 // Extract unpacks the archive at archivePath into destDir and returns the path
 // of the extracted binary.
 //
 // wantName is the expected binary base name (without directory). Extraction
 // picks the archive member using the following precedence:
-//   1. An entry whose base name equals wantName or wantName+".exe".
-//   2. The sole "executable-looking" entry: its file mode has any executable
-//      bit set, or its base name has no extension. If more than one such entry
-//      exists, an error listing the candidates is returned.
+//  1. An entry whose base name equals wantName or wantName+".exe".
+//  2. The sole "executable-looking" entry: its file mode has any executable
+//     bit set, or its base name has no extension. If more than one such entry
+//     exists, an error listing the candidates is returned.
 //
 // All entries are checked for directory traversal attacks: the cleaned entry
-// path must stay inside destDir.
+// path must stay inside destDir. Each entry and the total extracted size are
+// capped at 512 MiB.
 func Extract(archivePath, destDir, wantName string) (string, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", fmt.Errorf("create dest dir: %w", err)
@@ -175,30 +182,11 @@ func extractTarEntry(archivePath, destDir, wantEntry string) (string, error) {
 		if filepath.Clean(h.Name) != filepath.Clean(wantEntry) {
 			continue
 		}
-		if err := writeTarEntry(tr, destDir, h.Name, h.Mode); err != nil {
+		if _, err := writeLimited(tr, destDir, h.Name, os.FileMode(h.Mode)&0o777, 0); err != nil {
 			return "", err
 		}
 		return safeJoin(destDir, h.Name)
 	}
-}
-
-func writeTarEntry(r *tar.Reader, destDir, name string, mode int64) error {
-	outPath, err := safeJoin(destDir, name)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(mode)&0o777)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, r); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 func extractZip(archivePath, destDir, wantName string) (string, error) {
@@ -210,6 +198,7 @@ func extractZip(archivePath, destDir, wantName string) (string, error) {
 
 	var exact *zip.File
 	var candidates []*zip.File
+	var totalWritten int64
 
 	for _, zf := range zr.File {
 		if zf.FileInfo().IsDir() {
@@ -222,9 +211,11 @@ func extractZip(archivePath, destDir, wantName string) (string, error) {
 			if exact != nil {
 				return "", fmt.Errorf("multiple entries match %q: %q and %q", wantName, exact.Name, zf.Name)
 			}
-			if err := writeZipEntry(zf, destDir); err != nil {
+			n, err := writeZipEntryLimited(zf, destDir, totalWritten)
+			if err != nil {
 				return "", err
 			}
+			totalWritten += n
 			exact = zf
 			continue
 		}
@@ -253,34 +244,63 @@ func extractZip(archivePath, destDir, wantName string) (string, error) {
 		return "", fmt.Errorf("multiple executable candidates: %s", strings.Join(names, ", "))
 	}
 
-	if err := writeZipEntry(candidates[0], destDir); err != nil {
+	if _, err := writeZipEntryLimited(candidates[0], destDir, totalWritten); err != nil {
 		return "", err
 	}
 	return safeJoin(destDir, filepath.Base(candidates[0].Name))
 }
 
-func writeZipEntry(zf *zip.File, destDir string) error {
-	outPath, err := safeJoin(destDir, zf.Name)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return err
-	}
+func writeZipEntryLimited(zf *zip.File, destDir string, totalSoFar int64) (int64, error) {
 	rc, err := zf.Open()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rc.Close()
-	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, zf.Mode()&0o777)
+	return writeLimited(rc, destDir, zf.Name, zf.Mode()&0o777, totalSoFar)
+}
+
+// writeLimited copies r into destDir/name with per-entry and total size caps.
+// totalSoFar is the number of bytes already extracted in this archive call.
+func writeLimited(r io.Reader, destDir, name string, mode os.FileMode, totalSoFar int64) (int64, error) {
+	outPath, err := safeJoin(destDir, name)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(out, rc); err != nil {
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return 0, err
+	}
+	remainingTotal := MaxTotalBytes - totalSoFar
+	if remainingTotal <= 0 {
+		return 0, fmt.Errorf("extract total size limit of %d bytes exceeded", MaxTotalBytes)
+	}
+	limit := MaxEntryBytes
+	if remainingTotal < limit {
+		limit = remainingTotal
+	}
+
+	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(out, io.LimitReader(r, limit+1))
+	if err != nil {
 		out.Close()
-		return err
+		os.Remove(outPath)
+		return 0, err
 	}
-	return out.Close()
+	if n > limit {
+		out.Close()
+		os.Remove(outPath)
+		if limit < MaxEntryBytes {
+			return 0, fmt.Errorf("extract total size limit of %d bytes exceeded", MaxTotalBytes)
+		}
+		return 0, fmt.Errorf("archive entry exceeds size limit of %d bytes", MaxEntryBytes)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(outPath)
+		return 0, err
+	}
+	return n, nil
 }
 
 func extractGz(archivePath, destDir, wantName string) (string, error) {
@@ -301,22 +321,33 @@ func extractGz(archivePath, destDir, wantName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(out, gz); err != nil {
+	n, err := io.Copy(out, io.LimitReader(gz, MaxEntryBytes+1))
+	if err != nil {
 		out.Close()
+		os.Remove(outPath)
 		return "", err
 	}
-	return outPath, out.Close()
-}
-
-func copyBareFile(archivePath, destDir, wantName string) (string, error) {
-	outPath := filepath.Join(destDir, wantName)
-	if err := copyFile(archivePath, outPath, 0o755); err != nil {
+	if n > MaxEntryBytes {
+		out.Close()
+		os.Remove(outPath)
+		return "", fmt.Errorf("archive entry exceeds size limit of %d bytes", MaxEntryBytes)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(outPath)
 		return "", err
 	}
 	return outPath, nil
 }
 
-func copyFile(src, dst string, perm os.FileMode) error {
+func copyBareFile(archivePath, destDir, wantName string) (string, error) {
+	outPath := filepath.Join(destDir, wantName)
+	if err := copyFileLimited(archivePath, outPath, 0o755); err != nil {
+		return "", err
+	}
+	return outPath, nil
+}
+
+func copyFileLimited(src, dst string, perm os.FileMode) error {
 	sf, err := os.Open(src)
 	if err != nil {
 		return err
@@ -327,9 +358,16 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(df, sf); err != nil {
+	n, err := io.Copy(df, io.LimitReader(sf, MaxEntryBytes+1))
+	if err != nil {
 		df.Close()
+		os.Remove(dst)
 		return err
+	}
+	if n > MaxEntryBytes {
+		df.Close()
+		os.Remove(dst)
+		return fmt.Errorf("archive entry exceeds size limit of %d bytes", MaxEntryBytes)
 	}
 	return df.Close()
 }

@@ -77,10 +77,25 @@ func doUpgrade(stdout, stderr io.Writer, names []string, all, dryRun bool, asset
 		return fail(err)
 	}
 
+	var failures []string
 	for _, e := range targets {
-		if err := upgradeOne(stdout, stderr, s, client, m, &e, dryRun, assetFilter); err != nil {
-			fmt.Fprintf(stderr, "警告: %s 升级失败: %v\n", e.Name, err)
+		// Re-load entry pointer from manifest so concurrent-looking updates
+		// within the loop see the latest state after each successful upgrade.
+		entry := e
+		if live := m.Get(e.Name); live != nil {
+			entry = *live
 		}
+		if err := upgradeOne(stdout, stderr, s, client, m, &entry, dryRun, assetFilter); err != nil {
+			fmt.Fprintf(stderr, "警告: %s 升级失败: %v\n", entry.Name, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", entry.Name, err))
+		}
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(stderr, "升级失败 %d 项:\n", len(failures))
+		for _, f := range failures {
+			fmt.Fprintf(stderr, "  - %s\n", f)
+		}
+		return fmt.Errorf("%d upgrade(s) failed", len(failures))
 	}
 	return nil
 }
@@ -132,9 +147,11 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	}
 
 	var assetURL string
+	var assetSize int64
 	for _, a := range release.Assets {
 		if a.Name == chosen {
 			assetURL = a.BrowserDownloadURL
+			assetSize = a.Size
 			break
 		}
 	}
@@ -147,20 +164,22 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		return err
 	}
 
-	assetPath, err := client.Download(assetURL, tmpDir)
+	assetPath, err := client.Download(assetURL, tmpDir, assetSize)
 	if err != nil {
 		return fmt.Errorf("download asset: %w", err)
 	}
-	defer os.Remove(assetPath)
+	// Closure captures the final path after any rename that preserves extension.
+	finalAssetPath := assetPath
+	defer func() { _ = os.Remove(finalAssetPath) }()
 
 	// ghrelease.Download writes to a temp file without the original extension.
 	// archive.Extract decides the format by extension, so preserve it.
-	if ext := archiveExt(chosen); ext != "" && !strings.HasSuffix(strings.ToLower(filepath.Base(assetPath)), ext) {
-		newPath := assetPath + ext
-		if err := os.Rename(assetPath, newPath); err != nil {
+	if ext := archiveExt(chosen); ext != "" && !strings.HasSuffix(strings.ToLower(filepath.Base(finalAssetPath)), ext) {
+		newPath := finalAssetPath + ext
+		if err := os.Rename(finalAssetPath, newPath); err != nil {
 			return fmt.Errorf("preserve extension: %w", err)
 		}
-		assetPath = newPath
+		finalAssetPath = newPath
 	}
 
 	checksums, err := downloadChecksums(client, release.Assets, chosen, tmpDir)
@@ -169,7 +188,7 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	}
 
 	if checksums != nil {
-		if err := verify.VerifyAsset(assetPath, chosen, checksums); err != nil {
+		if err := verify.VerifyAsset(finalAssetPath, chosen, checksums); err != nil {
 			if !errors.Is(err, verify.ErrNoChecksum) {
 				return fmt.Errorf("verify: %w", err)
 			}
@@ -182,7 +201,7 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	}
 	defer os.RemoveAll(extractDir)
 
-	extractedPath, err := archive.Extract(assetPath, extractDir, e.Name)
+	extractedPath, err := archive.Extract(finalAssetPath, extractDir, e.Name)
 	if err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
@@ -190,6 +209,8 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	if err := s.Put(e.Name, release.TagName, extractedPath); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
+
+	oldTag := e.Tag
 
 	pathInfo, err := os.Lstat(e.Path)
 	if err != nil {
@@ -201,6 +222,11 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		if _, err := os.Stat(origPath); os.IsNotExist(err) {
 			if err := s.AdoptOriginal(e.Name, e.Path); err != nil {
 				return fmt.Errorf("adopt original: %w", err)
+			}
+			// AdoptOriginal leaves the symlink pointing at original/; switch to
+			// the newly stored release version so PATH and manifest agree.
+			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
+				return fmt.Errorf("activate: %w", err)
 			}
 		} else {
 			// original/ already contains the adopt-time backup; move the
@@ -237,11 +263,11 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		return fmt.Errorf("save manifest: %w", err)
 	}
 
-	if err := s.Prune(e.Name, 3); err != nil {
+	if err := s.Prune(e.Name, 3, e.Path); err != nil {
 		fmt.Fprintf(stderr, "警告: %s 清理旧版本失败: %v\n", e.Name, err)
 	}
 
-	fmt.Fprintf(stdout, "已升级 %s: %s → %s\n", e.Name, e.Tag, release.TagName)
+	fmt.Fprintf(stdout, "已升级 %s: %s → %s\n", e.Name, oldTag, release.TagName)
 	return nil
 }
 
@@ -251,16 +277,18 @@ func downloadChecksums(client *ghrelease.Client, assets []ghrelease.Asset, chose
 		return nil, nil
 	}
 	var checksumURL string
+	var checksumSize int64
 	for _, a := range assets {
 		if a.Name == checksumName {
 			checksumURL = a.BrowserDownloadURL
+			checksumSize = a.Size
 			break
 		}
 	}
 	if checksumURL == "" {
 		return nil, nil
 	}
-	checksumPath, err := client.Download(checksumURL, tmpDir)
+	checksumPath, err := client.Download(checksumURL, tmpDir, checksumSize)
 	if err != nil {
 		return nil, fmt.Errorf("download checksum: %w", err)
 	}
@@ -277,6 +305,10 @@ func downloadChecksums(client *ghrelease.Client, assets []ghrelease.Asset, chose
 func findChecksumAsset(chosen string, assets []ghrelease.Asset) string {
 	for _, a := range assets {
 		if strings.Contains(a.Name, "checksums") {
+			lower := strings.ToLower(a.Name)
+			if strings.HasSuffix(lower, ".sig") || strings.HasSuffix(lower, ".asc") || strings.HasSuffix(lower, ".pem") {
+				continue
+			}
 			return a.Name
 		}
 	}

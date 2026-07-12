@@ -8,15 +8,21 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
 // Store manages versioned binary artifacts under Root.
 //
 // Layout:
-//   <Root>/<name>/<tag>/<bin>
-//   <Root>/<name>/original/<bin>
-//   <Root>/.tmp/            staging area for atomic operations
+//
+//	<Root>/<name>/<tag>/<bin>
+//	<Root>/<name>/original/<bin>
+//	<Root>/.tmp/            staging area for atomic file copies
+//
+// Temporary symlinks for Activate/AdoptOriginal are created as hidden names
+// in the same directory as the destination link (required for atomic rename
+// across filesystems), not under .tmp/.
 type Store struct {
 	Root string
 }
@@ -28,9 +34,67 @@ func (s *Store) absRoot() (string, error) {
 	return filepath.Abs(s.Root)
 }
 
+// validateNameTag rejects empty values and path traversal components.
+// Manifest entries are semi-trusted input and must not escape the store layout.
+func validateNameTag(kind, v string) error {
+	if v == "" {
+		return fmt.Errorf("empty %s", kind)
+	}
+	if v == "." || v == ".." {
+		return fmt.Errorf("invalid %s %q", kind, v)
+	}
+	if strings.Contains(v, "..") {
+		return fmt.Errorf("invalid %s %q: contains '..'", kind, v)
+	}
+	if strings.ContainsAny(v, `/\`) {
+		return fmt.Errorf("invalid %s %q: path separator not allowed", kind, v)
+	}
+	if strings.ContainsRune(v, filepath.Separator) {
+		return fmt.Errorf("invalid %s %q: path separator not allowed", kind, v)
+	}
+	return nil
+}
+
+// ensureUnderRoot returns an absolute path for p and verifies it resolves
+// strictly inside the store root (or is the root itself).
+func (s *Store) ensureUnderRoot(p string) (string, error) {
+	root, err := s.absRoot()
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	// Resolve symlinks in the parent path when possible so a symlink escape
+	// cannot place the target outside the store.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	rootResolved := root
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		rootResolved = resolved
+	}
+	prefix := rootResolved
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	if abs != rootResolved && !strings.HasPrefix(abs, prefix) {
+		return "", fmt.Errorf("path %q escapes store root %q", abs, rootResolved)
+	}
+	return abs, nil
+}
+
 // Put copies srcPath into the store as <Root>/<name>/<tag>/<basename(srcPath)>.
 // The write is staged through <Root>/.tmp and committed with os.Rename.
 func (s *Store) Put(name, tag, srcPath string) error {
+	if err := validateNameTag("name", name); err != nil {
+		return err
+	}
+	if err := validateNameTag("tag", tag); err != nil {
+		return err
+	}
+
 	srcInfo, err := os.Stat(srcPath)
 	if err != nil {
 		return err
@@ -124,6 +188,13 @@ func (s *Store) Versions(name string) ([]string, error) {
 // <name>/<tag>. The symlink is created atomically by building a temporary
 // symlink in linkPath's parent directory and renaming it into place.
 func (s *Store) Activate(name, tag, linkPath string) error {
+	if err := validateNameTag("name", name); err != nil {
+		return err
+	}
+	if err := validateNameTag("tag", tag); err != nil {
+		return err
+	}
+
 	root, err := s.absRoot()
 	if err != nil {
 		return err
@@ -148,9 +219,10 @@ func (s *Store) Activate(name, tag, linkPath string) error {
 		return fmt.Errorf("no binary found in version %s/%s", name, tag)
 	}
 
-	target, err := filepath.Abs(filepath.Join(tagDir, binName))
+	target := filepath.Join(tagDir, binName)
+	absTarget, err := s.ensureUnderRoot(target)
 	if err != nil {
-		return err
+		return fmt.Errorf("activate target: %w", err)
 	}
 
 	linkDir := filepath.Dir(linkPath)
@@ -158,13 +230,17 @@ func (s *Store) Activate(name, tag, linkPath string) error {
 		return err
 	}
 
-	return atomicSymlink(target, linkPath, linkDir, fmt.Sprintf("activate-%s-%s-*", name, tag))
+	return atomicSymlink(absTarget, linkPath, linkDir)
 }
 
 // AdoptOriginal moves the regular file at binPath into the store's
 // <name>/original/ backup directory and leaves a symlink in binPath's original
 // location pointing to the backup. The symlink replacement is atomic.
 func (s *Store) AdoptOriginal(name, binPath string) error {
+	if err := validateNameTag("name", name); err != nil {
+		return err
+	}
+
 	srcInfo, err := os.Lstat(binPath)
 	if err != nil {
 		return err
@@ -197,20 +273,79 @@ func (s *Store) AdoptOriginal(name, binPath string) error {
 
 	target, err := filepath.Abs(dstPath)
 	if err != nil {
+		// best-effort restore
+		_ = os.Rename(dstPath, binPath)
 		return err
 	}
 
 	binDir := filepath.Dir(binPath)
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		_ = os.Rename(dstPath, binPath)
 		return err
 	}
 
-	return atomicSymlink(target, binPath, binDir, fmt.Sprintf("adopt-%s-*", name))
+	if err := atomicSymlink(target, binPath, binDir); err != nil {
+		_ = os.Rename(dstPath, binPath)
+		return err
+	}
+	return nil
+}
+
+// activeVersionTag resolves linkPath (if it is a symlink into the store) and
+// returns the version directory name (tag or "original") that it points at.
+// Returns "" when the link is missing, not a symlink, or does not point into
+// this store's <name>/ tree.
+func (s *Store) activeVersionTag(name, linkPath string) string {
+	if linkPath == "" {
+		return ""
+	}
+	root, err := s.absRoot()
+	if err != nil {
+		return ""
+	}
+	// Resolve root (macOS /var -> /private/var) so Rel against symlink targets works.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	info, err := os.Lstat(linkPath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return ""
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		return ""
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(linkPath), target)
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(absTarget); err == nil {
+		absTarget = resolved
+	} else if resolved, err := filepath.EvalSymlinks(filepath.Dir(absTarget)); err == nil {
+		// Target file may have been deleted; still resolve parent.
+		absTarget = filepath.Join(resolved, filepath.Base(absTarget))
+	}
+	nameDir := filepath.Join(root, name)
+	rel, err := filepath.Rel(nameDir, absTarget)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
 }
 
 // Prune removes old versions of name, keeping the most recent keep versions by
 // directory modification time. The original backup directory is never removed.
-func (s *Store) Prune(name string, keep int) error {
+// When linkPath is non-empty and is a symlink into the store for this name,
+// the currently active version is also never removed (same protection tier as
+// original).
+func (s *Store) Prune(name string, keep int, linkPath string) error {
 	if keep < 0 {
 		keep = 0
 	}
@@ -228,6 +363,8 @@ func (s *Store) Prune(name string, keep int) error {
 		}
 		return err
 	}
+
+	protected := s.activeVersionTag(name, linkPath)
 
 	type version struct {
 		tag   string
@@ -251,6 +388,9 @@ func (s *Store) Prune(name string, keep int) error {
 	})
 
 	for i := keep; i < len(versions); i++ {
+		if versions[i].tag == protected {
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(nameDir, versions[i].tag)); err != nil {
 			return err
 		}
@@ -287,14 +427,16 @@ func SHA256File(path string) (string, error) {
 }
 
 // atomicSymlink creates a symlink at linkPath pointing to target. It builds the
-// symlink in tmpDir under a unique name and renames it into place so that
-// linkPath is always observed as either the old link or the new link.
-func atomicSymlink(target, linkPath, tmpDir, prefix string) error {
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+// symlink as a hidden temporary name in the same directory as linkPath
+// (.hukou-tmp-*) and renames it into place so that linkPath is always observed
+// as either the old link or the new link. Same-directory rename is required for
+// atomicity across filesystems.
+func atomicSymlink(target, linkPath, linkDir string) error {
+	if err := os.MkdirAll(linkDir, 0o755); err != nil {
 		return err
 	}
 
-	tmpFile, err := os.CreateTemp(tmpDir, prefix)
+	tmpFile, err := os.CreateTemp(linkDir, ".hukou-tmp-*")
 	if err != nil {
 		return err
 	}
