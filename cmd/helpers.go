@@ -118,43 +118,6 @@ func runSecurityGate(binPath string) (*provenance.Attribution, error) {
 	return runner.Match(b), nil
 }
 
-func copyFile(src, dst string, mode os.FileMode) error {
-	sf, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sf.Close()
-
-	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(df, sf); err != nil {
-		_ = df.Close()
-		return err
-	}
-	return df.Close()
-}
-
-func activateOriginal(s *store.Store, name, linkPath string) error {
-	origBin := filepath.Join(s.Root, name, "original", name)
-	target, err := filepath.Abs(origBin)
-	if err != nil {
-		return err
-	}
-	linkDir := filepath.Dir(linkPath)
-	if err := os.MkdirAll(linkDir, 0o755); err != nil {
-		return err
-	}
-
-	tmpPath := filepath.Join(linkDir, ".hukou-activate-"+name+"-tmp")
-	_ = os.Remove(tmpPath)
-	if err := os.Symlink(target, tmpPath); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, linkPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("atomic replace symlink: %w", err)
-	}
-	return nil
+func activateOriginal(s *store.Store, name, livePath string) error {
+	return s.Activate(name, "original", livePath)
 }

@@ -17,7 +17,7 @@
 
 1. **scan**：遍历 `PATH` 与额外目录，识别 Homebrew、MacPorts、语言包管理器、版本管理器、系统工具以及 hukou 自己收编的工具。
 2. **adopt**：登记一个现有可执行文件；Go 二进制可从 build info 推导 GitHub repo，其他工具显式指定 `owner/repo`，本地工具使用 `--local`。
-3. **upgrade**：查询已收编工具的最新 GitHub Release，选择平台资产、下载、校验、入库并切换软链。
+3. **upgrade**：查询已收编工具的最新 GitHub Release，选择平台资产、下载、校验、入库并原子替换活跃常规文件。
 4. **rollback**：切换回指定版本或最近的旧版本，并同步 manifest。
 5. **list**：查看当前户口清单与本地保留版本数。
 
@@ -101,7 +101,7 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/hukou/
 - upgrade/rollback 前核对当前二进制与 manifest 的 SHA-256。
 - 上游提供 checksum 时必须成功找到并验证所选资产，否则失败关闭。
 - 下载资产 hash 与激活后二进制 hash 分开记录，便于审计和完整性检查。
-- 文件与软链切换采用同目录临时文件；可观测错误路径必须补偿恢复。
+- 活跃文件通过同目录临时常规文件加 rename 原子替换；可观测错误路径必须补偿恢复。
 - H1 只承诺处理正常错误返回；断电、`SIGKILL` 等崩溃一致性仍是已知债务。
 
 ## 发布

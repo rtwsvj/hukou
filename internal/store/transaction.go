@@ -8,9 +8,9 @@ import (
 )
 
 // LiveSnapshot captures the filesystem topology and contents at a live binary
-// path before an activation. Restore returns the path to exactly the previous
-// regular-file or symlink state; Commit discards the snapshot after the
-// manifest has been persisted successfully.
+// path before an activation. Restore returns the path to the previous bytes and
+// rwx mode (or the exact previous symlink target); Commit discards the snapshot
+// after the manifest has been persisted successfully.
 type LiveSnapshot struct {
 	path       string
 	backupPath string
@@ -19,9 +19,9 @@ type LiveSnapshot struct {
 	done       bool
 }
 
-// SnapshotLive captures path without changing it. Regular files are preserved
-// in the same directory so Restore can use an atomic rename. Symlinks only need
-// their original target recorded.
+// SnapshotLive captures path without changing it. Regular files are copied to
+// an independent inode in the same directory so external in-place writes cannot
+// mutate the rollback snapshot. Symlinks only need their original target recorded.
 func SnapshotLive(path string) (*LiveSnapshot, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -56,13 +56,9 @@ func SnapshotLive(path string) (*LiveSnapshot, error) {
 		return nil, err
 	}
 
-	// A hard link is cheap and preserves the exact bytes even if the live name
-	// is moved later. Fall back to a copy on filesystems that disallow links.
-	if err := os.Link(path, backup); err != nil {
-		if err := copySnapshot(path, backup, info.Mode()); err != nil {
-			_ = os.Remove(backup)
-			return nil, err
-		}
+	if err := copySnapshot(path, backup, info.Mode()); err != nil {
+		_ = os.Remove(backup)
+		return nil, err
 	}
 	s.backupPath = backup
 	return s, nil

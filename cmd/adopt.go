@@ -73,8 +73,14 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 	if info.Mode()&0o111 == 0 {
 		return fail(fmt.Errorf("%s is not executable", binPath))
 	}
+	if info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		return fail(fmt.Errorf("%s uses privileged/special mode bits that hukou does not preserve", binPath))
+	}
 
 	name := filepath.Base(binPath)
+	if err := store.ValidateName(name); err != nil {
+		return fail(fmt.Errorf("invalid tool name: %w", err))
+	}
 	sha, err := store.SHA256File(binPath)
 	if err != nil {
 		return fail(fmt.Errorf("sha256 %s: %w", binPath, err))
@@ -104,6 +110,9 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 		if tag == "" {
 			tag = "adopted"
 		}
+	}
+	if err := store.ValidateTag(tag); err != nil {
+		return fail(fmt.Errorf("invalid adoption tag: %w", err))
 	}
 
 	attr, err := securityGate(binPath)
@@ -136,20 +145,19 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 		return fail(err)
 	}
 
-	// Backup the current binary into store/<name>/original/ without touching
-	// the original file itself.
-	origDir := filepath.Join(storeRoot(), name, "original")
-	if err := os.MkdirAll(origDir, 0o755); err != nil {
-		return fail(err)
-	}
-	origPath := filepath.Join(origDir, name)
-	if _, err := os.Lstat(origPath); err == nil {
-		return fail(fmt.Errorf("original backup already exists: %s", origPath))
-	} else if !os.IsNotExist(err) {
-		return fail(fmt.Errorf("inspect original backup: %w", err))
-	}
-	if err := copyFile(binPath, origPath, info.Mode()); err != nil {
+	if err := s.AdoptOriginal(name, binPath); err != nil {
 		return fail(fmt.Errorf("backup original: %w", err))
+	}
+	origPath := filepath.Join(storeRoot(), name, "original", name)
+	backupSHA, backupErr := store.SHA256File(origPath)
+	liveSHA, liveErr := store.SHA256File(binPath)
+	backupInfo, backupStatErr := os.Stat(origPath)
+	liveInfo, liveStatErr := os.Stat(binPath)
+	modeChanged := backupStatErr == nil && liveStatErr == nil &&
+		(backupInfo.Mode().Perm() != info.Mode().Perm() || liveInfo.Mode().Perm() != info.Mode().Perm())
+	if backupErr != nil || liveErr != nil || backupStatErr != nil || liveStatErr != nil || backupSHA != sha || liveSHA != sha || modeChanged {
+		_ = os.Remove(origPath)
+		return fail(fmt.Errorf("binary changed while creating original backup; refusing inconsistent adoption (backup_err=%v live_err=%v backup_stat_err=%v live_stat_err=%v)", backupErr, liveErr, backupStatErr, liveStatErr))
 	}
 
 	entry := manifest.Entry{

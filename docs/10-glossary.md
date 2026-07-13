@@ -4,7 +4,7 @@
 |---|---|
 | 户口 / manifest | hukou 管理条目的 JSON 清单 |
 | 收编 / adopt | 登记现有二进制并保存 original 备份 |
-| active binary | 用户 PATH 中当前执行到的文件或软链目标 |
+| active binary | 用户 PATH 中当前执行到的常规文件；旧版 symlink 只作为兼容输入 |
 | asset | GitHub Release 中下载的归档或裸文件 |
 | asset hash | 下载资产本体的 SHA-256 |
 | active hash | 解压并激活后二进制的 SHA-256 |

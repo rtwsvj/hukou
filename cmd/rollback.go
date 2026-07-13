@@ -18,7 +18,7 @@ var rollbackTo string
 var rollbackCmd = &cobra.Command{
 	Use:   "rollback <name>",
 	Short: "回滚到上一版本或指定版本",
-	Long: `rollback 切换软链到 store 中保存的旧版本。
+	Long: `rollback 原子替换活跃文件为 store 中保存的旧版本。
 不带 --to 时自动选择上一个版本（按修改时间），包含 original 备份。`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRollback,
@@ -38,6 +38,10 @@ func doRollback(stdout, stderr io.Writer, name, to string) error {
 }
 
 func doRollbackWithSave(stdout, stderr io.Writer, name, to string, save func(*manifest.Manifest) error) error {
+	return doRollbackWithDeps(stdout, stderr, name, to, save, store.SnapshotLive)
+}
+
+func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*manifest.Manifest) error, snapshotLive func(string) (*store.LiveSnapshot, error)) error {
 	lock, err := acquireMutationLock()
 	if err != nil {
 		return fail(fmt.Errorf("acquire state lock: %w", err))
@@ -75,19 +79,27 @@ func doRollbackWithSave(stdout, stderr io.Writer, name, to string, save func(*ma
 		return nil
 	}
 
-	snapshot, err := store.SnapshotLive(e.Path)
+	snapshot, err := snapshotLive(e.Path)
 	if err != nil {
 		return fail(fmt.Errorf("snapshot current installation: %w", err))
+	}
+	postSnapshotSHA, err := store.SHA256File(e.Path)
+	if err != nil || postSnapshotSHA != e.SHA256 {
+		operationErr := err
+		if operationErr == nil {
+			operationErr = fmt.Errorf("当前文件在创建事务快照时被外部修改；拒绝覆盖")
+		}
+		return fail(discardLiveAfterError(snapshot, operationErr))
 	}
 	oldEntry := *e
 
 	if target == "original" {
 		if err := activateOriginal(s, name, e.Path); err != nil {
-			return fail(restoreLiveAfterError(snapshot, fmt.Errorf("activate original: %w", err)))
+			return fail(discardLiveAfterError(snapshot, fmt.Errorf("activate original: %w", err)))
 		}
 	} else {
 		if err := s.Activate(name, target, e.Path); err != nil {
-			return fail(restoreLiveAfterError(snapshot, fmt.Errorf("activate %s: %w", target, err)))
+			return fail(discardLiveAfterError(snapshot, fmt.Errorf("activate %s: %w", target, err)))
 		}
 	}
 

@@ -37,7 +37,7 @@ Entry 字段：
 | JSON 字段 | 含义 |
 |---|---|
 | `name` | manifest 唯一名称 |
-| `path` | 用户 PATH 中的活跃文件/软链路径 |
+| `path` | 用户 PATH 中的活跃文件路径；新激活保持为常规文件，兼容旧 symlink 快照恢复 |
 | `repo` | GitHub `owner/repo`；local 条目为空 |
 | `tag` | 当前激活 tag，或 `local` / `original` |
 | `sha256` | 当前激活二进制 SHA-256；本地完整性闸门使用 |
@@ -56,9 +56,11 @@ Entry 字段：
 ## 原子性与持久性边界
 
 - manifest 使用同目录临时文件加 rename。
-- 软链使用目标目录内临时名加 rename。
+- 活跃二进制使用目标目录内完整临时常规文件、`fsync`、close 加 rename；不会让 PATH 名称指向正在交换的 symlink inode。
+- store 的 name/tag/original/`.tmp` 子目录使用精确拼写解析；大小写别名、symlink 与非目录中间组件均失败关闭，避免写入或 Prune 越出 store 信任根。
+- store、快照和活跃文件之间的复制只保证字节与 rwx 权限位。owner/group、ACL、xattr、mtime、setuid/setgid/sticky 等特殊权限位和 hardlink topology 不保留；`adopt` 拒绝带特权或特殊权限位的源文件。
 - H1 对普通错误返回执行补偿恢复。
-- 当前不承诺断电、`SIGKILL`、磁盘/文件系统损坏后的自动恢复；见 `08-risk-and-debt.md`。
+- 当前不承诺断电、`SIGKILL`、磁盘/文件系统损坏后的自动恢复。目录 `fsync` 和 WAL 仍属 H2；进程被强制终止时，live path 所在目录可能留下未生效的 `.hukou-tmp-*` 临时文件。见 [`08-risk-and-debt.md`](08-risk-and-debt.md)。
 
 ## GitHub API
 

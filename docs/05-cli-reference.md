@@ -31,8 +31,10 @@ hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force]
 - Go 二进制可从 build info 推导 `owner/repo`。
 - 其他二进制必须给 repo 或使用 `--local`。
 - `--force` 允许越过其他管理器所有权闸门，不越过文件与路径安全检查。
+- 带 setuid/setgid/sticky 等特权或特殊权限位的源文件会被拒绝。
+- `--tag` 必须是单一路径组件；`original`（含大小写别名）是不可变备份保留名，不能作为 adopt tag。
 
-副作用：获取 `state.lock`、创建 data root、备份 original、保存 manifest。H1 后同名条目不得静默覆盖。
+副作用：获取 `state.lock`、创建 data root、备份 original、保存 manifest。H1 后同名条目不得静默覆盖。original 备份只保留字节与 rwx 权限位，不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。
 
 ## `hukou upgrade`
 
@@ -53,9 +55,11 @@ hukou upgrade [name ...] [--all] [--dry-run] [--asset <substring>]
 hukou rollback <name> [--to <tag|original>]
 ```
 
-不带 `--to` 时，按 store 目录修改时间选择最近的其他版本或 original。操作前后都更新 active binary SHA。
+不带 `--to` 时，按 store 目录修改时间选择最近的其他版本或 original。这是目录 mtime 启发式，不是历史栈；连续不带 `--to` 回滚可能在两个最近 tag 之间来回切换。需要确定结果时应显式传入 `--to <tag|original>`。操作前后都更新 active binary SHA。
 
-副作用：获取 `state.lock`、切换软链、保存 manifest；失败必须补偿恢复。
+副作用：获取 `state.lock`、原子替换活跃常规文件、保存 manifest；失败必须补偿恢复。
+
+激活复制只保留字节与 rwx 权限位；不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。当前无目录 `fsync`/WAL 承诺，进程被强制终止时，live 目录可能留下 `.hukou-tmp-*` 临时文件。
 
 ## `hukou list`
 

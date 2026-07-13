@@ -49,7 +49,7 @@ H1 至少覆盖：
 - 下载期间外部修改 live binary，激活前二次 SHA 闸门拒绝覆盖。
 - manifest 保存失败发生在 Activate 之后。
 - rollback 保存失败发生在 Activate 之后。
-- 活跃路径是 regular file 与 symlink 两种拓扑。
+- regular-file 激活始终只暴露完整旧内容或新内容；事务恢复仍覆盖 regular file 与旧版 symlink 两种输入拓扑。
 - 写锁在同进程和子进程竞争时立即返回 `ErrLocked`，释放后可重新获取；锁路径软链被拒绝。
 - adopt 同名冲突不覆盖 original/manifest。
 - dry-run 不创建 data root、不 GC、不下载。

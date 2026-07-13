@@ -78,7 +78,7 @@ func TestE2E_AdoptLocalAndRepo(t *testing.T) {
 		t.Fatalf("dry-run output mismatch:\n%s", out.String())
 	}
 	// path should still be a regular file
-	if info, err := os.Lstat(binPath); err != nil || info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(binPath); err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("dry-run changed binPath")
 	}
 
@@ -95,8 +95,8 @@ func TestE2E_AdoptLocalAndRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lstat after upgrade: %v", err)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("binPath is not symlink after upgrade")
+	if !info.Mode().IsRegular() {
+		t.Fatalf("binPath is not a regular file after upgrade")
 	}
 	got, err := os.ReadFile(binPath)
 	if err != nil {
@@ -159,6 +159,27 @@ func TestE2E_AdoptLocalSkipsUpgrade(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "跳过 localbin: local 条目") {
 		t.Fatalf("local skip output mismatch:\n%s", out.String())
+	}
+}
+
+func TestE2E_AdoptRejectsInvalidTagsBeforeStateWrite(t *testing.T) {
+	for _, tag := range []string{"original", "Original", "../escape", "release/v1"} {
+		t.Run(tag, func(t *testing.T) {
+			dataDir := t.TempDir()
+			t.Setenv("HUKOU_DATA_DIR", dataDir)
+			binPath := writeExecutable(t, t.TempDir(), "fakebin", "body\n")
+			var out bytes.Buffer
+			err := doAdopt(&out, &out, binPath, "owner/repo", false, tag, false)
+			if err == nil || !strings.Contains(err.Error(), "invalid adoption tag") {
+				t.Fatalf("tag %q: expected validation error, got %v", tag, err)
+			}
+			if _, err := os.Stat(filepath.Join(dataDir, "manifest.json")); !os.IsNotExist(err) {
+				t.Fatalf("tag %q created manifest: %v", tag, err)
+			}
+			if _, err := os.Stat(filepath.Join(dataDir, "store")); !os.IsNotExist(err) {
+				t.Fatalf("tag %q created store: %v", tag, err)
+			}
+		})
 	}
 }
 
@@ -273,8 +294,8 @@ func TestE2E_ChecksumMismatchAborts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("unexpected symlink after aborted upgrade")
+	if !info.Mode().IsRegular() {
+		t.Fatal("live path is not regular after aborted upgrade")
 	}
 }
 
@@ -309,7 +330,7 @@ func TestE2E_ChecksumAssetMissingChosenEntryAborts(t *testing.T) {
 	if got := m.Get("fakebin").Tag; got != "v1.0.0" {
 		t.Fatalf("manifest tag changed to %s", got)
 	}
-	if info, err := os.Lstat(binPath); err != nil || info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(binPath); err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("live path topology changed: info=%v err=%v", info, err)
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "store", "fakebin", "v2.0.0")); !os.IsNotExist(err) {
@@ -375,7 +396,7 @@ func TestE2E_UpgradeSaveFailureRestoresLiveInstall(t *testing.T) {
 	if string(got) != "v1-body\n" {
 		t.Fatalf("live content after restore = %q", got)
 	}
-	if info, err := os.Lstat(binPath); err != nil || info.Mode()&os.ModeSymlink != 0 {
+	if info, err := os.Lstat(binPath); err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("live topology was not restored to a regular file: info=%v err=%v", info, err)
 	}
 	m, err := manifest.Load(filepath.Join(dataDir, "manifest.json"))
@@ -392,7 +413,7 @@ func TestE2E_ActivateFailureKeepsInstall(t *testing.T) {
 	t.Setenv("HUKOU_DATA_DIR", dataDir)
 
 	// Put binary in a directory we will make read-only after adopt, so Activate
-	// (which needs to write a temp symlink in the same dir) fails.
+	// (which needs to write a temporary regular file in the same dir) fails.
 	binDir := t.TempDir()
 	binPath := writeExecutable(t, binDir, "fakebin", "v1-body\n")
 	var out bytes.Buffer
@@ -423,7 +444,7 @@ func TestE2E_ActivateFailureKeepsInstall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Make binDir read-only so rename of temp symlink fails on Activate.
+	// Make binDir read-only so creation/rename of the activation temp fails.
 	if err := os.Chmod(binDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
@@ -432,12 +453,9 @@ func TestE2E_ActivateFailureKeepsInstall(t *testing.T) {
 	before, _ := os.ReadFile(binPath)
 	err := doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", testGHClient(server))
 	if err == nil {
-		// On some platforms chmod may not block rename by owner; skip if so.
-		if info, e := os.Lstat(binPath); e == nil && info.Mode()&os.ModeSymlink != 0 {
-			// Activate succeeded despite chmod — environment does not enforce.
-			t.Skip("filesystem did not block Activate under read-only dir")
-		}
-		t.Fatal("expected activate failure")
+		// On some filesystems chmod does not block the owner; this fixture cannot
+		// force the intended failure there.
+		t.Skip("filesystem did not block Activate under read-only dir")
 	}
 
 	// Original install still readable with same content.
@@ -447,14 +465,67 @@ func TestE2E_ActivateFailureKeepsInstall(t *testing.T) {
 		t.Fatalf("original install unreadable: %v", err)
 	}
 	if string(after) != string(before) {
-		// If backup moved file but activate failed, restore path may differ.
-		// Spec: 原安装可用 — content must still be reachable either at path or after restore.
-		t.Logf("path content changed after failed activate: %q (err=%v)", after, err)
+		t.Fatalf("path content changed after failed transaction: got %q, want %q", after, before)
 	}
 	// At minimum, store should still have original backup.
 	orig := filepath.Join(dataDir, "store", "fakebin", "original", "fakebin")
 	if _, err := os.Stat(orig); err != nil {
 		t.Fatalf("original backup missing: %v", err)
+	}
+}
+
+func TestE2E_RollbackOriginalThenUpgradeKeepsOriginalImmutable(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("HUKOU_DATA_DIR", dataDir)
+
+	binPath := writeExecutable(t, t.TempDir(), "fakebin", "original-body\n")
+	if err := os.Chmod(binPath, 0o751); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := doAdopt(&out, &out, binPath, "owner/repo", false, "v1.0.0", false); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(dataDir, "store", "fakebin", "original", "fakebin")
+	originalBytes, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upgrade := func(tag, body string) {
+		t.Helper()
+		assetName := platformAssetName("fakebin")
+		assetData := makeTarGz(t, "fakebin", []byte(body))
+		server := fakeGitHubServer(t, assetName, assetData, "", tag)
+		defer server.Close()
+		if err := doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", testGHClient(server)); err != nil {
+			t.Fatalf("upgrade %s: %v\n%s", tag, err, out.String())
+		}
+	}
+
+	upgrade("v2.0.0", "v2-body\n")
+	if err := doRollback(&out, &out, "fakebin", "original"); err != nil {
+		t.Fatalf("rollback original: %v\n%s", err, out.String())
+	}
+	if got, err := os.ReadFile(binPath); err != nil || !bytes.Equal(got, originalBytes) {
+		t.Fatalf("live original mismatch after rollback: content=%q err=%v", got, err)
+	}
+	upgrade("v3.0.0", "v3-body\n")
+
+	got, err := os.ReadFile(originalPath)
+	if err != nil || !bytes.Equal(got, originalBytes) {
+		t.Fatalf("original backup was rewritten: content=%q err=%v", got, err)
+	}
+	gotInfo, err := os.Stat(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotInfo.Mode().Perm() != originalInfo.Mode().Perm() {
+		t.Fatalf("original mode changed: got %v want %v", gotInfo.Mode().Perm(), originalInfo.Mode().Perm())
 	}
 }
 
@@ -502,7 +573,7 @@ func TestE2E_UpgradeDetectsExternalChangeBeforeActivation(t *testing.T) {
 	if readErr != nil || string(got) != "external-body\n" {
 		t.Fatalf("external update was overwritten: body=%q err=%v", got, readErr)
 	}
-	if info, statErr := os.Lstat(binPath); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+	if info, statErr := os.Lstat(binPath); statErr != nil || !info.Mode().IsRegular() {
 		t.Fatalf("live path was activated despite drift: info=%v err=%v", info, statErr)
 	}
 	m, loadErr := manifest.Load(filepath.Join(dataDir, "manifest.json"))
@@ -609,19 +680,8 @@ func TestE2E_AdoptOriginalBranchActivatesNewVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink")
-	}
-	target, err := os.Readlink(binPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Must point at new version, not original/.
-	if strings.Contains(target, string(filepath.Separator)+"original"+string(filepath.Separator)) {
-		t.Fatalf("symlink still points at original: %s", target)
-	}
-	if !strings.Contains(target, string(filepath.Separator)+"v2.0.0"+string(filepath.Separator)) {
-		t.Fatalf("symlink not pointing at v2.0.0: %s", target)
+	if !info.Mode().IsRegular() {
+		t.Fatal("expected regular live file")
 	}
 	got, err := os.ReadFile(binPath)
 	if err != nil {
@@ -743,7 +803,11 @@ func TestE2E_RollbackThenUpgradePruneKeepsActive(t *testing.T) {
 		mtime := time.Date(2021, 1, day, 0, 0, 0, 0, time.UTC)
 		_ = os.Chtimes(filepath.Join(storeRoot, e.Name()), mtime, mtime)
 	}
-	if err := s.Prune("fakebin", 1, binPath); err != nil {
+	protectedSHA, err := store.SHA256File(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Prune("fakebin", 1, protect, protectedSHA); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(storeRoot, protect)); err != nil {
@@ -773,7 +837,7 @@ func TestE2E_RollbackSaveFailureRestoresLiveInstall(t *testing.T) {
 	}
 	server.Close()
 
-	targetBefore, err := os.Readlink(binPath)
+	before, err := os.ReadFile(binPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,16 +848,12 @@ func TestE2E_RollbackSaveFailureRestoresLiveInstall(t *testing.T) {
 	if err == nil || !errors.Is(err, injected) {
 		t.Fatalf("expected injected save failure, err=%v output=%s", err, out.String())
 	}
-	targetAfter, err := os.Readlink(binPath)
-	if err != nil {
-		t.Fatalf("live path no longer a symlink: %v", err)
-	}
-	if targetAfter != targetBefore {
-		t.Fatalf("symlink target after restore = %q, want %q", targetAfter, targetBefore)
-	}
 	got, err := os.ReadFile(binPath)
-	if err != nil || string(got) != "v2-body\n" {
+	if err != nil || !bytes.Equal(got, before) || string(got) != "v2-body\n" {
 		t.Fatalf("live content after rollback restore = %q err=%v", got, err)
+	}
+	if info, statErr := os.Lstat(binPath); statErr != nil || !info.Mode().IsRegular() {
+		t.Fatalf("live topology after rollback restore: info=%v err=%v", info, statErr)
 	}
 	m, err := manifest.Load(filepath.Join(dataDir, "manifest.json"))
 	if err != nil {
@@ -801,6 +861,51 @@ func TestE2E_RollbackSaveFailureRestoresLiveInstall(t *testing.T) {
 	}
 	if e := m.Get("fakebin"); e.Tag != "v2.0.0" || !e.ChecksumVerified {
 		t.Fatalf("persisted manifest changed after failed rollback: %+v", e)
+	}
+}
+
+func TestE2E_RollbackRejectsPostSnapshotExternalChange(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("HUKOU_DATA_DIR", dataDir)
+	binPath := writeExecutable(t, t.TempDir(), "fakebin", "v1-body\n")
+	var out bytes.Buffer
+	if err := doAdopt(&out, &out, binPath, "owner/repo", false, "v1.0.0", false); err != nil {
+		t.Fatal(err)
+	}
+
+	saveCalled := false
+	err := doRollbackWithDeps(&out, &out, "fakebin", "original", func(*manifest.Manifest) error {
+		saveCalled = true
+		return nil
+	}, func(path string) (*store.LiveSnapshot, error) {
+		snapshot, err := store.SnapshotLive(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, []byte("external-body\n"), 0o755); err != nil {
+			return nil, err
+		}
+		return snapshot, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "被外部修改") {
+		t.Fatalf("expected post-snapshot drift rejection, err=%v output=%s", err, out.String())
+	}
+	if saveCalled {
+		t.Fatal("manifest save ran after post-snapshot drift")
+	}
+	got, readErr := os.ReadFile(binPath)
+	if readErr != nil || string(got) != "external-body\n" {
+		t.Fatalf("external update was overwritten: content=%q err=%v", got, readErr)
+	}
+	m, loadErr := manifest.Load(filepath.Join(dataDir, "manifest.json"))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if e := m.Get("fakebin"); e.Tag != "v1.0.0" {
+		t.Fatalf("manifest changed after drift rejection: %+v", e)
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(binPath), ".hukou-rollback-*")); globErr != nil || len(matches) != 0 {
+		t.Fatalf("rollback snapshot not discarded: matches=%v err=%v", matches, globErr)
 	}
 }
 

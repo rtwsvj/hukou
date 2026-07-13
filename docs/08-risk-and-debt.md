@@ -14,8 +14,10 @@
 
 | 风险 | 当前边界 | 后续方向 |
 |---|---|---|
-| 断电/SIGKILL | 仅处理正常错误返回 | WAL/事务日志、doctor |
-| 非协作外部原地写 | 下载后和 snapshot 后均复核 SHA，但最终复核到 activate 仍有窄窗口；hardlink snapshot 不隔离同 inode 写入 | 文件描述符/复制快照与 OS 级协调策略 |
+| 断电/SIGKILL | 仅处理正常错误返回；目录 `fsync` 与 WAL 未实现，live 目录可能留下未生效的 `.hukou-tmp-*` 文件 | 目录持久化、WAL/事务日志、doctor 与临时文件清理 |
+| 非协作外部原地写 | 下载后和 snapshot 后均复核 SHA，regular snapshot 为独立副本；但最终复核到 activate 仍有窄窗口 | 文件描述符绑定与 OS 级协调策略 |
+| 文件元数据 | 复制只保证字节与 rwx 权限位；owner/group、ACL、xattr、mtime、特殊权限位与 hardlink topology 不保留，`adopt` 拒绝特权/特殊权限位 | 如需扩展保留范围，先定义跨平台契约与失败语义 |
+| 默认 rollback 选择 | 按 store 目录 mtime 选最近的其他 tag/original，不是历史栈；连续默认回滚可在两个 tag 之间来回切换 | 显式历史栈或可审计的激活序列 |
 | manifest 损坏 | Load 返回错误，无自动修复 | 备份与 repair |
 | store 孤儿版本 | 失败可能留下不可达版本 | doctor/GC 审计 |
 | tar.xz | 明确不支持 | 决定是否引入 xz 依赖 |

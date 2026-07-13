@@ -16,3 +16,16 @@ func restoreLiveAfterError(snapshot *store.LiveSnapshot, operationErr error) err
 	}
 	return operationErr
 }
+
+// discardLiveAfterError is used before activation has completed. At that
+// point hukou has not changed the live name, so restoring the snapshot could
+// overwrite an external update that happened concurrently.
+func discardLiveAfterError(snapshot *store.LiveSnapshot, operationErr error) error {
+	if snapshot == nil {
+		return operationErr
+	}
+	if cleanupErr := snapshot.Commit(); cleanupErr != nil {
+		return errors.Join(operationErr, fmt.Errorf("discard unused live snapshot: %w", cleanupErr))
+	}
+	return operationErr
+}

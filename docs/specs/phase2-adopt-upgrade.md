@@ -18,7 +18,7 @@ hukou list
 - **adopt**:登记一个已存在的二进制。repo 推导:Go 二进制经 buildinfo 的 ModulePath(github.com/owner/repo 前缀直接取);其余必须显式给 owner/repo。二进制已被其他管理器认领(scan 归属非 unknown/curl-installer/local-project)时拒绝,`--force` 才放行。登记时记录当前 sha256 并把原始二进制**备份**进 store(original/)。
 - **adopt --local <name|path>**:无上游登记(Eric 自有脚本等):manifest 条目 repo 留空、tag="local",照常 sha256+备份;upgrade 对 local 条目自动跳过并在输出中注明。
 - **upgrade**:仅对已收编工具。查最新 release → 比较 tag(字符串不等即视为可升级,不做 semver 猜测)→ 选资产 → 下载到 store → 校验 → 原子替换。`--dry-run` 只报告不动手。
-- **rollback**:软链切回 store 中上一个(或 --to 指定)版本。
+- **rollback**:把 store 中上一个(或 --to 指定)版本原子复制到活跃常规文件。
 - **list**:收编清单(名称/版本/repo/路径/store 版本数)。
 
 ## 数据布局(XDG)
@@ -34,7 +34,7 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active
 
 数据根优先使用 `HUKOU_DATA_DIR`，否则 `${XDG_DATA_HOME}/hukou`，默认 `~/.local/share/hukou`。adopt、真实 upgrade、rollback 非阻塞获取 `<dataRoot>/state.lock`；锁已占用时立即报错。scan 和纯 dry-run 不持写锁。
 
-**替换模型**:首次 upgrade 时,PATH 位置的实体文件移入 store,原位置换成指向 store 当前版本的软链;此后升级/回滚只动软链(原子:新建临时链+rename)。
+**替换模型**:original 与各版本在 store 中保持不可变副本。升级/回滚把目标版本复制为 PATH 位置同目录的完整临时常规文件，设置 mode、`fsync`、close 后 rename 覆盖活跃文件。新激活不交换 symlink inode；旧版遗留 symlink 作为兼容输入，首次成功激活后迁移为常规文件。
 
 ## 网络层(internal/ghrelease)
 
@@ -64,7 +64,7 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active
 ## 安全红线
 
 - 永不触碰未收编的二进制;upgrade/rollback 前验证 manifest 中 sha256 与磁盘现状一致,upgrade 在下载/解压后、激活前再次验证,不一致(被外部改过)时中止并提示
-- 所有文件替换原子化;下载/解压临时文件统一放 store/.tmp/、启动时清理;临时软链放在 linkPath 同目录的隐藏名 `.hukou-tmp-*` 再 rename。upgrade/rollback 在激活前捕获旧路径拓扑与旧 manifest；激活后任一可观测错误必须补偿恢复。断电/SIGKILL 一致性留待 WAL/doctor。
+- 所有文件替换原子化;下载/解压临时文件统一放 store/.tmp/、启动时清理;激活临时常规文件放在 live path 同目录的隐藏名 `.hukou-tmp-*`，完成写入、mode、`fsync`、close 后再 rename。upgrade/rollback 在激活前捕获旧路径拓扑与旧 manifest；激活后任一可观测错误必须补偿恢复。断电/SIGKILL 一致性留待 WAL/doctor。
 - scan 保持纯只读,不受 Phase 2 影响
 - `upgrade --dry-run` 只读取 manifest 与 GitHub release metadata:不得创建 data root、不得获取写锁、不得 GC、不得下载资产。
 

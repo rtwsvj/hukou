@@ -278,34 +278,35 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 
 	pathInfo, err := os.Lstat(e.Path)
 	if err != nil {
-		return restoreLiveAfterError(snapshot, fmt.Errorf("lstat %s: %w", e.Path, err))
+		return discardLiveAfterError(snapshot, fmt.Errorf("lstat %s: %w", e.Path, err))
 	}
 	if pathInfo.Mode()&os.ModeSymlink == 0 {
-		// First upgrade: the live file at e.Path is not yet managed by a symlink.
+		// First upgrade: make sure the original backup exists before replacing
+		// the live regular file with the selected store version.
 		origPath := filepath.Join(s.Root, e.Name, "original", e.Name)
 		if _, err := os.Stat(origPath); os.IsNotExist(err) {
 			if err := s.AdoptOriginal(e.Name, e.Path); err != nil {
-				return restoreLiveAfterError(snapshot, fmt.Errorf("adopt original: %w", err))
+				return discardLiveAfterError(snapshot, fmt.Errorf("adopt original: %w", err))
 			}
-			// AdoptOriginal leaves the symlink pointing at original/; switch to
-			// the newly stored release version so PATH and manifest agree.
 			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-				return restoreLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
+				return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 			}
 		} else {
 			// original/ already contains the adopt-time backup; copy the
 			// current live binary into its validated version directory before
 			// atomically replacing the live path.
-			if err := s.Put(e.Name, e.Tag, e.Path); err != nil {
-				return restoreLiveAfterError(snapshot, fmt.Errorf("backup current version: %w", err))
+			if e.Tag != "original" {
+				if err := s.Put(e.Name, e.Tag, e.Path); err != nil {
+					return discardLiveAfterError(snapshot, fmt.Errorf("backup current version: %w", err))
+				}
 			}
 			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-				return restoreLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
+				return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 			}
 		}
 	} else {
 		if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-			return restoreLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
+			return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 		}
 	}
 
@@ -330,7 +331,7 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		fmt.Fprintf(stderr, "警告: %s 升级已完成，但清理事务快照失败: %v\n", e.Name, err)
 	}
 
-	if err := s.Prune(e.Name, 3, e.Path); err != nil {
+	if err := s.Prune(e.Name, 3, e.Tag, e.SHA256); err != nil {
 		fmt.Fprintf(stderr, "警告: %s 清理旧版本失败: %v\n", e.Name, err)
 	}
 

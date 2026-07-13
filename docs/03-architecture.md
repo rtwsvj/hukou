@@ -9,7 +9,7 @@
 | `internal/provenance` | 来源责任链 | 首个匹配生效，hukou 自有登记优先 |
 | `internal/output` | 表格与 JSON | 表格清理控制字符，JSON 保留完整错误 |
 | `internal/manifest` | schema 与原子保存 | 向后兼容，写入由命令层锁保护 |
-| `internal/store` | original/版本目录、激活、Prune、GC | name/tag/目标限制，软链同目录原子替换 |
+| `internal/store` | original/版本目录、激活、Prune、GC | name/tag/目标限制，同目录常规文件原子替换 |
 | `internal/ghrelease` | GitHub API 与下载 | host 白名单、token 隔离、超时、大小限制 |
 | `internal/assetpick` | 平台资产选择 | 无交互、结果确定性 |
 | `internal/archive` | tar.gz/zip/gz/裸文件解包 | 防路径穿越与解压炸弹；不支持容器不得退化成可激活裸文件，裸资产还需可执行格式识别 |
@@ -49,6 +49,8 @@ PATH + --dir
 ```
 
 网络只允许出现在 `internal/ghrelease`。真实升级前后的路径拓扑和 manifest 是一个逻辑事务；H1 覆盖可观测错误，H2 再覆盖进程崩溃。
+
+活跃路径保持为常规文件：`Activate` 把不可变 store 版本复制到活跃目录内的完整临时文件，设置 mode、`fsync`、关闭后再 rename。这样读者始终打开旧或新 regular inode，避免 macOS/APFS 在并发替换 symlink inode 时出现瞬时 `EINVAL`。旧版本遗留 symlink 仍可被事务快照恢复，首次成功激活会迁移为常规文件。
 
 ## rollback 流程
 

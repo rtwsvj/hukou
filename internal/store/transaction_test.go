@@ -42,6 +42,31 @@ func TestLiveSnapshotRestoreRegular(t *testing.T) {
 	assertNoRollbackFiles(t, dir)
 }
 
+func TestLiveSnapshotRegularIsIndependentFromInPlaceWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool")
+	if err := os.WriteFile(path, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := SnapshotLive(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("external-update"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := snap.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("snapshot shared live inode: restored %q", got)
+	}
+}
+
 func TestLiveSnapshotRestoreSymlink(t *testing.T) {
 	dir := t.TempDir()
 	oldTarget := filepath.Join(dir, "old")
