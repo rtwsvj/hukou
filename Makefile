@@ -1,26 +1,44 @@
-# hukou — sandbox-friendly Go build defaults (overridable via environment).
-GOPATH    ?= /tmp/gopath
-GOCACHE   ?= /tmp/go-cache
-GOMODCACHE ?= /tmp/gomod
+GO       ?= go
+BINARY   ?= bin/hukou
+COVERAGE ?= coverage.out
+LDFLAGS  ?=
 
-export GOPATH
-export GOCACHE
-export GOMODCACHE
+.PHONY: all build test race coverage vet mod-verify fmt-check verify release clean
 
-GO ?= go
-
-.PHONY: build test vet all clean
-
-all: vet test build
+all: fmt-check vet test build
 
 build:
-	$(GO) build -o bin/hukou ./
+	@mkdir -p $(dir $(BINARY))
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./
 
 test:
 	$(GO) test ./...
 
+race:
+	$(GO) test -race ./...
+
+coverage:
+	$(GO) test -covermode=atomic -coverprofile=$(COVERAGE) ./...
+	$(GO) tool cover -func=$(COVERAGE)
+
 vet:
 	$(GO) vet ./...
 
+mod-verify:
+	$(GO) mod verify
+
+fmt-check:
+	@files="$$(gofmt -l .)"; \
+	if [ -n "$$files" ]; then \
+		echo "gofmt required for:"; \
+		echo "$$files"; \
+		exit 1; \
+	fi
+
+verify: fmt-check mod-verify vet test race coverage build
+
+release: verify
+	bash scripts/release.sh
+
 clean:
-	rm -rf bin/
+	rm -rf bin/ dist/ $(COVERAGE)

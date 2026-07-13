@@ -11,6 +11,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/scan"
+	"github.com/rtwsvj/hukou/internal/state"
 	"github.com/rtwsvj/hukou/internal/store"
 )
 
@@ -32,6 +33,21 @@ func manifestPath() string { return filepath.Join(dataRoot(), "manifest.json") }
 func storeRoot() string    { return filepath.Join(dataRoot(), "store") }
 
 func newStore() *store.Store { return &store.Store{Root: storeRoot()} }
+
+func acquireMutationLock() (*state.Lock, error) {
+	if err := os.MkdirAll(dataRoot(), 0o755); err != nil {
+		return nil, err
+	}
+	return state.Acquire(filepath.Join(dataRoot(), "state.lock"))
+}
+
+func releaseMutationLock(lock *state.Lock, stderr io.Writer) {
+	if err := lock.Release(); err != nil {
+		if stderr != nil {
+			fmt.Fprintf(stderr, "警告: 释放 hukou 状态锁失败: %v\n", err)
+		}
+	}
+}
 
 func loadManifest() (*manifest.Manifest, error) {
 	return manifest.Load(manifestPath())
@@ -96,7 +112,9 @@ func runSecurityGate(binPath string) (*provenance.Attribution, error) {
 	}
 	env := provenance.DefaultEnv()
 	runner := provenance.DefaultRunner()
-	_ = runner.Load(env) // load warnings are best-effort here
+	if warnings := runner.Load(env); len(warnings) > 0 {
+		return nil, fmt.Errorf("load provenance security gate: %s", strings.Join(warnings, "; "))
+	}
 	return runner.Match(b), nil
 }
 
@@ -116,20 +134,6 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return df.Close()
-}
-
-func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if err := copyFile(src, dst, info.Mode()); err != nil {
-		return err
-	}
-	return os.Remove(src)
 }
 
 func activateOriginal(s *store.Store, name, linkPath string) error {

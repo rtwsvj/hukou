@@ -30,9 +30,9 @@ func TestReadGoBinary_self(t *testing.T) {
 
 func TestGoBinDir_priority(t *testing.T) {
 	cases := []struct {
-		name           string
+		name                string
 		gobin, gopath, home string
-		want           string
+		want                string
 	}{
 		{"GOBIN wins", "/custom/gobin", "/gopath", "/home", "/custom/gobin"},
 		{"GOPATH/bin when no GOBIN", "", "/gopath", "/home", filepath.Join("/gopath", "bin")},

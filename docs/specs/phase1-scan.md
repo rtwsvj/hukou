@@ -1,6 +1,6 @@
 # Phase 1 规格:hukou scan
 
-状态:已批准(Eric 2026-07-11,语言定 Go,覆盖面越多越好)。本文件是派发给执行者的唯一事实来源,prompt 必须自包含时从此摘录。
+状态:已实现并进入维护(Eric 2026-07-11 批准)。本文件定义 scan 契约；当前验证结果以 `docs/codex/verification-reports/` 为准。
 
 ## 目标
 
@@ -8,7 +8,7 @@
 
 ## 技术基线
 
-- Go ≥1.22,module `github.com/rtwsvj/hukou`
+- Go 版本以根 `go.mod` 的精确 `go` 指令为准,module `github.com/rtwsvj/hukou`
 - CLI 框架:spf13/cobra;其余仅标准库(禁止引入归档库/网络库)
 - 平台:macOS 优先,代码用 build tag / runtime.GOOS 留 Linux 位
 - 输出默认人类表格,`--json` 输出完整结构
@@ -57,7 +57,7 @@ type Detector interface {
 ```
 
 - `Env` 注入 HOME、PATH、各根目录——**探测器内禁止直接读 os.Getenv/硬编码 $HOME**,全部经 Env,便于 fixture 测试。
-- 责任链顺序:路径前缀类 → 符号链接解析类 → buildinfo(仅对未归属的)→ system → unknown。首个命中即止。
+- 责任链顺序:hukou manifest → 路径前缀类 → 符号链接解析类 → buildinfo(仅对未归属的)→ system → unknown。首个命中即止。
 
 ## 探测器清单
 
@@ -65,6 +65,7 @@ Tier 1(必须实现,各配 fixture 单测):
 
 | 来源 | 判定依据 |
 |---|---|
+| hukou | manifest 中登记的 Path/RealPath，作为链首权威来源；manifest 损坏只产生 warning，不中止 scan |
 | brew | RealPath 落在 `$(brew --prefix)/Cellar/<formula>/<ver>/`(prefix 经 Env 注入,默认 /opt/homebrew 与 /usr/local 双查);从路径提取 formula+版本 |
 | macports | RealPath 前缀 /opt/local |
 | cargo | `~/.cargo/.crates2.json` 解析(包名/版本/来源 URL);兜底 `~/.cargo/bin` 路径前缀 |
@@ -102,6 +103,8 @@ Tier 2(时间允许尽量做,同样标准):opam(~/.opam)、ghcup/stack(~/.ghcup�
 3. `hukou scan` 在真实机器整 PATH 扫描 <5s;`--json` 输出可被 `python3 -m json.tool` 解析
 4. 无第三方依赖新增(cobra 之外);`internal/provenance/gobin.go` 保持 vendor 原样接线,不改其核心逻辑
 5. 表格输出末尾有汇总行:总数 / 来源数 / unknown 数 / shadowed 数
+
+完成记录中的历史 green 不证明当前 HEAD；每次发布前仍须执行 `docs/07-testing-and-verification.md` 的全量门禁。
 
 ## 禁止事项
 

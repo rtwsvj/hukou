@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,16 @@ func runRollback(cmd *cobra.Command, args []string) error {
 }
 
 func doRollback(stdout, stderr io.Writer, name, to string) error {
+	return doRollbackWithSave(stdout, stderr, name, to, saveManifest)
+}
+
+func doRollbackWithSave(stdout, stderr io.Writer, name, to string, save func(*manifest.Manifest) error) error {
+	lock, err := acquireMutationLock()
+	if err != nil {
+		return fail(fmt.Errorf("acquire state lock: %w", err))
+	}
+	defer releaseMutationLock(lock, stderr)
+
 	m, err := loadManifest()
 	if err != nil {
 		return fail(err)
@@ -64,28 +75,43 @@ func doRollback(stdout, stderr io.Writer, name, to string) error {
 		return nil
 	}
 
+	snapshot, err := store.SnapshotLive(e.Path)
+	if err != nil {
+		return fail(fmt.Errorf("snapshot current installation: %w", err))
+	}
+	oldEntry := *e
+
 	if target == "original" {
 		if err := activateOriginal(s, name, e.Path); err != nil {
-			return fail(fmt.Errorf("activate original: %w", err))
+			return fail(restoreLiveAfterError(snapshot, fmt.Errorf("activate original: %w", err)))
 		}
 	} else {
 		if err := s.Activate(name, target, e.Path); err != nil {
-			return fail(fmt.Errorf("activate %s: %w", target, err))
+			return fail(restoreLiveAfterError(snapshot, fmt.Errorf("activate %s: %w", target, err)))
 		}
 	}
 
 	newSHA, err := store.SHA256File(e.Path)
 	if err != nil {
-		return fail(fmt.Errorf("读取回滚后文件失败: %w", err))
+		return fail(restoreLiveAfterError(snapshot, fmt.Errorf("读取回滚后文件失败: %w", err)))
 	}
 
 	// Rewrite manifest tag + sha256 to match the newly active binary.
 	e.Tag = target
 	e.SHA256 = newSHA
 	e.UpdatedAt = rfc3339Now()
+	e.AssetName = ""
+	e.AssetSHA256 = ""
+	e.ChecksumAsset = ""
+	e.ChecksumVerified = false
 	m.Put(*e)
-	if err := saveManifest(m); err != nil {
-		return fail(fmt.Errorf("save manifest: %w", err))
+	if err := save(m); err != nil {
+		*e = oldEntry
+		m.Put(oldEntry)
+		return fail(restoreLiveAfterError(snapshot, fmt.Errorf("save manifest: %w", err)))
+	}
+	if err := snapshot.Commit(); err != nil {
+		fmt.Fprintf(stderr, "警告: %s 回滚已完成，但清理事务快照失败: %v\n", name, err)
 	}
 
 	fmt.Fprintf(stdout, "已回滚 %s → %s\n", name, target)

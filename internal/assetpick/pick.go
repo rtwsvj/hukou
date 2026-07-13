@@ -9,6 +9,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/rtwsvj/hukou/internal/archive"
 )
 
 // archiveCompoundSuffixes are the known multi-part archive extensions. They
@@ -48,9 +50,14 @@ var darwinBlacklistExts = map[string]bool{
 func Pick(assets []string, goos, goarch, assetFilter string) (string, string, error) {
 	original := assets
 
-	// (1) blacklist prefilter.
+	// (1) capability + blacklist prefilter. Known archive formats that hukou
+	// cannot extract must be removed before the system detector can select a
+	// direct match (which would otherwise bypass the tiebreak waterfall).
 	var filtered []string
 	for _, a := range assets {
+		if !archive.DetectFormat(a).Supported() {
+			continue
+		}
 		if blacklisted(a, goos) {
 			continue
 		}
@@ -101,10 +108,9 @@ func Pick(assets []string, goos, goarch, assetFilter string) (string, string, er
 		return cands[0], strings.Join(notes, ","), nil
 	}
 
-	// (5) still ambiguous: lexical order for determinism.
+	// (5) still ambiguous: fail closed and require an explicit --asset filter.
 	sort.Strings(cands)
-	notes = append(notes, "lexical-tiebreak")
-	return cands[0], strings.Join(notes, ","), nil
+	return "", strings.Join(notes, ","), fmt.Errorf("multiple matching assets; use --asset to choose one: %s", strings.Join(cands, ", "))
 }
 
 // tiebreak applies the arch-preference, 32-bit drop, and archive-format
@@ -153,11 +159,11 @@ func tiebreak(cands []string, goos, goarch string, notes []string) ([]string, []
 		}
 	}
 
-	// (c) archive-format preference: .tar.gz > .tar.xz > .zip > bare.
+	// (c) supported archive-format preference: .tar.gz > .zip > bare.
 	tiers := [][]string{
 		{".tar.gz", ".tgz"},
-		{".tar.xz", ".txz"},
 		{".zip"},
+		{".gz"},
 	}
 	for _, tier := range tiers {
 		var sub []string

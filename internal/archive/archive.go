@@ -1,9 +1,9 @@
 // Package archive extracts binary assets from various archive formats.
 //
 // Supported formats: tar.gz/tgz, zip, single-file gz (renamed to the wanted
-// binary name), and bare files. tar.xz is intentionally unsupported because
-// the Go standard library does not include an xz decompressor; callers will
-// receive a clear error.
+// binary name), and bare files. tar.xz/txz are intentionally unsupported
+// because the Go standard library does not include an xz decompressor; callers
+// receive a clear error rather than treating either format as a bare binary.
 package archive
 
 import (
@@ -42,22 +42,20 @@ func Extract(archivePath, destDir, wantName string) (string, error) {
 		return "", fmt.Errorf("create dest dir: %w", err)
 	}
 
-	switch {
-	case hasExt(archivePath, ".tar.gz"), hasExt(archivePath, ".tgz"):
+	switch DetectFormat(archivePath) {
+	case FormatTarGz:
 		return extractTarGz(archivePath, destDir, wantName)
-	case hasExt(archivePath, ".tar.xz"):
-		return "", errors.New("xz 暂不支持")
-	case hasExt(archivePath, ".zip"):
+	case FormatTarXz:
+		return "", errors.New("xz 暂不支持（.tar.xz/.txz）")
+	case FormatUnsupported:
+		return "", fmt.Errorf("unsupported archive format: %s", filepath.Base(archivePath))
+	case FormatZip:
 		return extractZip(archivePath, destDir, wantName)
-	case hasExt(archivePath, ".gz"):
+	case FormatGz:
 		return extractGz(archivePath, destDir, wantName)
 	default:
 		return copyBareFile(archivePath, destDir, wantName)
 	}
-}
-
-func hasExt(path, ext string) bool {
-	return strings.HasSuffix(strings.ToLower(path), ext)
 }
 
 // safeJoin returns target if it is strictly inside destDir after cleaning.
@@ -196,26 +194,39 @@ func extractZip(archivePath, destDir, wantName string) (string, error) {
 	}
 	defer zr.Close()
 
+	target, err := findZipTarget(zr.File, wantName)
+	if err != nil {
+		return "", err
+	}
+
+	outPath, _, err := writeZipEntryLimited(target, destDir, 0)
+	if err != nil {
+		return "", err
+	}
+	return outPath, nil
+}
+
+// findZipTarget inspects ZIP metadata without writing anything. Selection and
+// extraction are intentionally separate so ambiguous archives cannot leave
+// partially extracted files behind.
+func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
 	var exact *zip.File
 	var candidates []*zip.File
-	var totalWritten int64
 
-	for _, zf := range zr.File {
+	for _, zf := range files {
 		if zf.FileInfo().IsDir() {
 			continue
 		}
-		name := filepath.Clean(zf.Name)
+		if zf.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		name := filepath.Clean(filepath.FromSlash(zf.Name))
 		base := filepath.Base(name)
 
 		if baseMatches(base, wantName) {
 			if exact != nil {
-				return "", fmt.Errorf("multiple entries match %q: %q and %q", wantName, exact.Name, zf.Name)
+				return nil, fmt.Errorf("multiple entries match %q: %q and %q", wantName, exact.Name, zf.Name)
 			}
-			n, err := writeZipEntryLimited(zf, destDir, totalWritten)
-			if err != nil {
-				return "", err
-			}
-			totalWritten += n
 			exact = zf
 			continue
 		}
@@ -226,37 +237,38 @@ func extractZip(archivePath, destDir, wantName string) (string, error) {
 	}
 
 	if exact != nil {
-		out, err := safeJoin(destDir, filepath.Base(exact.Name))
-		if err != nil {
-			return "", err
-		}
-		return out, nil
+		return exact, nil
 	}
 
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no binary found in archive")
+		return nil, fmt.Errorf("no binary found in archive")
 	}
 	if len(candidates) > 1 {
 		names := make([]string, len(candidates))
 		for i, c := range candidates {
 			names[i] = c.Name
 		}
-		return "", fmt.Errorf("multiple executable candidates: %s", strings.Join(names, ", "))
+		return nil, fmt.Errorf("multiple executable candidates: %s", strings.Join(names, ", "))
 	}
-
-	if _, err := writeZipEntryLimited(candidates[0], destDir, totalWritten); err != nil {
-		return "", err
-	}
-	return safeJoin(destDir, filepath.Base(candidates[0].Name))
+	return candidates[0], nil
 }
 
-func writeZipEntryLimited(zf *zip.File, destDir string, totalSoFar int64) (int64, error) {
+func writeZipEntryLimited(zf *zip.File, destDir string, totalSoFar int64) (string, int64, error) {
 	rc, err := zf.Open()
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	defer rc.Close()
-	return writeLimited(rc, destDir, zf.Name, zf.Mode()&0o777, totalSoFar)
+	name := filepath.FromSlash(zf.Name)
+	n, err := writeLimited(rc, destDir, name, zf.Mode()&0o777, totalSoFar)
+	if err != nil {
+		return "", 0, err
+	}
+	outPath, err := safeJoin(destDir, name)
+	if err != nil {
+		return "", 0, err
+	}
+	return outPath, n, nil
 }
 
 // writeLimited copies r into destDir/name with per-entry and total size caps.
@@ -278,6 +290,10 @@ func writeLimited(r io.Reader, destDir, name string, mode os.FileMode, totalSoFa
 		limit = remainingTotal
 	}
 
+	mode &= 0o777
+	if mode&0o111 == 0 {
+		mode |= 0o111
+	}
 	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return 0, err
@@ -316,7 +332,10 @@ func extractGz(archivePath, destDir, wantName string) (string, error) {
 	}
 	defer gz.Close()
 
-	outPath := filepath.Join(destDir, wantName)
+	outPath, err := safeJoin(destDir, wantName)
+	if err != nil {
+		return "", err
+	}
 	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return "", err
@@ -340,7 +359,10 @@ func extractGz(archivePath, destDir, wantName string) (string, error) {
 }
 
 func copyBareFile(archivePath, destDir, wantName string) (string, error) {
-	outPath := filepath.Join(destDir, wantName)
+	outPath, err := safeJoin(destDir, wantName)
+	if err != nil {
+		return "", err
+	}
 	if err := copyFileLimited(archivePath, outPath, 0o755); err != nil {
 		return "", err
 	}

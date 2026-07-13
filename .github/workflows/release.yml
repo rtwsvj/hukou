@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label for a snapshot build
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Release gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Run the complete release verification gate
+        run: make verify
+
+  package:
+    name: Verify and package
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Require pushed tags to reference main and be annotated
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          git show-ref --verify refs/remotes/origin/main
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          test "$(git cat-file -t "refs/tags/$VERSION")" = tag
+          test "$(git rev-list -n 1 "refs/tags/$VERSION")" = "$commit"
+      - name: Build reproducible release archives
+        run: |
+          set -euo pipefail
+          first="$RUNNER_TEMP/hukou-release-first"
+          second="$RUNNER_TEMP/hukou-release-second"
+          DIST_DIR="$first" bash scripts/release.sh
+          DIST_DIR="$second" bash scripts/release.sh
+          diff -qr "$first" "$second"
+          rm -rf dist
+          mv "$first" dist
+      - name: Verify release checksums and asset count
+        run: |
+          set -euo pipefail
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = 4
+          cd dist
+          test "$(wc -l < checksums.txt | tr -d ' ')" = 4
+          for archive in ./*.tar.gz; do basename "$archive"; done | sort > "$RUNNER_TEMP/release-assets"
+          awk 'NF == 2 { print $2 }' checksums.txt | sort > "$RUNNER_TEMP/checksum-assets"
+          diff -u "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/checksum-assets"
+          sha256sum -c checksums.txt
+      - name: Smoke the Linux amd64 archive
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          tar -xzf "dist/hukou_${VERSION#v}_linux_amd64.tar.gz" -C "$work"
+          actual="$("$work/hukou_${VERSION#v}_linux_amd64/hukou" version)"
+          commit="$(git rev-parse HEAD)"
+          epoch="$(git show -s --format=%ct HEAD)"
+          build_date="$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)"
+          expected="hukou $VERSION (commit $commit, built $build_date)"
+          printf '%s\n' "$actual"
+          test "$actual" = "$expected"
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hukou-${{ env.VERSION }}-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hukou-${{ github.ref_name }}-${{ github.sha }}
+          path: dist
+      - name: Publish immutable tag assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c checksums.txt
+          gh release create "$VERSION" \
+            ./*.tar.gz ./checksums.txt \
+            --verify-tag \
+            --generate-notes \
+            --title "hukou $VERSION"

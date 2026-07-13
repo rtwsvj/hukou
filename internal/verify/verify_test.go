@@ -24,56 +24,136 @@ func shaOf(content string) string {
 }
 
 func TestParseChecksumsGNU(t *testing.T) {
-	path := writeChecksums(t, "# comment\n\nabc123  file.tar.gz\ndef456  other.zip\n")
+	first := strings.Repeat("a", 64)
+	second := strings.Repeat("b", 64)
+	path := writeChecksums(t, "# comment\n\n"+first+"  file.tar.gz\n"+second+"  other.zip\n")
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
 
-	got := ParseChecksums(f)
+	got, err := ParseChecksums(f)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("want 2 entries, got %d: %v", len(got), got)
 	}
-	if got["file.tar.gz"] != "abc123" {
+	if got["file.tar.gz"] != first {
 		t.Fatalf("unexpected hash: %v", got)
 	}
-	if got["other.zip"] != "def456" {
+	if got["other.zip"] != second {
 		t.Fatalf("unexpected hash: %v", got)
 	}
 }
 
 func TestParseChecksumsBSD(t *testing.T) {
-	path := writeChecksums(t, "abc123 *file.tar.gz\n# ignored\ndef456  *other.zip\n")
+	first := strings.Repeat("a", 64)
+	second := strings.Repeat("b", 64)
+	path := writeChecksums(t, "SHA256 (file.tar.gz) = "+first+"\n# ignored\nSHA256 (other.zip) = "+second+"\n")
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
 
-	got := ParseChecksums(f)
+	got, err := ParseChecksums(f)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("want 2 entries, got %d: %v", len(got), got)
 	}
-	if got["file.tar.gz"] != "abc123" {
+	if got["file.tar.gz"] != first {
 		t.Fatalf("unexpected hash: %v", got)
 	}
-	if got["other.zip"] != "def456" {
+	if got["other.zip"] != second {
 		t.Fatalf("unexpected hash: %v", got)
 	}
 }
 
+func TestParseChecksumsGNUStarMarker(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	got, err := ParseChecksums(strings.NewReader(hash + " *file.tar.gz\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["file.tar.gz"] != hash {
+		t.Fatalf("unexpected checksums: %v", got)
+	}
+}
+
+func TestParseChecksumSidecarBareDigest(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	got, err := ParseChecksumSidecar(strings.NewReader("# generated\n"+hash+"\n"), "tool.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["tool.tar.gz"] != hash {
+		t.Fatalf("unexpected checksums: %v", got)
+	}
+}
+
+func TestParseChecksumSidecarRejectsMultipleBareDigests(t *testing.T) {
+	input := strings.Repeat("a", 64) + "\n" + strings.Repeat("b", 64) + "\n"
+	if got, err := ParseChecksumSidecar(strings.NewReader(input), "tool.tar.gz"); err == nil {
+		t.Fatalf("expected multiple-entry error, got %v", got)
+	}
+}
+
+func TestParseChecksumsGenericRejectsBareDigest(t *testing.T) {
+	if got, err := ParseChecksums(strings.NewReader(strings.Repeat("a", 64) + "\n")); err == nil {
+		t.Fatalf("generic checksum file must retain a file name, got %v", got)
+	}
+}
+
 func TestParseChecksumsLowercases(t *testing.T) {
-	path := writeChecksums(t, "ABCDEF  file\n")
+	upper := strings.Repeat("ABCDEF12", 8)
+	path := writeChecksums(t, upper+"  file\n")
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
 
-	got := ParseChecksums(f)
-	if got["file"] != "abcdef" {
+	got, err := ParseChecksums(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["file"] != strings.ToLower(upper) {
 		t.Fatalf("expected lowercased hash, got %v", got)
+	}
+}
+
+func TestParseChecksumsRejectsInvalidDigest(t *testing.T) {
+	for _, line := range []string{
+		"abc123  file.tar.gz\n",
+		strings.Repeat("g", 64) + "  file.tar.gz\n",
+		strings.Repeat("a", 64) + "  \n",
+	} {
+		t.Run(strings.TrimSpace(line), func(t *testing.T) {
+			if got, err := ParseChecksums(strings.NewReader(line)); err == nil {
+				t.Fatalf("expected parse error, got %v", got)
+			}
+		})
+	}
+}
+
+func TestParseChecksumsPropagatesScannerError(t *testing.T) {
+	line := strings.Repeat("a", 64) + "  " + strings.Repeat("x", 70*1024) + "\n"
+	if got, err := ParseChecksums(strings.NewReader(line)); err == nil {
+		t.Fatalf("expected scanner error, got %v", got)
+	} else if !strings.Contains(err.Error(), "scan checksums") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseChecksumsRejectsConflictingDuplicate(t *testing.T) {
+	input := strings.Repeat("a", 64) + "  file.tar.gz\n" +
+		strings.Repeat("b", 64) + "  file.tar.gz\n"
+	if got, err := ParseChecksums(strings.NewReader(input)); err == nil {
+		t.Fatalf("expected conflict error, got %v", got)
 	}
 }
 
@@ -153,5 +233,16 @@ func TestVerifyAssetCaseInsensitive(t *testing.T) {
 	}
 	if err := VerifyAsset(path, "asset.tar.gz", checksums); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestVerifyAssetRejectsInvalidExpectedDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "asset.tar.gz")
+	if err := os.WriteFile(path, []byte("asset body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := VerifyAsset(path, "asset.tar.gz", map[string]string{"asset.tar.gz": "not-a-sha256"})
+	if err == nil || !strings.Contains(err.Error(), "invalid SHA-256 digest") {
+		t.Fatalf("expected invalid digest error, got %v", err)
 	}
 }

@@ -12,7 +12,7 @@ var rootCmd = &cobra.Command{
 	Use:   "hukou",
 	Short: "给机器上所有 CLI 工具上户口：盘点、溯源、收编、安全升级",
 	Long: `hukou（户口）扫描 PATH 中的可执行文件，判定安装来源，
-支持后续收编与安全升级。Phase 1 仅提供 scan（纯本地、只读）。`,
+并提供收编、可校验升级、版本回滚与本地状态追踪。`,
 }
 
 // Execute runs the root command.

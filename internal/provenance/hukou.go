@@ -1,10 +1,13 @@
 package provenance
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/scan"
+	"github.com/rtwsvj/hukou/internal/store"
 )
 
 // HukouDetector attributes binaries that hukou itself has adopted, by
@@ -41,14 +44,28 @@ func (d *HukouDetector) Match(b scan.Binary) *Attribution {
 		if !ok {
 			continue
 		}
-		return &Attribution{
+		upstream := e.Upstream
+		if upstream == "" {
+			upstream = e.Repo
+		}
+		a := &Attribution{
 			Source:     "hukou",
 			Package:    e.Name,
 			Version:    e.Tag,
-			Upstream:   e.Repo,
-			Confidence: "exact",
-			Evidence:   "registered in hukou manifest",
+			Upstream:   upstream,
+			Confidence: "inferred",
 		}
+		actualSHA, err := store.SHA256File(p)
+		switch {
+		case err != nil:
+			a.Evidence = fmt.Sprintf("registered in hukou manifest; sha256 unreadable: %v", err)
+		case !strings.EqualFold(actualSHA, e.SHA256):
+			a.Evidence = fmt.Sprintf("registered in hukou manifest; sha256 mismatch: got %s, want %s", actualSHA, e.SHA256)
+		default:
+			a.Confidence = "exact"
+			a.Evidence = "registered in hukou manifest; sha256 verified"
+		}
+		return a
 	}
 	return nil
 }

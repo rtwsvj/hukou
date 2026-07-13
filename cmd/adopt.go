@@ -48,11 +48,20 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	return doAdopt(cmd.OutOrStdout(), cmd.ErrOrStderr(), target, repoArg, adoptLocal, adoptTag, adoptForce)
 }
 
-func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string, force bool) error {
+func doAdopt(stdout, stderr io.Writer, target, repoArg string, local bool, tag string, force bool) error {
+	return doAdoptWithDeps(stdout, stderr, target, repoArg, local, tag, force, runSecurityGate, saveManifest)
+}
+
+func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local bool, tag string, force bool, securityGate func(string) (*provenance.Attribution, error), save func(*manifest.Manifest) error) error {
 	binPath, err := resolveAdoptTarget(target)
 	if err != nil {
 		return fail(fmt.Errorf("locate target: %w", err))
 	}
+	lock, err := acquireMutationLock()
+	if err != nil {
+		return fail(fmt.Errorf("acquire state lock: %w", err))
+	}
+	defer releaseMutationLock(lock, stderr)
 
 	info, err := os.Stat(binPath)
 	if err != nil {
@@ -97,19 +106,31 @@ func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string
 		}
 	}
 
-	if !local {
-		attr, err := runSecurityGate(binPath)
-		if err != nil {
-			return fail(err)
-		}
-		if !allowedAdoptSource(attr.Source) && !force {
-			return fail(fmt.Errorf("%s 已被 %s 认领（%s）；使用 --force 强制收编", name, attr.Source, attr.Evidence))
+	attr, err := securityGate(binPath)
+	if err != nil {
+		return fail(err)
+	}
+	if attr == nil {
+		return fail(fmt.Errorf("安全归属检查未返回结果"))
+	}
+	if !allowedAdoptSource(attr.Source) && !force {
+		return fail(fmt.Errorf("%s 已被 %s 认领（%s）；使用 --force 强制收编", name, attr.Source, attr.Evidence))
+	}
+
+	m, err := loadManifest()
+	if err != nil {
+		return fail(err)
+	}
+	if existing := m.Get(name); existing != nil {
+		return fail(fmt.Errorf("%s 已收编，登记路径为 %s；拒绝覆盖现有条目", name, existing.Path))
+	}
+	cleanPath := filepath.Clean(binPath)
+	for _, existing := range m.Entries {
+		if filepath.Clean(existing.Path) == cleanPath {
+			return fail(fmt.Errorf("路径 %s 已登记为 %s；拒绝重复收编", binPath, existing.Name))
 		}
 	}
 
-	if err := os.MkdirAll(dataRoot(), 0o755); err != nil {
-		return fail(err)
-	}
 	s := newStore()
 	if err := s.GC(); err != nil {
 		return fail(err)
@@ -122,13 +143,13 @@ func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string
 		return fail(err)
 	}
 	origPath := filepath.Join(origDir, name)
+	if _, err := os.Lstat(origPath); err == nil {
+		return fail(fmt.Errorf("original backup already exists: %s", origPath))
+	} else if !os.IsNotExist(err) {
+		return fail(fmt.Errorf("inspect original backup: %w", err))
+	}
 	if err := copyFile(binPath, origPath, info.Mode()); err != nil {
 		return fail(fmt.Errorf("backup original: %w", err))
-	}
-
-	m, err := loadManifest()
-	if err != nil {
-		return fail(err)
 	}
 
 	entry := manifest.Entry{
@@ -142,7 +163,8 @@ func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string
 		UpdatedAt: rfc3339Now(),
 	}
 	m.Put(entry)
-	if err := saveManifest(m); err != nil {
+	if err := save(m); err != nil {
+		_ = os.Remove(origPath)
 		return fail(fmt.Errorf("save manifest: %w", err))
 	}
 

@@ -217,10 +217,106 @@ func TestPickNoCandidatesListsAll(t *testing.T) {
 	}
 }
 
+func TestPickSkipsTarXZWhenZipAvailable(t *testing.T) {
+	assets := []string{
+		"tool_1.2.3_darwin_arm64.tar.xz",
+		"tool_1.2.3_darwin_arm64.zip",
+	}
+	got, _, err := Pick(assets, "darwin", "arm64", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tool_1.2.3_darwin_arm64.zip" {
+		t.Fatalf("got %q; want supported ZIP", got)
+	}
+}
+
+func TestPickSkipsTXZWhenZipAvailable(t *testing.T) {
+	assets := []string{
+		"tool_1.2.3_darwin_arm64.txz",
+		"tool_1.2.3_darwin_arm64.zip",
+	}
+	got, _, err := Pick(assets, "darwin", "arm64", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tool_1.2.3_darwin_arm64.zip" {
+		t.Fatalf("got %q; want supported ZIP", got)
+	}
+}
+
+func TestPickOnlyXZReturnsUnsupported(t *testing.T) {
+	assets := []string{
+		"tool_1.2.3_darwin_arm64.tar.xz",
+		"tool_1.2.3_darwin_arm64.txz",
+	}
+	_, _, err := Pick(assets, "darwin", "arm64", "")
+	if err == nil {
+		t.Fatal("expected unsupported-archive error")
+	}
+	for _, asset := range assets {
+		if !strings.Contains(err.Error(), asset) {
+			t.Fatalf("error %q should list unsupported asset %q", err, asset)
+		}
+	}
+}
+
+func TestPickAssetFilterCannotForceUnsupportedXZ(t *testing.T) {
+	assets := []string{
+		"tool_1.2.3_darwin_arm64.tar.xz",
+		"tool_1.2.3_darwin_arm64.zip",
+	}
+	_, _, err := Pick(assets, "darwin", "arm64", "tar.xz")
+	if err == nil {
+		t.Fatal("asset filter must not force an unsupported archive")
+	}
+}
+
+func TestPickSkipsKnownUnsupportedContainer(t *testing.T) {
+	assets := []string{
+		"tool_1.2.3_darwin_arm64.tar.zst",
+		"tool_1.2.3_darwin_arm64.dmg",
+		"tool_1.2.3_darwin_arm64.tar",
+		"tool_1.2.3_darwin_arm64.zip",
+	}
+	got, _, err := Pick(assets, "darwin", "arm64", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tool_1.2.3_darwin_arm64.zip" {
+		t.Fatalf("got %q; want supported ZIP", got)
+	}
+}
+
 func TestPickUnsupportedOS(t *testing.T) {
 	_, _, err := Pick(fzfAssets, "plan9-bogus", "arm64", "")
 	if err == nil {
 		t.Fatal("expected error for unsupported OS")
+	}
+}
+
+func TestPickAmbiguousRequiresAssetFilter(t *testing.T) {
+	assets := []string{
+		"tool-darwin-arm64-alpha",
+		"tool-darwin-arm64-beta",
+	}
+	_, _, err := Pick(assets, "darwin", "arm64", "")
+	if err == nil || !strings.Contains(err.Error(), "multiple matching assets") || !strings.Contains(err.Error(), "--asset") {
+		t.Fatalf("expected actionable ambiguity error, got %v", err)
+	}
+}
+
+func TestPickPrefersGzipOverBare(t *testing.T) {
+	assets := []string{
+		"tool-darwin-arm64",
+		"tool-darwin-arm64.gz",
+	}
+	got, _, err := Pick(assets, "darwin", "arm64", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tool-darwin-arm64.gz" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -229,15 +325,15 @@ func TestEffectiveExt(t *testing.T) {
 		name string
 		want string
 	}{
-		{"foo-1.3.5.tar.gz", ""},        // version pseudo-ext + archive stripped
-		{"tool-1.2.3.zip", ""},          // archive stripped -> version -> none
-		{"checksums.txt", ".txt"},       // real ext
-		{"tool.sig", ".sig"},            // real ext
-		{"hashes.sha256", ".sha256"},    // digits inside a word -> real ext
+		{"foo-1.3.5.tar.gz", ""},     // version pseudo-ext + archive stripped
+		{"tool-1.2.3.zip", ""},       // archive stripped -> version -> none
+		{"checksums.txt", ".txt"},    // real ext
+		{"tool.sig", ".sig"},         // real ext
+		{"hashes.sha256", ".sha256"}, // digits inside a word -> real ext
 		{"hashes.sha256sum", ".sha256sum"},
-		{"fzf", ""},                     // bare binary
-		{"tool.tar.gz.sig", ".sig"},     // trailing sig wins
-		{"App.AppImage", ".appimage"},   // case-insensitive
+		{"fzf", ""},                   // bare binary
+		{"tool.tar.gz.sig", ".sig"},   // trailing sig wins
+		{"App.AppImage", ".appimage"}, // case-insensitive
 	}
 	for _, tc := range cases {
 		if got := effectiveExt(tc.name); got != tc.want {
