@@ -4,6 +4,7 @@
 
 - Change ID: `CHANGE-20260713-docs-ci-release-foundation`
 - Execution Report: `docs/codex/execution-reports/2026-07-13-hukou-hardening-release.md`
+- Verification Report: `docs/codex/verification-reports/2026-07-13-hukou-hardening-local.md`
 - Status: implemented
 - Verification Status: partial（本地静态与工程门禁通过，远端发布链待执行）
 - Scope owner: docs/engineering foundation subtask

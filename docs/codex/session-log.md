@@ -5,6 +5,7 @@
 - Branch: `codex/hukou-hardening-release`
 - Base: `main@afed279`
 - Execution Report: `execution-reports/2026-07-13-hukou-hardening-release.md`
+- Verification Report: `verification-reports/2026-07-13-hukou-hardening-local.md`
 - Status: in progress
 - Scope: 安全事务、状态锁、审计字段、文档事实源、CI、四平台发布与 `v0.1.0`
 - Boundary: 所有危险验证只在临时 HOME/PATH/data root；仓库 private，不创建原创代码根 LICENSE

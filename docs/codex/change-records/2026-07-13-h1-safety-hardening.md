@@ -4,6 +4,7 @@
 
 - Change ID: `CHANGE-20260713-h1-safety-hardening`
 - Execution Report: `docs/codex/execution-reports/2026-07-13-hukou-hardening-release.md`
+- Verification Report: `docs/codex/verification-reports/2026-07-13-hukou-hardening-local.md`
 - Status: implemented
 - Verification Status: partial（本地 L1-L4 通过，远端 L5/Release 待执行）
 - Branch: `codex/hukou-hardening-release`
