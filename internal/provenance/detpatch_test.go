@@ -34,8 +34,8 @@ func TestCurlInstaller_grokHermesCodex(t *testing.T) {
 		{
 			name: "grok",
 			bin: scan.Binary{
-				Name: "grok-macos-aarch64",
-				Path: filepath.Join(grokDir, "grok-macos-aarch64"),
+				Name:     "grok-macos-aarch64",
+				Path:     filepath.Join(grokDir, "grok-macos-aarch64"),
 				RealPath: filepath.Join(grokDir, "grok-macos-aarch64"),
 			},
 			pkg: "grok",
@@ -43,8 +43,8 @@ func TestCurlInstaller_grokHermesCodex(t *testing.T) {
 		{
 			name: "hermes",
 			bin: scan.Binary{
-				Name: "uv",
-				Path: filepath.Join(hermesDir, "bin", "uv"),
+				Name:     "uv",
+				Path:     filepath.Join(hermesDir, "bin", "uv"),
 				RealPath: filepath.Join(hermesDir, "bin", "uv"),
 			},
 			pkg: "hermes",
@@ -52,8 +52,8 @@ func TestCurlInstaller_grokHermesCodex(t *testing.T) {
 		{
 			name: "codex-version",
 			bin: scan.Binary{
-				Name: "codex",
-				Path: filepath.Join(root, ".codex", "bin", "codex"),
+				Name:     "codex",
+				Path:     filepath.Join(root, ".codex", "bin", "codex"),
 				RealPath: codexBin,
 			},
 			pkg:     "codex",
@@ -103,8 +103,8 @@ func TestUV_cpythonPython(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := d.Match(scan.Binary{
-		Name: "python3.11",
-		Path: filepath.Join(root, ".local", "bin", "python3.11"),
+		Name:     "python3.11",
+		Path:     filepath.Join(root, ".local", "bin", "python3.11"),
 		RealPath: pyBin,
 	})
 	if a == nil {

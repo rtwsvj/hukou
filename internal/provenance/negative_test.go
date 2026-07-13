@@ -77,8 +77,8 @@ func TestTier1Detectors_unrelatedBinaryNil(t *testing.T) {
 		store := filepath.Join("/nix", "store")
 		_ = d.Load(Env{NixStore: store})
 		a := d.Match(scan.Binary{
-			Name: "share-file",
-			Path: filepath.Join(store, "abcd-ripgrep-14.1.0", "share", "doc"),
+			Name:     "share-file",
+			Path:     filepath.Join(store, "abcd-ripgrep-14.1.0", "share", "doc"),
 			RealPath: filepath.Join(store, "abcd-ripgrep-14.1.0", "share", "doc"),
 		})
 		if a != nil {
@@ -92,8 +92,8 @@ func TestTier1Detectors_unrelatedBinaryNil(t *testing.T) {
 		_ = d.Load(Env{ComposerBins: []string{bin}})
 		// package tree, not vendor/bin
 		a := d.Match(scan.Binary{
-			Name: "phpunit",
-			Path: "/home/u/.composer/vendor/phpunit/phpunit/phpunit",
+			Name:     "phpunit",
+			Path:     "/home/u/.composer/vendor/phpunit/phpunit/phpunit",
 			RealPath: "/home/u/.composer/vendor/phpunit/phpunit/phpunit",
 		})
 		if a != nil {

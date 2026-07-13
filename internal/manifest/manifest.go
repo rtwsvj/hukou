@@ -15,14 +15,18 @@ const schemaVersion = 1
 // All time fields are RFC3339 strings supplied by the caller; the library
 // never calls time.Now or any time function.
 type Entry struct {
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	Repo      string `json:"repo"`
-	Tag       string `json:"tag"`
-	SHA256    string `json:"sha256"`
-	Upstream  string `json:"upstream"`
-	AdoptedAt string `json:"adopted_at"`
-	UpdatedAt string `json:"updated_at"`
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Repo             string `json:"repo"`
+	Tag              string `json:"tag"`
+	SHA256           string `json:"sha256"`
+	Upstream         string `json:"upstream"`
+	AdoptedAt        string `json:"adopted_at"`
+	UpdatedAt        string `json:"updated_at"`
+	AssetName        string `json:"asset_name,omitempty"`
+	AssetSHA256      string `json:"asset_sha256,omitempty"`
+	ChecksumAsset    string `json:"checksum_asset,omitempty"`
+	ChecksumVerified bool   `json:"checksum_verified,omitempty"`
 }
 
 // Manifest is the top-level document stored as JSON.

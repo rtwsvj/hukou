@@ -48,11 +48,20 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 	return doAdopt(cmd.OutOrStdout(), cmd.ErrOrStderr(), target, repoArg, adoptLocal, adoptTag, adoptForce)
 }
 
-func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string, force bool) error {
+func doAdopt(stdout, stderr io.Writer, target, repoArg string, local bool, tag string, force bool) error {
+	return doAdoptWithDeps(stdout, stderr, target, repoArg, local, tag, force, runSecurityGate, saveManifest)
+}
+
+func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local bool, tag string, force bool, securityGate func(string) (*provenance.Attribution, error), save func(*manifest.Manifest) error) error {
 	binPath, err := resolveAdoptTarget(target)
 	if err != nil {
 		return fail(fmt.Errorf("locate target: %w", err))
 	}
+	lock, err := acquireMutationLock()
+	if err != nil {
+		return fail(fmt.Errorf("acquire state lock: %w", err))
+	}
+	defer releaseMutationLock(lock, stderr)
 
 	info, err := os.Stat(binPath)
 	if err != nil {
@@ -64,8 +73,14 @@ func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string
 	if info.Mode()&0o111 == 0 {
 		return fail(fmt.Errorf("%s is not executable", binPath))
 	}
+	if info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		return fail(fmt.Errorf("%s uses privileged/special mode bits that hukou does not preserve", binPath))
+	}
 
 	name := filepath.Base(binPath)
+	if err := store.ValidateName(name); err != nil {
+		return fail(fmt.Errorf("invalid tool name: %w", err))
+	}
 	sha, err := store.SHA256File(binPath)
 	if err != nil {
 		return fail(fmt.Errorf("sha256 %s: %w", binPath, err))
@@ -96,39 +111,53 @@ func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string
 			tag = "adopted"
 		}
 	}
-
-	if !local {
-		attr, err := runSecurityGate(binPath)
-		if err != nil {
-			return fail(err)
-		}
-		if !allowedAdoptSource(attr.Source) && !force {
-			return fail(fmt.Errorf("%s 已被 %s 认领（%s）；使用 --force 强制收编", name, attr.Source, attr.Evidence))
-		}
+	if err := store.ValidateTag(tag); err != nil {
+		return fail(fmt.Errorf("invalid adoption tag: %w", err))
 	}
 
-	if err := os.MkdirAll(dataRoot(), 0o755); err != nil {
+	attr, err := securityGate(binPath)
+	if err != nil {
 		return fail(err)
 	}
-	s := newStore()
-	if err := s.GC(); err != nil {
-		return fail(err)
+	if attr == nil {
+		return fail(fmt.Errorf("安全归属检查未返回结果"))
 	}
-
-	// Backup the current binary into store/<name>/original/ without touching
-	// the original file itself.
-	origDir := filepath.Join(storeRoot(), name, "original")
-	if err := os.MkdirAll(origDir, 0o755); err != nil {
-		return fail(err)
-	}
-	origPath := filepath.Join(origDir, name)
-	if err := copyFile(binPath, origPath, info.Mode()); err != nil {
-		return fail(fmt.Errorf("backup original: %w", err))
+	if !allowedAdoptSource(attr.Source) && !force {
+		return fail(fmt.Errorf("%s 已被 %s 认领（%s）；使用 --force 强制收编", name, attr.Source, attr.Evidence))
 	}
 
 	m, err := loadManifest()
 	if err != nil {
 		return fail(err)
+	}
+	if existing := m.Get(name); existing != nil {
+		return fail(fmt.Errorf("%s 已收编，登记路径为 %s；拒绝覆盖现有条目", name, existing.Path))
+	}
+	cleanPath := filepath.Clean(binPath)
+	for _, existing := range m.Entries {
+		if filepath.Clean(existing.Path) == cleanPath {
+			return fail(fmt.Errorf("路径 %s 已登记为 %s；拒绝重复收编", binPath, existing.Name))
+		}
+	}
+
+	s := newStore()
+	if err := s.GC(); err != nil {
+		return fail(err)
+	}
+
+	if err := s.AdoptOriginal(name, binPath); err != nil {
+		return fail(fmt.Errorf("backup original: %w", err))
+	}
+	origPath := filepath.Join(storeRoot(), name, "original", name)
+	backupSHA, backupErr := store.SHA256File(origPath)
+	liveSHA, liveErr := store.SHA256File(binPath)
+	backupInfo, backupStatErr := os.Stat(origPath)
+	liveInfo, liveStatErr := os.Stat(binPath)
+	modeChanged := backupStatErr == nil && liveStatErr == nil &&
+		(backupInfo.Mode().Perm() != info.Mode().Perm() || liveInfo.Mode().Perm() != info.Mode().Perm())
+	if backupErr != nil || liveErr != nil || backupStatErr != nil || liveStatErr != nil || backupSHA != sha || liveSHA != sha || modeChanged {
+		_ = os.Remove(origPath)
+		return fail(fmt.Errorf("binary changed while creating original backup; refusing inconsistent adoption (backup_err=%v live_err=%v backup_stat_err=%v live_stat_err=%v)", backupErr, liveErr, backupStatErr, liveStatErr))
 	}
 
 	entry := manifest.Entry{
@@ -142,7 +171,8 @@ func doAdopt(stdout, _ io.Writer, target, repoArg string, local bool, tag string
 		UpdatedAt: rfc3339Now(),
 	}
 	m.Put(entry)
-	if err := saveManifest(m); err != nil {
+	if err := save(m); err != nil {
+		_ = os.Remove(origPath)
 		return fail(fmt.Errorf("save manifest: %w", err))
 	}
 

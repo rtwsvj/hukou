@@ -110,8 +110,8 @@ func TestRunner_chain(t *testing.T) {
 // failingDetector always errors on Load — used to test Runner resilience.
 type failingDetector struct{ name string }
 
-func (f *failingDetector) Name() string                  { return f.name }
-func (f *failingDetector) Load(env Env) error             { return errLoadFailed }
+func (f *failingDetector) Name() string       { return f.name }
+func (f *failingDetector) Load(env Env) error { return errLoadFailed }
 func (f *failingDetector) Match(b scan.Binary) *Attribution {
 	return &Attribution{Source: f.name, Package: "should-not-run"}
 }

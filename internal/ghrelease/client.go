@@ -25,9 +25,9 @@ const (
 
 // Production hosts allowed for HTTPS requests and redirects.
 var allowedHosts = map[string]struct{}{
-	"api.github.com":                     {},
-	"github.com":                         {},
-	"objects.githubusercontent.com":      {},
+	"api.github.com":                       {},
+	"github.com":                           {},
+	"objects.githubusercontent.com":        {},
 	"release-assets.githubusercontent.com": {},
 }
 
@@ -43,10 +43,11 @@ type Asset struct {
 }
 
 type Client struct {
-	BaseURL    string
-	Token      string
-	HTTPClient *http.Client
-	Sleep      func(time.Duration)
+	BaseURL        string
+	Token          string
+	HTTPClient     *http.Client // release API requests
+	DownloadClient *http.Client // release asset downloads
+	Sleep          func(time.Duration)
 }
 
 type StatusError struct {
@@ -87,6 +88,10 @@ func New(token string) *Client {
 		Timeout:       apiTimeout,
 		CheckRedirect: c.checkRedirect,
 	}
+	c.DownloadClient = &http.Client{
+		Timeout:       downloadTimeout,
+		CheckRedirect: c.checkRedirect,
+	}
 	return c
 }
 
@@ -124,7 +129,7 @@ func (c *Client) Download(downloadURL, destDir string, expectedSize int64) (stri
 	}
 	c.applyHeaders(req)
 
-	resp, err := c.do(req)
+	resp, err := c.do(req, c.downloadHTTPClient())
 	if err != nil {
 		return "", err
 	}
@@ -180,7 +185,7 @@ func (c *Client) fetchRelease(path string) (Release, error) {
 	}
 	c.applyHeaders(req)
 
-	resp, err := c.do(req)
+	resp, err := c.do(req, c.httpClient())
 	if err != nil {
 		return release, err
 	}
@@ -196,11 +201,11 @@ func (c *Client) fetchRelease(path string) (Release, error) {
 	return release, nil
 }
 
-func (c *Client) do(req *http.Request) (*http.Response, error) {
+func (c *Client) do(req *http.Request, client *http.Client) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Re-apply headers each attempt; body is nil for our GET requests.
-		resp, err := c.httpClient().Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			if attempt < maxRetries {
@@ -266,7 +271,7 @@ func (c *Client) baseURL() string {
 
 func (c *Client) httpClient() *http.Client {
 	if c.HTTPClient == nil {
-		return &http.Client{
+		c.HTTPClient = &http.Client{
 			Timeout:       apiTimeout,
 			CheckRedirect: c.checkRedirect,
 		}
@@ -277,6 +282,29 @@ func (c *Client) httpClient() *http.Client {
 		c.HTTPClient.CheckRedirect = c.checkRedirect
 	}
 	return c.HTTPClient
+}
+
+// downloadHTTPClient returns the client dedicated to long-running asset
+// downloads. Manually constructed Clients from older callers may provide only
+// HTTPClient; retain that fallback while New always configures separate API and
+// download timeouts.
+func (c *Client) downloadHTTPClient() *http.Client {
+	if c.DownloadClient == nil {
+		if c.HTTPClient != nil {
+			if c.HTTPClient.CheckRedirect == nil {
+				c.HTTPClient.CheckRedirect = c.checkRedirect
+			}
+			return c.HTTPClient
+		}
+		c.DownloadClient = &http.Client{
+			Timeout:       downloadTimeout,
+			CheckRedirect: c.checkRedirect,
+		}
+	}
+	if c.DownloadClient.CheckRedirect == nil {
+		c.DownloadClient.CheckRedirect = c.checkRedirect
+	}
+	return c.DownloadClient
 }
 
 func (c *Client) sleep(d time.Duration) {

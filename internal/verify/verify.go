@@ -4,6 +4,7 @@ package verify
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -34,34 +35,117 @@ func SHA256File(path string) (string, error) {
 // file name to lowercase hex digest.
 //
 // Supported line formats:
-//   <hex>  <filename>
-//   <hex> *<filename>
 //
-// Empty lines and lines starting with '#' are ignored.
-func ParseChecksums(r io.Reader) map[string]string {
+//	<hex>  <filename>
+//	<hex> *<filename>
+//	SHA256 (<filename>) = <hex>
+//
+// Empty lines and lines starting with '#' are ignored. Every other line must
+// contain a valid 64-character SHA-256 digest and a non-empty file name.
+func ParseChecksums(r io.Reader) (map[string]string, error) {
+	return parseChecksums(r, "")
+}
+
+// ParseChecksumSidecar accepts the strict named formats supported by
+// ParseChecksums and, for an exact <asset>.sha256 sidecar only, a single bare
+// 64-character digest. The caller supplies the asset name that the exact
+// sidecar is already bound to.
+func ParseChecksumSidecar(r io.Reader, assetName string) (map[string]string, error) {
+	if strings.TrimSpace(assetName) == "" {
+		return nil, errors.New("checksum sidecar asset name is empty")
+	}
+	return parseChecksums(r, assetName)
+}
+
+func parseChecksums(r io.Reader, digestOnlyAsset string) (map[string]string, error) {
 	out := make(map[string]string)
 	sc := bufio.NewScanner(r)
+	lineNumber := 0
+	bareDigestSeen := false
 	for sc.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if bareDigestSeen {
+			return nil, fmt.Errorf("checksums line %d: digest-only sidecar contains multiple entries", lineNumber)
+		}
+
+		if name, hash, ok := parseBSDLine(line); ok {
+			if !validSHA256Hex(hash) {
+				return nil, fmt.Errorf("checksums line %d: invalid SHA-256 digest %q", lineNumber, hash)
+			}
+			if err := putChecksum(out, name, strings.ToLower(hash), lineNumber); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		hash := strings.ToLower(fields[0])
-		name := fields[1]
+
+		separator := strings.IndexAny(line, " \t")
+		if separator < 0 {
+			hash := strings.ToLower(line)
+			if digestOnlyAsset != "" && validSHA256Hex(hash) && len(out) == 0 {
+				out[digestOnlyAsset] = hash
+				bareDigestSeen = true
+				continue
+			}
+			return nil, fmt.Errorf("checksums line %d: missing file name", lineNumber)
+		}
+		hash := strings.ToLower(line[:separator])
+		if !validSHA256Hex(hash) {
+			return nil, fmt.Errorf("checksums line %d: invalid SHA-256 digest %q", lineNumber, line[:separator])
+		}
+
+		name := strings.TrimSpace(line[separator:])
 		if strings.HasPrefix(name, "*") {
-			name = name[1:]
+			name = strings.TrimSpace(name[1:])
 		}
-		if hash == "" || name == "" {
-			continue
+		if name == "" {
+			return nil, fmt.Errorf("checksums line %d: missing file name", lineNumber)
 		}
-		out[name] = hash
+		if err := putChecksum(out, name, hash, lineNumber); err != nil {
+			return nil, err
+		}
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("scan checksums: %w", err)
+	}
+	return out, nil
+}
+
+func parseBSDLine(line string) (name, hash string, ok bool) {
+	const prefix = "SHA256 ("
+	if len(line) < len(prefix) || !strings.EqualFold(line[:len(prefix)], prefix) {
+		return "", "", false
+	}
+	separator := strings.LastIndex(line, ") = ")
+	if separator < len(prefix) {
+		return "", "", false
+	}
+	name = strings.TrimSpace(line[len(prefix):separator])
+	hash = strings.TrimSpace(line[separator+len(") = "):])
+	return name, hash, name != ""
+}
+
+func putChecksum(out map[string]string, name, hash string, lineNumber int) error {
+	if name == "" {
+		return fmt.Errorf("checksums line %d: missing file name", lineNumber)
+	}
+	if existing, ok := out[name]; ok && existing != hash {
+		return fmt.Errorf("checksums line %d: conflicting SHA-256 digest for %q", lineNumber, name)
+	}
+	out[name] = hash
+	return nil
+}
+
+func validSHA256Hex(digest string) bool {
+	if len(digest) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(digest)
+	return err == nil
 }
 
 // VerifyAsset checks assetPath against the checksum entry for assetName in the
@@ -71,6 +155,9 @@ func VerifyAsset(assetPath, assetName string, checksums map[string]string) error
 	want, ok := checksums[assetName]
 	if !ok {
 		return ErrNoChecksum
+	}
+	if !validSHA256Hex(want) {
+		return fmt.Errorf("invalid SHA-256 digest for %s: %q", assetName, want)
 	}
 	got, err := SHA256File(assetPath)
 	if err != nil {

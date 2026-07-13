@@ -419,7 +419,7 @@ func TestAuthorizationNotSentOnDownloadRequest(t *testing.T) {
 	// a RoundTripper that records headers without actually dialing.
 	var gotAuth string
 	client := New("super-secret")
-	client.HTTPClient = &http.Client{
+	client.DownloadClient = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			gotAuth = req.Header.Get("Authorization")
 			return &http.Response{
@@ -447,11 +447,102 @@ func TestAuthorizationNotSentOnDownloadRequest(t *testing.T) {
 func TestNewClientHasTimeout(t *testing.T) {
 	c := New("")
 	if c.HTTPClient == nil || c.HTTPClient.Timeout != 30*time.Second {
-		t.Fatalf("Timeout=%v", c.HTTPClient.Timeout)
+		t.Fatalf("API Timeout=%v", c.HTTPClient.Timeout)
 	}
 	if c.HTTPClient.CheckRedirect == nil {
-		t.Fatal("CheckRedirect not set")
+		t.Fatal("API CheckRedirect not set")
 	}
+	if c.DownloadClient == nil || c.DownloadClient.Timeout != 10*time.Minute {
+		t.Fatalf("download Timeout=%v", c.DownloadClient.Timeout)
+	}
+	if c.DownloadClient.CheckRedirect == nil {
+		t.Fatal("download CheckRedirect not set")
+	}
+}
+
+func TestLatestUsesAPIClient(t *testing.T) {
+	apiCalls := 0
+	downloadCalls := 0
+	c := &Client{
+		BaseURL: "https://api.example.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			apiCalls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v1.0.0","assets":[]}`)),
+				Request:    req,
+			}, nil
+		})},
+		DownloadClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			downloadCalls++
+			return nil, errors.New("download client must not handle API requests")
+		})},
+		Sleep: func(time.Duration) {},
+	}
+
+	if _, err := c.Latest("owner", "repo"); err != nil {
+		t.Fatal(err)
+	}
+	if apiCalls != 1 || downloadCalls != 0 {
+		t.Fatalf("apiCalls=%d downloadCalls=%d", apiCalls, downloadCalls)
+	}
+}
+
+func TestDownloadUsesDownloadClient(t *testing.T) {
+	apiCalls := 0
+	downloadCalls := 0
+	c := &Client{
+		BaseURL: "https://download.example.test",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			apiCalls++
+			return nil, errors.New("API client must not handle downloads")
+		})},
+		DownloadClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			downloadCalls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("data")),
+				Request:    req,
+			}, nil
+		})},
+		Sleep: func(time.Duration) {},
+	}
+
+	path, err := c.Download("https://download.example.test/asset", t.TempDir(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+	if apiCalls != 0 || downloadCalls != 1 {
+		t.Fatalf("apiCalls=%d downloadCalls=%d", apiCalls, downloadCalls)
+	}
+}
+
+func TestDownloadNotBoundByAPITimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		io.WriteString(w, "data")
+	}))
+	defer server.Close()
+
+	downloadClient := server.Client()
+	downloadClient.Timeout = time.Second
+	c := &Client{
+		BaseURL:        server.URL,
+		HTTPClient:     &http.Client{Timeout: time.Nanosecond},
+		DownloadClient: downloadClient,
+		Sleep:          func(time.Duration) {},
+	}
+
+	path, err := c.Download(server.URL+"/asset", t.TempDir(), 4)
+	if err != nil {
+		t.Fatalf("download inherited API timeout: %v", err)
+	}
+	defer os.Remove(path)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -469,5 +560,6 @@ func testClient(server *httptest.Server) *Client {
 		// No short Timeout for tests; inherit CheckRedirect from client.
 		CheckRedirect: c.checkRedirect,
 	}
+	c.DownloadClient = c.HTTPClient
 	return c
 }

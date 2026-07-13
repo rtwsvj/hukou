@@ -12,14 +12,18 @@ import (
 
 func fixtureEntry() manifest.Entry {
 	return manifest.Entry{
-		Name:      "mybin",
-		Path:      "/usr/local/bin/mybin",
-		Repo:      "owner/repo",
-		Tag:       "v1.0.0",
-		SHA256:    "deadbeef",
-		Upstream:  "github.com/owner/repo",
-		AdoptedAt: "2025-01-01T00:00:00Z",
-		UpdatedAt: "2025-01-01T00:00:00Z",
+		Name:             "mybin",
+		Path:             "/usr/local/bin/mybin",
+		Repo:             "owner/repo",
+		Tag:              "v1.0.0",
+		SHA256:           "deadbeef",
+		Upstream:         "github.com/owner/repo",
+		AdoptedAt:        "2025-01-01T00:00:00Z",
+		UpdatedAt:        "2025-01-01T00:00:00Z",
+		AssetName:        "mybin-darwin-arm64.tar.gz",
+		AssetSHA256:      strings.Repeat("a", 64),
+		ChecksumAsset:    "checksums.txt",
+		ChecksumVerified: true,
 	}
 }
 
@@ -53,7 +57,9 @@ func TestPutGetRoundtrip(t *testing.T) {
 	}
 	if got.Name != entry.Name || got.Path != entry.Path || got.Repo != entry.Repo ||
 		got.Tag != entry.Tag || got.SHA256 != entry.SHA256 || got.Upstream != entry.Upstream ||
-		got.AdoptedAt != entry.AdoptedAt || got.UpdatedAt != entry.UpdatedAt {
+		got.AdoptedAt != entry.AdoptedAt || got.UpdatedAt != entry.UpdatedAt ||
+		got.AssetName != entry.AssetName || got.AssetSHA256 != entry.AssetSHA256 ||
+		got.ChecksumAsset != entry.ChecksumAsset || got.ChecksumVerified != entry.ChecksumVerified {
 		t.Errorf("Get returned entry = %+v; want %+v", got, entry)
 	}
 }
@@ -118,8 +124,44 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Fatalf("len(Entries) = %d; want 1", len(loaded.Entries))
 	}
 	e := loaded.Entries[0]
-	if e.Name != fixtureEntry().Name || e.Tag != fixtureEntry().Tag {
-		t.Errorf("entry mismatch: got %+v want %+v", e, fixtureEntry())
+	want := fixtureEntry()
+	if e != want {
+		t.Errorf("entry mismatch: got %+v want %+v", e, want)
+	}
+}
+
+func TestLegacyEntryLoadsWithoutOptionalAssetFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.json")
+	raw := `{"schema_version":1,"entries":[{"name":"legacy","path":"/usr/local/bin/legacy","repo":"owner/repo","tag":"v1.0.0","sha256":"deadbeef","upstream":"github.com/owner/repo","adopted_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := manifest.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Entries) != 1 {
+		t.Fatalf("entries=%d want 1", len(m.Entries))
+	}
+	e := m.Entries[0]
+	if e.AssetName != "" || e.AssetSHA256 != "" || e.ChecksumAsset != "" || e.ChecksumVerified {
+		t.Fatalf("legacy optional fields must have zero values: %+v", e)
+	}
+
+	roundTrip := filepath.Join(dir, "roundtrip.json")
+	if err := m.Save(roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(roundTrip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"asset_name", "asset_sha256", "checksum_asset", "checksum_verified"} {
+		if strings.Contains(string(data), `"`+field+`"`) {
+			t.Fatalf("zero-value optional field %q must be omitted: %s", field, data)
+		}
 	}
 }
 

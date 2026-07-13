@@ -13,6 +13,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/assetpick"
 	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/manifest"
+	"github.com/rtwsvj/hukou/internal/scan"
 	"github.com/rtwsvj/hukou/internal/store"
 	"github.com/rtwsvj/hukou/internal/verify"
 	"github.com/spf13/cobra"
@@ -47,6 +48,21 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 }
 
 func doUpgrade(stdout, stderr io.Writer, names []string, all, dryRun bool, assetFilter string, client *ghrelease.Client) error {
+	return doUpgradeWithSave(stdout, stderr, names, all, dryRun, assetFilter, client, saveManifest)
+}
+
+func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun bool, assetFilter string, client *ghrelease.Client, save func(*manifest.Manifest) error) error {
+	if all && len(names) > 0 {
+		return fail(fmt.Errorf("名称列表与 --all 不能同时使用"))
+	}
+	if !dryRun {
+		lock, err := acquireMutationLock()
+		if err != nil {
+			return fail(fmt.Errorf("acquire state lock: %w", err))
+		}
+		defer releaseMutationLock(lock, stderr)
+	}
+
 	m, err := loadManifest()
 	if err != nil {
 		return fail(err)
@@ -73,11 +89,13 @@ func doUpgrade(stdout, stderr io.Writer, names []string, all, dryRun bool, asset
 	}
 
 	s := newStore()
-	if err := s.GC(); err != nil {
-		return fail(err)
+	if !dryRun {
+		if err := s.GC(); err != nil {
+			return fail(err)
+		}
 	}
 
-	var failures []string
+	var failures []error
 	for _, e := range targets {
 		// Re-load entry pointer from manifest so concurrent-looking updates
 		// within the loop see the latest state after each successful upgrade.
@@ -85,22 +103,22 @@ func doUpgrade(stdout, stderr io.Writer, names []string, all, dryRun bool, asset
 		if live := m.Get(e.Name); live != nil {
 			entry = *live
 		}
-		if err := upgradeOne(stdout, stderr, s, client, m, &entry, dryRun, assetFilter); err != nil {
+		if err := upgradeOne(stdout, stderr, s, client, m, &entry, dryRun, assetFilter, save); err != nil {
 			fmt.Fprintf(stderr, "警告: %s 升级失败: %v\n", entry.Name, err)
-			failures = append(failures, fmt.Sprintf("%s: %v", entry.Name, err))
+			failures = append(failures, fmt.Errorf("%s: %w", entry.Name, err))
 		}
 	}
 	if len(failures) > 0 {
 		fmt.Fprintf(stderr, "升级失败 %d 项:\n", len(failures))
 		for _, f := range failures {
-			fmt.Fprintf(stderr, "  - %s\n", f)
+			fmt.Fprintf(stderr, "  - %v\n", f)
 		}
-		return fmt.Errorf("%d upgrade(s) failed", len(failures))
+		return fmt.Errorf("%d upgrade(s) failed: %w", len(failures), errors.Join(failures...))
 	}
 	return nil
 }
 
-func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Client, m *manifest.Manifest, e *manifest.Entry, dryRun bool, assetFilter string) error {
+func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Client, m *manifest.Manifest, e *manifest.Entry, dryRun bool, assetFilter string, save func(*manifest.Manifest) error) error {
 	if e.Repo == "" || e.Tag == "local" {
 		fmt.Fprintf(stdout, "跳过 %s: local 条目\n", e.Name)
 		return nil
@@ -182,17 +200,24 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		finalAssetPath = newPath
 	}
 
-	checksums, err := downloadChecksums(client, release.Assets, chosen, tmpDir)
+	checksumAsset, checksums, err := downloadChecksums(client, release.Assets, chosen, tmpDir)
 	if err != nil {
 		return err
 	}
 
-	if checksums != nil {
+	checksumVerified := false
+	if checksumAsset != "" {
 		if err := verify.VerifyAsset(finalAssetPath, chosen, checksums); err != nil {
-			if !errors.Is(err, verify.ErrNoChecksum) {
-				return fmt.Errorf("verify: %w", err)
-			}
+			return fmt.Errorf("verify checksum from %s: %w", checksumAsset, err)
 		}
+		checksumVerified = true
+	} else {
+		fmt.Fprintf(stderr, "警告: %s release 未提供 checksum；将记录下载资产 SHA-256，但无法验证发布方摘要\n", e.Name)
+	}
+
+	assetSHA, err := store.SHA256File(finalAssetPath)
+	if err != nil {
+		return fmt.Errorf("sha256 downloaded asset: %w", err)
 	}
 
 	extractDir, err := os.MkdirTemp(tmpDir, "extract-")
@@ -205,65 +230,108 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	if err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
+	extractedInfo, err := os.Stat(extractedPath)
+	if err != nil {
+		return fmt.Errorf("stat extracted binary: %w", err)
+	}
+	if !extractedInfo.Mode().IsRegular() || extractedInfo.Mode()&0o111 == 0 {
+		return fmt.Errorf("extracted asset is not an executable regular file: %s", extractedPath)
+	}
+	if archive.DetectFormat(chosen) == archive.FormatBare {
+		kind, err := scan.DetectKind(extractedPath)
+		if err != nil {
+			return fmt.Errorf("inspect bare executable: %w", err)
+		}
+		if kind == scan.KindOther {
+			return fmt.Errorf("selected bare asset is not a recognized executable or shebang script: %s", chosen)
+		}
+	}
 
 	if err := s.Put(e.Name, release.TagName, extractedPath); err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
 
 	oldTag := e.Tag
+	oldEntry := *e
+	latestSHA, err := store.SHA256File(e.Path)
+	if err != nil {
+		return fmt.Errorf("re-read current file before activation: %w", err)
+	}
+	if latestSHA != e.SHA256 {
+		return fmt.Errorf("当前文件在升级过程中被外部修改；拒绝覆盖")
+	}
+	snapshot, err := store.SnapshotLive(e.Path)
+	if err != nil {
+		return fmt.Errorf("snapshot current installation: %w", err)
+	}
+	postSnapshotSHA, err := store.SHA256File(e.Path)
+	if err != nil || postSnapshotSHA != e.SHA256 {
+		operationErr := err
+		if operationErr == nil {
+			operationErr = fmt.Errorf("当前文件在创建事务快照时被外部修改；拒绝覆盖")
+		}
+		if cleanupErr := snapshot.Commit(); cleanupErr != nil {
+			return errors.Join(operationErr, fmt.Errorf("discard unused live snapshot: %w", cleanupErr))
+		}
+		return operationErr
+	}
 
 	pathInfo, err := os.Lstat(e.Path)
 	if err != nil {
-		return fmt.Errorf("lstat %s: %w", e.Path, err)
+		return discardLiveAfterError(snapshot, fmt.Errorf("lstat %s: %w", e.Path, err))
 	}
 	if pathInfo.Mode()&os.ModeSymlink == 0 {
-		// First upgrade: the live file at e.Path is not yet managed by a symlink.
+		// First upgrade: make sure the original backup exists before replacing
+		// the live regular file with the selected store version.
 		origPath := filepath.Join(s.Root, e.Name, "original", e.Name)
 		if _, err := os.Stat(origPath); os.IsNotExist(err) {
 			if err := s.AdoptOriginal(e.Name, e.Path); err != nil {
-				return fmt.Errorf("adopt original: %w", err)
+				return discardLiveAfterError(snapshot, fmt.Errorf("adopt original: %w", err))
 			}
-			// AdoptOriginal leaves the symlink pointing at original/; switch to
-			// the newly stored release version so PATH and manifest agree.
 			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-				return fmt.Errorf("activate: %w", err)
+				return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 			}
 		} else {
-			// original/ already contains the adopt-time backup; move the
-			// current live binary into a version directory and activate the
-			// newly downloaded version.
-			backupDir := filepath.Join(s.Root, e.Name, e.Tag)
-			if err := os.MkdirAll(backupDir, 0o755); err != nil {
-				return err
-			}
-			backupPath := filepath.Join(backupDir, e.Name)
-			if err := moveFile(e.Path, backupPath); err != nil {
-				return fmt.Errorf("backup current version: %w", err)
+			// original/ already contains the adopt-time backup; copy the
+			// current live binary into its validated version directory before
+			// atomically replacing the live path.
+			if e.Tag != "original" {
+				if err := s.Put(e.Name, e.Tag, e.Path); err != nil {
+					return discardLiveAfterError(snapshot, fmt.Errorf("backup current version: %w", err))
+				}
 			}
 			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-				_ = moveFile(backupPath, e.Path)
-				return fmt.Errorf("activate: %w", err)
+				return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 			}
 		}
 	} else {
 		if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-			return fmt.Errorf("activate: %w", err)
+			return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 		}
 	}
 
-	e.Tag = release.TagName
 	activeSHA, err := store.SHA256File(e.Path)
 	if err != nil {
-		return fmt.Errorf("sha256 active binary: %w", err)
+		return restoreLiveAfterError(snapshot, fmt.Errorf("sha256 active binary: %w", err))
 	}
+	e.Tag = release.TagName
 	e.SHA256 = activeSHA
 	e.UpdatedAt = rfc3339Now()
+	e.AssetName = chosen
+	e.AssetSHA256 = assetSHA
+	e.ChecksumAsset = checksumAsset
+	e.ChecksumVerified = checksumVerified
 	m.Put(*e)
-	if err := saveManifest(m); err != nil {
-		return fmt.Errorf("save manifest: %w", err)
+	if err := save(m); err != nil {
+		*e = oldEntry
+		m.Put(oldEntry)
+		return restoreLiveAfterError(snapshot, fmt.Errorf("save manifest: %w", err))
+	}
+	if err := snapshot.Commit(); err != nil {
+		fmt.Fprintf(stderr, "警告: %s 升级已完成，但清理事务快照失败: %v\n", e.Name, err)
 	}
 
-	if err := s.Prune(e.Name, 3, e.Path); err != nil {
+	if err := s.Prune(e.Name, 3, e.Tag, e.SHA256); err != nil {
 		fmt.Fprintf(stderr, "警告: %s 清理旧版本失败: %v\n", e.Name, err)
 	}
 
@@ -271,10 +339,10 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	return nil
 }
 
-func downloadChecksums(client *ghrelease.Client, assets []ghrelease.Asset, chosen, tmpDir string) (map[string]string, error) {
+func downloadChecksums(client *ghrelease.Client, assets []ghrelease.Asset, chosen, tmpDir string) (string, map[string]string, error) {
 	checksumName := findChecksumAsset(chosen, assets)
 	if checksumName == "" {
-		return nil, nil
+		return "", nil, nil
 	}
 	var checksumURL string
 	var checksumSize int64
@@ -286,36 +354,54 @@ func downloadChecksums(client *ghrelease.Client, assets []ghrelease.Asset, chose
 		}
 	}
 	if checksumURL == "" {
-		return nil, nil
+		return checksumName, nil, fmt.Errorf("checksum asset %s has no download URL", checksumName)
 	}
 	checksumPath, err := client.Download(checksumURL, tmpDir, checksumSize)
 	if err != nil {
-		return nil, fmt.Errorf("download checksum: %w", err)
+		return checksumName, nil, fmt.Errorf("download checksum %s: %w", checksumName, err)
 	}
 	defer os.Remove(checksumPath)
 
 	f, err := os.Open(checksumPath)
 	if err != nil {
-		return nil, err
+		return checksumName, nil, err
 	}
 	defer f.Close()
-	return verify.ParseChecksums(f), nil
+	var checksums map[string]string
+	if isExactChecksumAsset(chosen, checksumName) {
+		checksums, err = verify.ParseChecksumSidecar(f, chosen)
+	} else {
+		checksums, err = verify.ParseChecksums(f)
+	}
+	if err != nil {
+		return checksumName, nil, fmt.Errorf("parse checksum %s: %w", checksumName, err)
+	}
+	return checksumName, checksums, nil
+}
+
+func isExactChecksumAsset(chosen, checksumName string) bool {
+	return strings.EqualFold(checksumName, chosen+".sha256") ||
+		strings.EqualFold(checksumName, chosen+".sha256sum")
 }
 
 func findChecksumAsset(chosen string, assets []ghrelease.Asset) string {
-	for _, a := range assets {
-		if strings.Contains(a.Name, "checksums") {
-			lower := strings.ToLower(a.Name)
-			if strings.HasSuffix(lower, ".sig") || strings.HasSuffix(lower, ".asc") || strings.HasSuffix(lower, ".pem") {
-				continue
+	for _, suffix := range []string{".sha256", ".sha256sum"} {
+		want := chosen + suffix
+		for _, a := range assets {
+			if strings.EqualFold(a.Name, want) {
+				return a.Name
 			}
-			return a.Name
 		}
 	}
 	for _, a := range assets {
-		if a.Name == chosen+".sha256" || a.Name == chosen+".sha256sum" {
-			return a.Name
+		lower := strings.ToLower(a.Name)
+		if !strings.Contains(lower, "checksum") && !strings.Contains(lower, "sha256sum") {
+			continue
 		}
+		if strings.HasSuffix(lower, ".sig") || strings.HasSuffix(lower, ".asc") || strings.HasSuffix(lower, ".pem") {
+			continue
+		}
+		return a.Name
 	}
 	return ""
 }
