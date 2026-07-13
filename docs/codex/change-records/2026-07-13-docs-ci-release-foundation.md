@@ -6,7 +6,7 @@
 - Execution Report: `docs/codex/execution-reports/2026-07-13-hukou-hardening-release.md`
 - Verification Report: `docs/codex/verification-reports/2026-07-13-hukou-hardening-local.md`
 - Status: implemented
-- Verification Status: partial（本地静态与工程门禁通过，远端发布链待执行）
+- Verification Status: pass-with-infrastructure-exception（发布链完成；GitHub-hosted runner 因计费限制未执行）
 - Scope owner: docs/engineering foundation subtask
 
 ## 用户请求
@@ -80,24 +80,22 @@
 | Markdown 相对链接只读检查 | pass | 当时无缺失目标 |
 | `git diff --check` | pass | 当时无 whitespace error |
 | Go build/test/vet/race/coverage | pass | 最终集成阶段由 H1 全仓验证执行 |
-| release snapshot | 未运行 | 需等 Go 改动完成且由最终验证执行 |
+| release snapshot 等价回退 | pass | 两个全新 Go/Linux 容器运行正式脚本，结果逐字节一致 |
 
-最终集成阶段随后运行 `make verify COVERAGE=/tmp/hukou-final-precommit.out` 并通过，包含 module verify、vet、全仓 test、race、78.9% coverage 与 build；四个目标的独立交叉构建也已通过。远端 snapshot 与正式 Release 仍需在干净提交上执行。
+最终集成阶段随后运行 `make verify COVERAGE=/tmp/hukou-prepush-final.out` 并通过，包含 module verify、vet、全仓 test、race、79.0% coverage 与 build；四个目标的独立交叉构建、隔离 GNU tar 双构建和正式 Release 均已通过。GitHub-hosted CI/snapshot/tag workflow 因账户 payment/spending limit 在 0 step 前失败，不声称远端 runner 门禁通过。
 
 ## 验证结果
 
-- 已验证：文档链接、YAML 基础语法、release shell 语法、Makefile、diff whitespace、Go 全量门禁、四平台独立构建。
-- 未验证：GitHub Actions 服务端执行、GNU tar 双构建逐位复现、远端 Release。
+- 已验证：文档链接、YAML 基础语法、release shell 语法、Makefile、diff whitespace、Go 全量门禁、四平台构建、GNU tar 双构建逐字节复现、远端 Release 资产。
+- 基础设施例外：GitHub Actions 服务端未分配 runner；三个最终 run 均在 0 step 前被账户计费限制拒绝。
 - 需要 `$pinhaoma-review` 回顾：是。
 
 ## 未完成事项
 
-- H1 代码仍由并行任务实施；本记录不声称 Go 修复已通过。
-- H1 完成后需把 roadmap/session status 从 in progress 更新为 verified/complete。
-- 需要创建最终 verification report，并附 commit、CI run 与 release assets。
+- 计费/额度恢复后重跑 GitHub-hosted CI 与手动 snapshot，作为补充证据。
+- 不移动 `v0.1.0` tag，不覆盖已发布资产；后续修复使用 patch release。
 
 ## 下一步建议
 
-1. 等并行 Go 改动稳定后运行 `make verify` 与 `make coverage`。
-2. 用干净提交运行手动 snapshot workflow 或等价本地 release 验证。
-3. `$pinhaoma-review` 核对本记录 C1-C7。
+1. 恢复 GitHub Actions 计费后重跑 runner gate。
+2. `$pinhaoma-review` 核对本记录 C1-C7 与最终 release report。

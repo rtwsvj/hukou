@@ -6,11 +6,11 @@
 
 ## 当前状态
 
-项目已经交付 Phase 1 `scan` 与 Phase 2 `adopt / upgrade / rollback / list`。当前正在完成 H1 安全硬化与首个 SemVer 发布；最终通过情况以 [`docs/codex/verification-reports/`](docs/codex/verification-reports/) 中对应提交的验证报告为准。
+项目已经交付 Phase 1 `scan`、Phase 2 `adopt / upgrade / rollback / list` 与 H1 安全硬化。[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布；最终通过情况与 GitHub Actions 基础设施例外见 [`docs/codex/verification-reports/`](docs/codex/verification-reports/)。
 
 - 目标平台：macOS、Linux
 - 当前模块工具链：以 [`go.mod`](go.mod) 的 `go` 指令为准
-- 分发状态：private repository，尚未声明原创代码的公开分发许可证
+- 分发状态：private repository，已提供四平台 `v0.1.0` Release 资产；尚未声明原创代码的公开分发许可证
 - Windows、topgrade 集成、mise/Brewfile 导出、changelog 风险层：未实现
 
 ## 能做什么

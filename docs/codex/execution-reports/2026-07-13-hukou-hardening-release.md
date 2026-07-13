@@ -5,7 +5,7 @@
 - Date: 2026-07-13
 - Branch: `codex/hukou-hardening-release`
 - Base: `main@afed279`
-- Status: approved
+- Status: completed with GitHub Actions infrastructure exception
 - Approval: Eric 明确要求“直接推进到发布，无需授权，记得在完成后推送到GitHub”
 
 ## 用户请求
@@ -56,3 +56,10 @@
 - 仓库当前为 private；本轮不替用户选择原创代码许可证，不做法律结论。
 - 不引入新的运行时第三方依赖。
 - 不实现 Windows、topgrade、mise/Brewfile 导出或风险提示产品层。
+
+## 完成结果
+
+- PR #1 已合入 `main`，merge commit：`d15331dbe4d258d54253643b758c787bb63c95e1`。
+- annotated tag `v0.1.0` 已推送，GitHub Release 已发布：`https://github.com/rtwsvj/hukou/releases/tag/v0.1.0`。
+- 正式脚本在两个全新 Linux 容器中独立运行，四个平台归档逐字节一致；远端五个资产重新下载后与本地产物逐字节一致。
+- GitHub Actions 最新 CI、snapshot 和 tag workflow 因账户 payment/spending limit 在 0 step 调度前失败；这不是代码测试失败，也不记为远端门禁通过。完整证据见最终 release verification report。
