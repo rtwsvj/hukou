@@ -26,6 +26,8 @@
 | H1-C7 | upgrade 激活前二次检查 live SHA，避免下载窗口内外部更新被覆盖 | 外部变更 E2E |
 | H1-C8 | manifest 分开记录下载资产与 active binary 的 hash/checksum 证据；hukou detector 重新核对 live SHA | manifest/provenance round-trip 与漂移测试 |
 | H1-C9 | CLI 提供可注入的 release buildinfo 与 `version` 命令 | `internal/buildinfo`, `cmd/version.go` |
+| H1-C10 | live path 使用 regular-file copy + fsync + rename；original/版本 write-once，regular snapshot 独立，不共享 live inode | `internal/store`, regular 原子观察与 rollback→upgrade E2E |
+| H1-C11 | store 内部目录精确拼写且拒绝 case alias/symlink escape；`.tmp`/`original` 保留名和非法 adopt tag 在持久化前失败关闭 | store 路径边界单测与 invalid-tag E2E |
 
 ## 实际修改范围
 
@@ -43,9 +45,10 @@
 | provenance 定向测试 | pass |
 | cmd / archive / assetpick / verify / state 修复后定向测试 | pass |
 | Unix state 包 Linux/FreeBSD/NetBSD/OpenBSD 交叉编译 | pass |
-| `make verify COVERAGE=/tmp/hukou-final-precommit.out` | pass：module verify、vet、test、race、coverage、build |
-| `go test -json -count=1 ./...` | pass：41 个具名测试，无缓存复跑 |
-| `go tool cover -func=/tmp/hukou-final-precommit.out` | pass：总语句覆盖率 78.9% |
+| `make verify COVERAGE=/tmp/hukou-prepush-final.out` | pass：module verify、vet、test、race、coverage、build |
+| `go test -json -count=1 ./...` | pass：13 packages / 325 passed，无缓存复跑 |
+| `go tool cover -func=/tmp/hukou-prepush-final.out` | pass：总语句覆盖率 79.0% |
+| store/命名空间/补偿路径定向压力 | pass：500 次 store/invalid-tag + 200 次 upgrade/rollback 补偿 |
 | Darwin/Linux × amd64/arm64 交叉构建及格式检查 | pass：2 个 Mach-O、2 个静态 ELF |
 | 隔离 CLI smoke（临时 HOME/PATH/data root） | pass：version、scan、adopt local、list、hukou 来源复核、upgrade local dry-run |
 | workflow YAML、release shell、`gofmt -l .`、`git diff --check` | pass |
@@ -58,6 +61,8 @@
 - release 完全没有 checksum asset 时继续安装，但记录 `asset_sha256` 并保持 `checksum_verified=false`；这是明确产品策略，不称为发布方校验。
 - Windows 未列入首发目标；非 Unix 锁只保留编译 fallback，不声明 crash recovery。
 - 失败可能留下不可达 store 版本；不会切换 live path，后续由 doctor/GC 审计处理。
+- 文件复制只承诺字节与 rwx 位；owner/group、ACL、xattr、mtime、特殊权限位和 hardlink topology 不保留，adopt 对特权/特殊权限位失败关闭。
+- 默认 rollback 依 store mtime 选择最近的其他 tag，不是历史栈；最终 SHA 到 activate 的非协作外部写窄窗口留 H2。
 
 ## 下一步
 

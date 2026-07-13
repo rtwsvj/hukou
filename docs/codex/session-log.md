@@ -33,4 +33,14 @@
 - PR: `https://github.com/rtwsvj/hukou/pull/1`
 - Run: `29265826948`
 - Ubuntu、quality、coverage：pass。
-- macOS：既有 symlink atomicity 测试用两次独立路径查找，在并发替换时收到 `EINVAL`；已改为单次 `Readlink` 原子观察并完成 500 次定向压力复跑，等待远端新 run。
+- macOS：并发替换 symlink inode 时 `ReadFile` 收到 `EINVAL`；改成单次 `Readlink` 后进入第二次远端运行。
+
+### PR CI 第二次运行与 regular-file 迁移
+
+- Run: `29266208797`
+- Ubuntu、quality、coverage：pass。
+- macOS：唯一一次 `Readlink` 仍返回 `EINVAL`，确认是 macOS/APFS symlink 交换语义，不是测试的双 lookup 假阳性。
+- Decision: `ADR-0002`；live 改为同目录完整 regular-file copy + `fsync` + rename。
+- Commit: `513d8bb87f1931c152c7e336faf7bc4a5e4d02b3`。
+- Additional hardening: original/version write-once、regular 独立 snapshot、post-snapshot SHA、pre-activation 错误只丢弃 snapshot、精确 tag+SHA Prune、case alias/内部 symlink escape/非法 adopt tag fail closed。
+- Verification: `make verify`、13 packages / 325 tests、race、79.0% coverage、四目标交叉构建、store/补偿压力通过；等待第三次远端 CI。
