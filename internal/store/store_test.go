@@ -238,6 +238,18 @@ func TestSymlinkAtomicReplace(t *testing.T) {
 	if err := s.Activate("tool", "v1.0", linkPath); err != nil {
 		t.Fatalf("Activate initial: %v", err)
 	}
+	v1Target, err := filepath.EvalSymlinks(filepath.Join(root, "tool", "v1.0", "mybin"))
+	if err != nil {
+		t.Fatalf("resolve v1 target: %v", err)
+	}
+	v2Target, err := filepath.EvalSymlinks(filepath.Join(root, "tool", "v2.0", "mybin"))
+	if err != nil {
+		t.Fatalf("resolve v2 target: %v", err)
+	}
+	validTargets := map[string]string{
+		v1Target: "v1",
+		v2Target: "v2",
+	}
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -253,24 +265,27 @@ func TestSymlinkAtomicReplace(t *testing.T) {
 			default:
 			}
 
-			info, err := os.Lstat(linkPath)
+			// Readlink is the single namespace observation under test. An Lstat
+			// followed by ReadFile performs two independent path lookups while
+			// the symlink is intentionally being replaced.
+			target, err := os.Readlink(linkPath)
 			if err != nil {
-				errs <- "lstat: " + err.Error()
+				errs <- "readlink: " + err.Error()
 				return
 			}
-			if info.Mode()&os.ModeSymlink == 0 {
-				errs <- "linkPath is not a symlink"
+			want, ok := validTargets[target]
+			if !ok {
+				errs <- "unexpected target: " + target
 				return
 			}
 
-			got, err := os.ReadFile(linkPath)
+			got, err := os.ReadFile(target)
 			if err != nil {
-				errs <- "read: " + err.Error()
+				errs <- "read target: " + err.Error()
 				return
 			}
-			content := string(got)
-			if content != "v1" && content != "v2" {
-				errs <- "unexpected content: " + content
+			if string(got) != want {
+				errs <- fmt.Sprintf("target %s content = %q, want %q", target, got, want)
 				return
 			}
 		}
