@@ -4,7 +4,9 @@
 
 - Verification ID: `VERIFY-20260713-h1-local`
 - Date: 2026-07-13
-- Subject Commit: `f20c64264720dcc08ac2964aee16bc26608ef120`
+- Subject Commits:
+  - `f20c64264720dcc08ac2964aee16bc26608ef120`（H1 implementation）
+  - `f3417bd82fe992f3f98596f636d5ec79240a1f5b`（CI 暴露的跨平台测试观察修正）
 - Branch: `codex/hukou-hardening-release`
 - Environment: macOS Darwin 27.0.0, arm64
 - Go: `go1.26.5 darwin/arm64`
@@ -39,6 +41,7 @@
 | `make verify COVERAGE=/tmp/hukou-final-precommit.out` | 0 | module verify、vet、test、race、coverage、build 全绿 |
 | `go test -json -count=1 ./...` | 0 | 41 个具名测试无缓存复跑；RTK 汇总 13 packages / 289 passed |
 | `go test -race -count=1 ./...` | 0 | 13 packages / 289 passed |
+| `go test ./internal/store -run '^TestSymlinkAtomicReplace$' -count=500` | 0 | 修正后的单次 `Readlink` 原子观察连续 500 次通过 |
 | `go tool cover -func=/tmp/hukou-final-precommit.out` | 0 | total statements 78.9% |
 | `CGO_ENABLED=0 GOOS={darwin,linux} GOARCH={amd64,arm64} go build` | 0 | Darwin 为 x86_64/arm64 Mach-O；Linux 为 x86-64/aarch64 静态 ELF |
 | Unix state 包 Linux/FreeBSD/NetBSD/OpenBSD 交叉编译 | 0 | 四个 Unix 目标通过 |
@@ -52,6 +55,15 @@
 ## 独立回顾
 
 并行只读回顾逐项对照代码、测试和 workflow。发现的高优先级缺口已在 subject commit 前关闭，包括：未知容器 bare 退化、长下载窗口 TOCTOU、歧义资产静默选择、`upgrade --all` 参数扩大、tag dispatch 误发布、tag/main/annotated 校验、checksum 文件映射、buildinfo smoke、macOS 发布门禁与发布 token 作用域。最终回顾未发现残留 P0/P1。
+
+## 首次远端 CI 反馈
+
+- PR: `https://github.com/rtwsvj/hukou/pull/1`
+- Initial CI Run: `https://github.com/rtwsvj/hukou/actions/runs/29265826948`
+- Ubuntu test/race/build/smoke、quality、coverage：pass。
+- macOS 初次失败：既有 `TestSymlinkAtomicReplace` 先 `Lstat(linkPath)`、再 `ReadFile(linkPath)`，在并发替换期间进行了两次独立路径查找，runner 返回瞬时 `EINVAL`。
+- 修正：测试用单次 `Readlink` 观察原子名字状态，只接受旧/新两个完整 target，再直接读取该不可变 store target；不降低对“link 始终为完整旧值或新值”的断言。
+- 修正后本地定向 500 次、全仓 uncached test 与 race 均通过；远端重跑结果仍 pending。
 
 ## 未运行与限制
 

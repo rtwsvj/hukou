@@ -27,3 +27,10 @@
 - coverage：78.9%。
 - Darwin/Linux × amd64/arm64 交叉构建：pass。
 - 隔离 CLI smoke：pass；未触碰真实 manifest/store。
+
+### PR CI 第一次运行
+
+- PR: `https://github.com/rtwsvj/hukou/pull/1`
+- Run: `29265826948`
+- Ubuntu、quality、coverage：pass。
+- macOS：既有 symlink atomicity 测试用两次独立路径查找，在并发替换时收到 `EINVAL`；已改为单次 `Readlink` 原子观察并完成 500 次定向压力复跑，等待远端新 run。
