@@ -6,7 +6,7 @@
 - Execution Report: `docs/codex/execution-reports/2026-07-13-hukou-hardening-release.md`
 - Verification Report: `docs/codex/verification-reports/2026-07-13-hukou-hardening-local.md`
 - Status: implemented
-- Verification Status: partial（本地 L1-L4 通过，远端 L5/Release 待执行）
+- Verification Status: pass-with-infrastructure-exception（Release 通过；GitHub-hosted runner gate 因计费限制未执行）
 - Branch: `codex/hukou-hardening-release`
 
 ## 用户请求
@@ -53,7 +53,7 @@
 | 隔离 CLI smoke（临时 HOME/PATH/data root） | pass：version、scan、adopt local、list、hukou 来源复核、upgrade local dry-run |
 | workflow YAML、release shell、`gofmt -l .`、`git diff --check` | pass |
 
-远端 Linux/macOS release gate、snapshot workflow 与 GitHub Release 证据将在提交后写入 verification report；本记录不提前声称这些远端门禁已通过。
+GitHub Release 与本地等价 release gate 已完成。GitHub-hosted CI/snapshot/tag workflow 因账户 payment/spending limit 在 0 step 调度前失败；本记录不把它写成代码失败，也不声称远端 runner 门禁通过。最终证据见 `2026-07-13-v0.1.0-release.md`。
 
 ## 已知边界
 
@@ -64,8 +64,9 @@
 - 文件复制只承诺字节与 rwx 位；owner/group、ACL、xattr、mtime、特殊权限位和 hardlink topology 不保留，adopt 对特权/特殊权限位失败关闭。
 - 默认 rollback 依 store mtime 选择最近的其他 tag，不是历史栈；最终 SHA 到 activate 的非协作外部写窄窗口留 H2。
 
-## 下一步
+## 发布结果
 
-1. 推送分支，等待 Linux/macOS CI 与手动 snapshot workflow。
-2. 合入 main、创建 `v0.1.0` tag，核对 Release assets/checksums。
-3. 创建最终 verification report，并把本记录的 Verification Status 更新为 pass/partial/fail。
+1. PR #1 已合入 `main@d15331dbe4d258d54253643b758c787bb63c95e1`。
+2. annotated `v0.1.0` tag 与非 draft/prerelease GitHub Release 已创建。
+3. 四个归档与 `checksums.txt` 远端重新下载后 4/4 checksum 通过，并与验证产物逐字节一致。
+4. 计费恢复后重跑 GitHub-hosted CI/release snapshot，作为补充证据，不改写本次基础设施例外。

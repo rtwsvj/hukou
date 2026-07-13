@@ -10,8 +10,8 @@
 |---|---|---|
 | Phase 1：PATH 扫描与溯源 | 已实现 | `specs/phase1-scan.md`、`records/` |
 | Phase 2：收编、升级、回滚、清单 | 已实现 | `specs/phase2-adopt-upgrade.md`、`records/` |
-| H1 安全硬化 | 执行中，尚未完成最终验证 | `codex/execution-reports/2026-07-13-hukou-hardening-release.md` |
-| 首个 SemVer 发布 | 待 H1 验证门通过 | `09-release.md` |
+| H1 安全硬化 | 已交付；GitHub-hosted runner 计费例外已记录 | `codex/verification-reports/2026-07-13-hukou-hardening-local.md` |
+| 首个 SemVer 发布 | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布 | `codex/verification-reports/2026-07-13-v0.1.0-release.md` |
 | 风险提示、生态导出、Windows | 未实现 | `02-roadmap.md` |
 
 任何“通过”结论必须同时给出提交号和 `codex/verification-reports/` 中的报告。当前执行报告不等于验证报告。

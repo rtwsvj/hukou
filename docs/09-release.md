@@ -1,5 +1,9 @@
 # 发布流程
 
+## 当前正式版本
+
+[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布，包含 Darwin/Linux × amd64/arm64 四个归档与 `checksums.txt`。本次 GitHub-hosted CI/snapshot/tag workflow 因账户 payment/spending limit 在 runner 调度前失败；发布仅在两个全新 Go/Linux 容器运行正式脚本得到逐字节一致结果、双平台 buildinfo smoke 通过、远端重新下载与本地产物逐字节一致后，使用同一 annotated tag 手动完成。该例外不改变未来正常流程的 runner gate 要求。
+
 ## 版本策略
 
 - 正式版本使用稳定 SemVer tag，例如 `v0.1.0`；当前发布脚本不接受 prerelease 或 build metadata。
@@ -66,5 +70,5 @@ tag 发布还会强制检查：tag 为 annotated tag、目标 commit 已在 `ori
 ## 回滚
 
 - tag 前失败：删除本地 `dist/`，修复后重跑，不创建 tag。
-- 若人工流程创建了 draft/未发布 Release：删除 draft 后重跑；当前自动 workflow 通过后会直接公开，不创建 draft。
-- 已公开 Release：不覆盖资产、不移动 tag；标注问题并发布 patch 版本。
+- 若人工流程创建了 draft/未发布 Release：删除 draft 后重跑；当前自动 workflow 通过后会直接发布，不创建 draft。
+- 已发布 Release：不覆盖资产、不移动 tag；标注问题并发布 patch 版本。

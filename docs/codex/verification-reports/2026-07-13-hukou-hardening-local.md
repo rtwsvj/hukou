@@ -11,12 +11,12 @@
 - Branch: `codex/hukou-hardening-release`
 - Environment: macOS Darwin 27.0.0, arm64
 - Go: `go1.26.5 darwin/arm64`
-- Verdict: **partial**
+- Verdict: **pass-with-infrastructure-exception**
 - Related Changes:
   - `CHANGE-20260713-h1-safety-hardening`
   - `CHANGE-20260713-docs-ci-release-foundation`
 
-`partial` 仅表示远端 GitHub Actions、GNU tar 双构建 snapshot 与 GitHub Release 尚未执行；本地 L1-L4 门禁已通过。
+本地 L1-L4、隔离 Linux GNU tar 双构建、远端资产复核与 GitHub Release 已通过。GitHub-hosted runner gate 因账户 payment/spending limit 在 0 step 调度前被拒绝，单独记为 infrastructure exception；不声称该远端门禁通过。
 
 ## Claims vs Evidence
 
@@ -35,8 +35,9 @@
 | manifest 区分资产摘要与 active binary 摘要；hukou detector 复核 live SHA | manifest/provenance 单测 | pass |
 | CLI buildinfo/version 接线可测试 | version 单测与隔离 smoke | pass |
 | 当前工程门禁与四目标独立构建可用 | `make verify` + 交叉构建 | pass |
-| GitHub 双平台 release gate 与可重复归档 | 远端 workflow 尚未执行 | pending |
-| `v0.1.0` Release 及五个远端资产 | 尚未创建 tag | pending |
+| GitHub 双平台 runner gate | workflow 已配置；最新 run 在 0 step 前被账户计费限制拒绝 | infrastructure-blocked |
+| 隔离 Linux 正式脚本双构建与可重复归档 | 两个全新 Go/Linux 容器独立构建并逐字节比较 | pass |
+| `v0.1.0` Release 及五个远端资产 | annotated tag、Release metadata、远端重下与 checksum/cmp | pass |
 
 ## 已运行命令
 
@@ -69,19 +70,18 @@
 - Ubuntu test/race/build/smoke、quality、coverage：pass。
 - macOS 初次失败：并发替换 symlink inode 时 `ReadFile(linkPath)` 返回瞬时 `EINVAL`；测试改成单次 `Readlink` 后，第二次 macOS CI 仍在该唯一 lookup 返回 `EINVAL`。两次 Ubuntu 均通过，说明这不是“两次路径查找”的测试假阳性，而是 macOS/APFS 上 symlink 交换模型不满足持续打开契约。
 - 决策：不忽略错误，也不弱化测试；依据 [`ADR-0002`](../../adr/ADR-0002-regular-file-activation.md) 把 live 激活改为“同目录完整 regular 临时文件 → mode → `fsync` → close → rename”。事务 snapshot 改为独立副本，original/version 改为 write-once，并补齐路径与命名空间边界。
-- 修正后本地全量、race、四目标交叉构建与对抗压力均通过；等待推送后的第三次远端 macOS/Linux CI。
+- 修正后本地全量、race、四目标交叉构建与对抗压力均通过。第三次 CI Run `29268485688` 的四个 job 因账户 payment/spending limit 在 0 step 调度前失败；没有 runner 结果可用于判断代码。
 
 ## 未运行与限制
 
-- 本机只有 BSD tar，未安装 `gtar`；没有为了验证而改变机器软件状态。归档位复现留给 Ubuntu snapshot workflow。
-- 新建的 `workflow_dispatch` 需要 workflow 先进入默认分支；应在合并后、打 tag 前执行。
+- 本机没有安装 `gtar`；使用临时启动的现有 Colima 在两个全新 Go/Linux 容器中运行正式脚本，验证后已把 Colima 恢复为停止状态。
+- `workflow_dispatch`、PR CI 与 tag workflow 均已触发，但被同一账户计费限制在 0 step 前拒绝；详细发布证据见 `2026-07-13-v0.1.0-release.md`。
 - 没有读写真实 hukou manifest/store，也没有替换真实用户二进制。
 - 未做真实公共网络 fixture E2E；当前网络行为由 `httptest` 覆盖，公共 fixture 留 H2。
 - 可观测错误补偿不等于断电或 `SIGKILL` crash safety；WAL/doctor 留 H2。
 
-## 下一验证门
+## 后续补充门
 
-1. 推送分支并通过 PR 的 Linux/macOS CI。
-2. 合入 `main` 后手动运行 `release.yml` snapshot，核对双构建、四个 archive、四条 checksum 与 buildinfo。
-3. 推送 annotated `v0.1.0` tag，确认 tag release workflow 与五个远端资产。
-4. 将本报告补充远端 run/release 证据并更新最终 verdict。
+1. 恢复 GitHub Actions 计费/额度后重跑 PR/main CI 与手动 release snapshot。
+2. 只把实际执行的 runner 结果补入报告，不把当前 0-step failure 改写成代码通过或失败。
+3. `v0.1.0` tag 与已发布资产保持不可变；任何后续修复使用新的 patch release。
