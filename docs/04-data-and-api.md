@@ -12,6 +12,11 @@
 <dataRoot>/
 ├── state.lock
 ├── manifest.json
+├── manifest.json.bak
+├── transactions/
+│   ├── .building-<id>/
+│   ├── pending-<id>/
+│   └── completed-<id>/
 └── store/
     ├── .tmp/
     └── <name>/
@@ -19,7 +24,7 @@
         └── <tag>/<binary>
 ```
 
-`state.lock` 串行化同一 data root 上的 adopt、真实 upgrade 和 rollback。scan 与纯 dry-run 不持有写锁。Darwin/Linux 实现使用非阻塞 `flock`，拒绝把预置软链当作锁文件。
+`state.lock` 串行化同一 data root 上的 adopt、真实 upgrade 和 rollback。写命令获得锁后先恢复 transactions。scan、list、doctor 与纯 dry-run 不持有写锁；只读路径发现 pending 状态时报告或拒绝使用 hukou 归属。Darwin/Linux 实现使用非阻塞 `flock`，拒绝把预置软链当作锁文件。
 
 ## Manifest schema
 
@@ -55,12 +60,19 @@ Entry 字段：
 
 ## 原子性与持久性边界
 
-- manifest 使用同目录临时文件加 rename。
-- 活跃二进制使用目标目录内完整临时常规文件、`fsync`、close 加 rename；不会让 PATH 名称指向正在交换的 symlink inode。
+- manifest 使用同目录完整临时文件、file sync、close、rename 与 parent sync；覆盖前把上一份可解析且 schema 受支持的内容保存为 `manifest.json.bak`。主文件或 backup 为 symlink/非 regular 时失败关闭；backup 仍由 doctor 做字段、重复项和 hash 格式等语义审计。
+- 活跃二进制使用目标目录内完整临时常规文件、file sync、close、rename 与 parent sync；不会让 PATH 名称指向正在交换的 symlink inode。
 - store 的 name/tag/original/`.tmp` 子目录使用精确拼写解析；大小写别名、symlink 与非目录中间组件均失败关闭，避免写入或 Prune 越出 store 信任根。
+- store 的 mkdir、hard link、rename、remove 与 GC 在完成后同步受影响目录。
 - store、快照和活跃文件之间的复制只保证字节与 rwx 权限位。owner/group、ACL、xattr、mtime、setuid/setgid/sticky 等特殊权限位和 hardlink topology 不保留；`adopt` 拒绝带特权或特殊权限位的源文件。
-- H1 对普通错误返回执行补偿恢复。
-- 当前不承诺断电、`SIGKILL`、磁盘/文件系统损坏后的自动恢复。目录 `fsync` 和 WAL 仍属 H2；进程被强制终止时，live path 所在目录可能留下未生效的 `.hukou-tmp-*` 临时文件。见 [`08-risk-and-debt.md`](08-risk-and-debt.md)。
+- H1 普通错误补偿与 H2 WAL 使用同一收敛目标：PREPARED 回滚 before，durable COMMIT 前滚 after。
+- WAL 覆盖 hukou 协作写及其真实进程中断窗口；不宣称修复未知外部漂移、磁盘 bitrot 或文件系统损坏。见 [`08-risk-and-debt.md`](08-risk-and-debt.md)。
+
+## Transaction journal schema
+
+journal schema 与 manifest schema 独立。`intent.json` 记录 operation、name、每个 absolute resource path，以及 before/after 的 topology、SHA-256、rwx mode 与 journal-local payload。regular payload 不依赖 store 在恢复时仍完整存在；legacy symlink before 保存精确 link target。
+
+`COMMIT` 是唯一不可逆方向标记。cleanup 前先把 pending 原子移动到 completed namespace，避免删除中断把已提交事务误识别成未提交。
 
 ## GitHub API
 

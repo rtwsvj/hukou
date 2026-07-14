@@ -14,3 +14,8 @@
 | fail closed | 证据缺失或校验异常时停止，不降级为继续安装 |
 | 补偿 | 激活后后续步骤失败时恢复旧路径与 manifest 状态 |
 | H1 | 2026-07-13 安全硬化与首个 SemVer 发布里程碑 |
+| WAL / transaction journal | 改变用户状态前持久化的 before/after 恢复记录与 COMMIT 决策 |
+| PREPARED | journal 已 durable，但事务尚未作出不可逆提交决定；恢复方向为 before |
+| COMMITTED | durable COMMIT 已存在；恢复方向为 after |
+| doctor | 默认零写、零网络的 hukou 本地状态审计命令 |
+| UNCLASSIFIABLE | manifest 证据无效，无法安全判断 store 内容是否 orphan |

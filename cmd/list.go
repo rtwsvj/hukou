@@ -6,6 +6,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,9 @@ func runList(cmd *cobra.Command, _ []string) error {
 }
 
 func doList(stdout io.Writer) error {
+	if err := statejournal.CheckClean(dataRoot()); err != nil {
+		return fail(fmt.Errorf("state may be inconsistent: %w", err))
+	}
 	m, err := loadManifest()
 	if err != nil {
 		return fail(err)
@@ -42,7 +46,10 @@ func doList(stdout io.Writer) error {
 	sort.Slice(m.Entries, func(i, j int) bool { return m.Entries[i].Name < m.Entries[j].Name })
 
 	for _, e := range m.Entries {
-		versions, _ := s.Versions(e.Name)
+		versions, err := s.Versions(e.Name)
+		if err != nil {
+			return fail(fmt.Errorf("inspect store versions for %s: %w", e.Name, err))
+		}
 		repo := e.Repo
 		if repo == "" {
 			repo = "(local)"

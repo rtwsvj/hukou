@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 	"github.com/spf13/cobra"
 )
 
@@ -145,19 +147,14 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 		return fail(err)
 	}
 
-	if err := s.AdoptOriginal(name, binPath); err != nil {
-		return fail(fmt.Errorf("backup original: %w", err))
+	origPath, err := s.PrepareOriginalPath(name, filepath.Base(binPath))
+	if err != nil {
+		return fail(fmt.Errorf("prepare original path: %w", err))
 	}
-	origPath := filepath.Join(storeRoot(), name, "original", name)
-	backupSHA, backupErr := store.SHA256File(origPath)
-	liveSHA, liveErr := store.SHA256File(binPath)
-	backupInfo, backupStatErr := os.Stat(origPath)
-	liveInfo, liveStatErr := os.Stat(binPath)
-	modeChanged := backupStatErr == nil && liveStatErr == nil &&
-		(backupInfo.Mode().Perm() != info.Mode().Perm() || liveInfo.Mode().Perm() != info.Mode().Perm())
-	if backupErr != nil || liveErr != nil || backupStatErr != nil || liveStatErr != nil || backupSHA != sha || liveSHA != sha || modeChanged {
-		_ = os.Remove(origPath)
-		return fail(fmt.Errorf("binary changed while creating original backup; refusing inconsistent adoption (backup_err=%v live_err=%v backup_stat_err=%v live_stat_err=%v)", backupErr, liveErr, backupStatErr, liveStatErr))
+	if _, err := os.Lstat(origPath); err == nil {
+		return fail(fmt.Errorf("original backup already exists: %s", origPath))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fail(err)
 	}
 
 	entry := manifest.Entry{
@@ -170,11 +167,55 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 		AdoptedAt: rfc3339Now(),
 		UpdatedAt: rfc3339Now(),
 	}
+	afterManifest := cloneManifest(m)
+	afterManifest.Put(entry)
+	manifestBytes, err := encodeManifest(afterManifest)
+	if err != nil {
+		return fail(fmt.Errorf("encode adoption manifest: %w", err))
+	}
+	tx, err := statejournal.Begin(dataRoot(), "adopt", name, []statejournal.Spec{
+		{Role: "original", Path: origPath, After: statejournal.RegularFile(binPath)},
+		{Role: "live-guard", Path: binPath, After: statejournal.Unchanged()},
+		{Role: "manifest", Path: manifestPath(), After: statejournal.RegularBytes(manifestBytes, 0o600)},
+	})
+	if err != nil {
+		return fail(fmt.Errorf("prepare adoption transaction: %w", err))
+	}
+	beforeOriginal, _ := tx.Before("original")
+	if beforeOriginal.Kind != statejournal.KindAbsent {
+		return fail(abortStateTransaction(tx, fmt.Errorf("original backup appeared concurrently: %s", origPath)))
+	}
+	if err := validateTransactionStateSHA(tx, "original", sha, true); err != nil {
+		return fail(abortStateTransaction(tx, err))
+	}
+	if err := validateTransactionStateSHA(tx, "live-guard", sha, false); err != nil {
+		return fail(abortStateTransaction(tx, fmt.Errorf("binary changed while preparing adoption: %w", err)))
+	}
+	if err := tx.Apply("original"); err != nil {
+		return fail(abortStateTransaction(tx, fmt.Errorf("backup original: %w", err)))
+	}
+	backupSHA, backupErr := store.SHA256File(origPath)
+	liveSHA, liveErr := store.SHA256File(binPath)
+	backupInfo, backupStatErr := os.Stat(origPath)
+	liveInfo, liveStatErr := os.Stat(binPath)
+	modeChanged := backupStatErr == nil && liveStatErr == nil &&
+		(backupInfo.Mode().Perm() != info.Mode().Perm() || liveInfo.Mode().Perm() != info.Mode().Perm())
+	if backupErr != nil || liveErr != nil || backupStatErr != nil || liveStatErr != nil || backupSHA != sha || liveSHA != sha || modeChanged {
+		return fail(abortStateTransaction(tx, fmt.Errorf("binary changed while creating original backup; refusing inconsistent adoption (backup_err=%v live_err=%v backup_stat_err=%v live_stat_err=%v)", backupErr, liveErr, backupStatErr, liveStatErr)))
+	}
+
+	if err := tx.Verify("manifest", false); err != nil {
+		return fail(abortStateTransaction(tx, fmt.Errorf("manifest changed during adoption; refusing overwrite: %w", err)))
+	}
 	m.Put(entry)
 	if err := save(m); err != nil {
-		_ = os.Remove(origPath)
-		return fail(fmt.Errorf("save manifest: %w", err))
+		m.Remove(name)
+		return fail(abortStateTransaction(tx, fmt.Errorf("save manifest: %w", err)))
 	}
+	if err := commitStateTransaction(tx); err != nil {
+		return fail(fmt.Errorf("commit adoption transaction: %w", err))
+	}
+	finalizeStateTransaction(tx, stderr, name, "收编")
 
 	fmt.Fprintf(stdout, "已收编 %s (%s) → %s\n", name, tag, binPath)
 	if repo != "" {

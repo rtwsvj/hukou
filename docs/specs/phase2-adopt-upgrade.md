@@ -34,7 +34,9 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active
 
 数据根优先使用 `HUKOU_DATA_DIR`，否则 `${XDG_DATA_HOME}/hukou`，默认 `~/.local/share/hukou`。adopt、真实 upgrade、rollback 非阻塞获取 `<dataRoot>/state.lock`；锁已占用时立即报错。scan 和纯 dry-run 不持写锁。
 
-**替换模型**:original 与各版本在 store 中保持不可变副本。升级/回滚把目标版本复制为 PATH 位置同目录的完整临时常规文件，设置 mode、`fsync`、close 后 rename 覆盖活跃文件。新激活不交换 symlink inode；旧版遗留 symlink 作为兼容输入，首次成功激活后迁移为常规文件。
+**替换模型**：original 与各版本在 store 中保持不可变副本。升级/回滚把目标版本复制为 PATH 位置同目录的完整临时常规文件，设置 mode、`fsync`、close 后 rename 覆盖活跃文件，并同步父目录。新激活不交换 symlink inode；旧版遗留 symlink 作为兼容输入，首次成功激活后迁移为常规文件。
+
+**崩溃模型**：adopt/upgrade/rollback 在改变 original/live/manifest 前发布包含精确 before/after payload 的 PREPARED transaction。只有所有目标资源 durable 后才写 durable COMMIT。恢复无 COMMIT 的 transaction 到 before，有 COMMIT 的 transaction 到 after；预检或写入前复核发现第三种外部状态时不覆盖并保留证据。非协作 writer 在最终复核与系统调用之间的窄 TOCTOU 窗口属于明确边界。
 
 ## 网络层(internal/ghrelease)
 
@@ -64,7 +66,8 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active
 ## 安全红线
 
 - 永不触碰未收编的二进制;upgrade/rollback 前验证 manifest 中 sha256 与磁盘现状一致,upgrade 在下载/解压后、激活前再次验证,不一致(被外部改过)时中止并提示
-- 所有文件替换原子化;下载/解压临时文件统一放 store/.tmp/、启动时清理;激活临时常规文件放在 live path 同目录的隐藏名 `.hukou-tmp-*`，完成写入、mode、`fsync`、close 后再 rename。upgrade/rollback 在激活前捕获旧路径拓扑与旧 manifest；激活后任一可观测错误必须补偿恢复。断电/SIGKILL 一致性留待 WAL/doctor。
+- 所有文件替换原子化；下载/解压临时文件统一放 store/.tmp/、写命令启动恢复后清理；激活临时常规文件放在 live path 同目录的隐藏名，完成写入、mode、file sync、close、rename 与 parent sync。普通错误与进程中断都由同一 transaction before/after 收敛规则处理。
+- `hukou doctor` 默认只读检查 manifest、backup、live、store 与 transaction；没有显式、可枚举 repair action 时不得修改现场。
 - scan 保持纯只读,不受 Phase 2 影响
 - `upgrade --dry-run` 只读取 manifest 与 GitHub release metadata:不得创建 data root、不得获取写锁、不得 GC、不得下载资产。
 

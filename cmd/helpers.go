@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -8,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/scan"
 	"github.com/rtwsvj/hukou/internal/state"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
 // dataRoot returns the hukou data directory.
@@ -35,10 +38,17 @@ func storeRoot() string    { return filepath.Join(dataRoot(), "store") }
 func newStore() *store.Store { return &store.Store{Root: storeRoot()} }
 
 func acquireMutationLock() (*state.Lock, error) {
-	if err := os.MkdirAll(dataRoot(), 0o755); err != nil {
+	if err := durablefs.MkdirAll(dataRoot(), 0o755); err != nil {
 		return nil, err
 	}
-	return state.Acquire(filepath.Join(dataRoot(), "state.lock"))
+	lock, err := state.Acquire(filepath.Join(dataRoot(), "state.lock"))
+	if err != nil {
+		return nil, err
+	}
+	if err := statejournal.Recover(dataRoot()); err != nil {
+		return nil, errors.Join(fmt.Errorf("recover unfinished transaction: %w", err), lock.Release())
+	}
+	return lock, nil
 }
 
 func releaseMutationLock(lock *state.Lock, stderr io.Writer) {
@@ -54,7 +64,7 @@ func loadManifest() (*manifest.Manifest, error) {
 }
 
 func saveManifest(m *manifest.Manifest) error {
-	if err := os.MkdirAll(filepath.Dir(manifestPath()), 0o755); err != nil {
+	if err := durablefs.MkdirAll(filepath.Dir(manifestPath()), 0o755); err != nil {
 		return err
 	}
 	return m.Save(manifestPath())

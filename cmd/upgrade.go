@@ -15,6 +15,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/scan"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 	"github.com/rtwsvj/hukou/internal/verify"
 	"github.com/spf13/cobra"
 )
@@ -61,6 +62,8 @@ func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun boo
 			return fail(fmt.Errorf("acquire state lock: %w", err))
 		}
 		defer releaseMutationLock(lock, stderr)
+	} else if err := ensureDryRunTransactionClean(); err != nil {
+		return fail(err)
 	}
 
 	m, err := loadManifest()
@@ -105,7 +108,17 @@ func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun boo
 		}
 		if err := upgradeOne(stdout, stderr, s, client, m, &entry, dryRun, assetFilter, save); err != nil {
 			fmt.Fprintf(stderr, "警告: %s 升级失败: %v\n", entry.Name, err)
-			failures = append(failures, fmt.Errorf("%s: %w", entry.Name, err))
+			failure := fmt.Errorf("%s: %w", entry.Name, err)
+			if !dryRun {
+				if cleanErr := statejournal.CheckClean(dataRoot()); cleanErr != nil {
+					stopErr := fmt.Errorf("state remains unresolved; stop the upgrade batch before further network or store activity: %w", cleanErr)
+					fmt.Fprintf(stderr, "警告: %v\n", stopErr)
+					failure = errors.Join(failure, stopErr)
+					failures = append(failures, failure)
+					break
+				}
+			}
+			failures = append(failures, failure)
 		}
 	}
 	if len(failures) > 0 {
@@ -260,76 +273,114 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	if latestSHA != e.SHA256 {
 		return fmt.Errorf("当前文件在升级过程中被外部修改；拒绝覆盖")
 	}
-	snapshot, err := store.SnapshotLive(e.Path)
-	if err != nil {
-		return fmt.Errorf("snapshot current installation: %w", err)
-	}
-	postSnapshotSHA, err := store.SHA256File(e.Path)
-	if err != nil || postSnapshotSHA != e.SHA256 {
-		operationErr := err
-		if operationErr == nil {
-			operationErr = fmt.Errorf("当前文件在创建事务快照时被外部修改；拒绝覆盖")
-		}
-		if cleanupErr := snapshot.Commit(); cleanupErr != nil {
-			return errors.Join(operationErr, fmt.Errorf("discard unused live snapshot: %w", cleanupErr))
-		}
-		return operationErr
-	}
-
 	pathInfo, err := os.Lstat(e.Path)
 	if err != nil {
-		return discardLiveAfterError(snapshot, fmt.Errorf("lstat %s: %w", e.Path, err))
+		return fmt.Errorf("lstat %s: %w", e.Path, err)
 	}
+	var originalPath string
+	needsOriginal := false
 	if pathInfo.Mode()&os.ModeSymlink == 0 {
-		// First upgrade: make sure the original backup exists before replacing
-		// the live regular file with the selected store version.
-		origPath := filepath.Join(s.Root, e.Name, "original", e.Name)
-		if _, err := os.Stat(origPath); os.IsNotExist(err) {
-			if err := s.AdoptOriginal(e.Name, e.Path); err != nil {
-				return discardLiveAfterError(snapshot, fmt.Errorf("adopt original: %w", err))
-			}
-			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-				return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
-			}
+		originalPath, err = s.PrepareOriginalPath(e.Name, e.Name)
+		if err != nil {
+			return fmt.Errorf("prepare original path: %w", err)
+		}
+		if _, err := os.Lstat(originalPath); errors.Is(err, os.ErrNotExist) {
+			needsOriginal = true
+		} else if err != nil {
+			return fmt.Errorf("inspect original backup: %w", err)
 		} else {
 			// original/ already contains the adopt-time backup; copy the
 			// current live binary into its validated version directory before
-			// atomically replacing the live path.
+			// publishing the transaction intent.
 			if e.Tag != "original" {
 				if err := s.Put(e.Name, e.Tag, e.Path); err != nil {
-					return discardLiveAfterError(snapshot, fmt.Errorf("backup current version: %w", err))
+					return fmt.Errorf("backup current version: %w", err)
 				}
 			}
-			if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-				return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
-			}
-		}
-	} else {
-		if err := s.Activate(e.Name, release.TagName, e.Path); err != nil {
-			return discardLiveAfterError(snapshot, fmt.Errorf("activate: %w", err))
 		}
 	}
 
-	activeSHA, err := store.SHA256File(e.Path)
+	targetSource, err := s.ActivationSource(e.Name, release.TagName)
 	if err != nil {
-		return restoreLiveAfterError(snapshot, fmt.Errorf("sha256 active binary: %w", err))
+		return fmt.Errorf("resolve activation source: %w", err)
 	}
-	e.Tag = release.TagName
-	e.SHA256 = activeSHA
-	e.UpdatedAt = rfc3339Now()
-	e.AssetName = chosen
-	e.AssetSHA256 = assetSHA
-	e.ChecksumAsset = checksumAsset
-	e.ChecksumVerified = checksumVerified
-	m.Put(*e)
+	targetSHA, err := store.SHA256File(targetSource)
+	if err != nil {
+		return fmt.Errorf("sha256 activation source: %w", err)
+	}
+	newEntry := oldEntry
+	newEntry.Tag = release.TagName
+	newEntry.SHA256 = targetSHA
+	newEntry.UpdatedAt = rfc3339Now()
+	newEntry.AssetName = chosen
+	newEntry.AssetSHA256 = assetSHA
+	newEntry.ChecksumAsset = checksumAsset
+	newEntry.ChecksumVerified = checksumVerified
+	afterManifest := cloneManifest(m)
+	afterManifest.Put(newEntry)
+	manifestBytes, err := encodeManifest(afterManifest)
+	if err != nil {
+		return fmt.Errorf("encode target manifest: %w", err)
+	}
+	specs := make([]statejournal.Spec, 0, 3)
+	if needsOriginal {
+		specs = append(specs, statejournal.Spec{Role: "original", Path: originalPath, After: statejournal.RegularFile(e.Path)})
+	}
+	specs = append(specs,
+		statejournal.Spec{Role: "live", Path: e.Path, After: statejournal.RegularFile(targetSource)},
+		statejournal.Spec{Role: "manifest", Path: manifestPath(), After: statejournal.RegularBytes(manifestBytes, 0o600)},
+	)
+	tx, err := statejournal.Begin(dataRoot(), "upgrade", e.Name, specs)
+	if err != nil {
+		return fmt.Errorf("prepare upgrade transaction: %w", err)
+	}
+	if err := validateTransactionStateSHA(tx, "live", oldEntry.SHA256, false); err != nil {
+		return abortStateTransaction(tx, fmt.Errorf("当前文件在创建事务日志时被外部修改；拒绝覆盖: %w", err))
+	}
+	beforeLive, _ := tx.Before("live")
+	if pathInfo.Mode()&os.ModeSymlink == 0 && beforeLive.Mode != uint32(pathInfo.Mode().Perm()) {
+		return abortStateTransaction(tx, fmt.Errorf("当前文件在创建事务日志时权限发生变化；拒绝覆盖"))
+	}
+	if err := validateTransactionStateSHA(tx, "live", targetSHA, true); err != nil {
+		return abortStateTransaction(tx, err)
+	}
+	if needsOriginal {
+		before, _ := tx.Before("original")
+		if before.Kind != statejournal.KindAbsent {
+			return abortStateTransaction(tx, fmt.Errorf("original backup appeared concurrently: %s", originalPath))
+		}
+		if err := validateTransactionStateSHA(tx, "original", oldEntry.SHA256, true); err != nil {
+			return abortStateTransaction(tx, err)
+		}
+		afterOriginal, _ := tx.After("original")
+		if afterOriginal.Mode != beforeLive.Mode {
+			return abortStateTransaction(tx, fmt.Errorf("original snapshot mode differs from live transaction state"))
+		}
+		if err := tx.Apply("original"); err != nil {
+			return abortStateTransaction(tx, fmt.Errorf("adopt original: %w", err))
+		}
+	}
+	if err := tx.Apply("live"); err != nil {
+		return abortStateTransaction(tx, fmt.Errorf("当前文件在事务应用前被外部修改或无法激活；拒绝覆盖: activate: %w", err))
+	}
+	if err := tx.Verify("manifest", false); err != nil {
+		return abortStateTransaction(tx, fmt.Errorf("manifest changed during upgrade; refusing overwrite: %w", err))
+	}
+	*e = newEntry
+	m.Put(newEntry)
 	if err := save(m); err != nil {
 		*e = oldEntry
 		m.Put(oldEntry)
-		return restoreLiveAfterError(snapshot, fmt.Errorf("save manifest: %w", err))
+		return abortStateTransaction(tx, fmt.Errorf("save manifest: %w", err))
 	}
-	if err := snapshot.Commit(); err != nil {
-		fmt.Fprintf(stderr, "警告: %s 升级已完成，但清理事务快照失败: %v\n", e.Name, err)
+	if err := commitStateTransaction(tx); err != nil {
+		refreshErr := refreshManifest(m)
+		if current := m.Get(e.Name); current != nil {
+			*e = *current
+		}
+		return errors.Join(fmt.Errorf("commit upgrade transaction: %w", err), refreshErr)
 	}
+	finalizeStateTransaction(tx, stderr, e.Name, "升级")
 
 	if err := s.Prune(e.Name, 3, e.Tag, e.SHA256); err != nil {
 		fmt.Fprintf(stderr, "警告: %s 清理旧版本失败: %v\n", e.Name, err)

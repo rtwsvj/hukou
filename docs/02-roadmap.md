@@ -39,10 +39,15 @@
 
 ## H2：运维与崩溃恢复
 
-- WAL/事务日志或等价恢复机制。
-- `doctor`/repair、manifest 备份与孤儿 store 检测。
-- 可配置版本保留策略。
-- 真实公共 fixture repo 的定时 smoke。
+状态：**恢复与只读诊断基础已实现，repair/历史策略与网络 smoke 尚未完成**。
+
+- [x] adopt/upgrade/rollback 单全局 WAL：PREPARED 回滚、COMMITTED 前滚、unknown drift 失败关闭
+- [x] manifest、store、live、事务 payload 的文件与父目录持久化
+- [x] 上一份可解析且 schema 受支持的 `manifest.json.bak`
+- [x] 默认零写、零网络的 `doctor` 文本/JSON审计与 orphan/unclassifiable 区分
+- [ ] 显式枚举、state fingerprint 绑定的安全 repair 动作
+- [ ] 激活历史与可配置版本保留策略
+- [ ] 真实公共 fixture repo 的定时 smoke
 
 ## 后续产品能力
 

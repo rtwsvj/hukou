@@ -6,6 +6,7 @@
 |---|---|---|
 | [`ADR-0001`](adr/ADR-0001-h1-safety-and-release-contract.md) | Accepted | H1 安全边界、数据审计字段和发布契约 |
 | [`ADR-0002`](adr/ADR-0002-regular-file-activation.md) | Accepted | 活跃路径使用 regular-file copy + rename，不交换 symlink inode |
+| [`ADR-0003`](adr/ADR-0003-crash-recovery-and-doctor.md) | Accepted | H2 使用持久化事务决策恢复；doctor 默认只读且不猜测修复 |
 
 ## 历史决策摘要
 
@@ -15,5 +16,6 @@
 - 2026-07-13：仓库保持 private，本轮不创建原创代码 LICENSE。
 - 2026-07-13：首发版本目标 `v0.1.0`，四平台 tar.gz + checksums。
 - 2026-07-13：两次 macOS CI 证明并发替换 symlink inode 会产生瞬时 `EINVAL`；激活模型改为同目录 regular-file copy + rename。
+- 2026-07-14：跨 live/manifest 的崩溃恢复采用 PREPARED 回滚、COMMITTED 前滚的持久化事务；doctor 默认零写、零网络。
 
 决策发生变化时，应新增 ADR 或把旧 ADR 标成 Superseded，不静默改写历史理由。

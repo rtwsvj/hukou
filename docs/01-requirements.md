@@ -37,6 +37,14 @@
 - 发布四个平台 tar.gz 与统一 `checksums.txt`。
 - 手动 workflow 只产出 snapshot；只有已推送的 `v*` tag 自动发布。
 
+### R6：诊断与崩溃恢复
+
+- adopt、upgrade、rollback 在跨 original/live/manifest 修改前必须持久化可恢复的 before/after 状态。
+- 没有 durable COMMIT 的事务恢复到 before；存在有效 COMMIT 的事务前滚到 after。
+- 恢复前必须先分类全部资源；预检或写入前复核时，任一路径既不匹配 before 也不匹配 after，必须零覆盖失败并保留 journal。非协作写入若发生在最后一次复核与系统调用之间，仍受已记录的 TOCTOU 边界约束。
+- `doctor` 默认只读、零网络，支持人类文本与稳定 JSON；`--deep` 只扩大读取范围，不改变状态。
+- doctor 不得把 retained rollback version 误判为 orphan；manifest 无效时，store tool 必须标为不可分类。
+
 ## 安全不变量
 
 1. **scan 只读**：不得联网、写用户目录或执行包管理器命令。
@@ -50,6 +58,8 @@
 9. **进程互斥**：写 manifest/store 的命令必须串行；锁已被占用时立即失败并给出清晰错误，不无限等待。
 10. **测试隔离**：测试不得读写真实 hukou 数据目录或真实用户二进制。
 11. **保留命名空间**：`.tmp` 工具名与 `original` 版本标签（含大小写别名）必须在任何 store/manifest 持久化前拒绝。
+12. **持久化事务决策**：资源 payload、journal、live/store/manifest 的 rename/link/remove 只有在文件及相关父目录同步后才算成功。
+13. **只读诊断**：无 repair 参数的 doctor 不创建 data root、不获取会改写状态的锁、不 GC、不联网。
 
 ## 非功能需求
 

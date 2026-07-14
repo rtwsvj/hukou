@@ -34,7 +34,7 @@ hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force]
 - 带 setuid/setgid/sticky 等特权或特殊权限位的源文件会被拒绝。
 - `--tag` 必须是单一路径组件；`original`（含大小写别名）是不可变备份保留名，不能作为 adopt tag。
 
-副作用：获取 `state.lock`、创建 data root、备份 original、保存 manifest。H1 后同名条目不得静默覆盖。original 备份只保留字节与 rwx 权限位，不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。
+副作用：获取 `state.lock`、恢复旧 transaction、创建 data root、持久化 transaction、备份 original、保存 manifest。H1 后同名条目不得静默覆盖。original 备份只保留字节与 rwx 权限位，不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。
 
 ## `hukou upgrade`
 
@@ -47,7 +47,7 @@ hukou upgrade [name ...] [--all] [--dry-run] [--asset <substring>]
 - local 条目跳过。
 - `--dry-run` 查询 release metadata 和资产选择，但不下载、不创建目录、不持锁、不 GC。
 
-真实升级会下载并校验资产、写 store、切换活跃路径、更新 manifest、清理旧版本。
+真实升级会下载并校验资产、写 store、持久化 before/after transaction、切换活跃路径、更新 manifest、提交事务后清理旧版本。`--dry-run` 发现 pending transaction 时失败提示，但不会自动恢复或写状态。
 
 ## `hukou rollback`
 
@@ -57,9 +57,9 @@ hukou rollback <name> [--to <tag|original>]
 
 不带 `--to` 时，按 store 目录修改时间选择最近的其他版本或 original。这是目录 mtime 启发式，不是历史栈；连续不带 `--to` 回滚可能在两个最近 tag 之间来回切换。需要确定结果时应显式传入 `--to <tag|original>`。操作前后都更新 active binary SHA。
 
-副作用：获取 `state.lock`、原子替换活跃常规文件、保存 manifest；失败必须补偿恢复。
+副作用：获取 `state.lock`、先恢复旧 transaction、持久化新 transaction、原子替换活跃常规文件、保存 manifest；失败必须补偿或保留可重入恢复证据。
 
-激活复制只保留字节与 rwx 权限位；不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。当前无目录 `fsync`/WAL 承诺，进程被强制终止时，live 目录可能留下 `.hukou-tmp-*` 临时文件。
+激活复制只保留字节与 rwx 权限位；不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。文件、rename 与父目录持久化后才进入下一事务阶段。
 
 ## `hukou list`
 
@@ -68,6 +68,21 @@ hukou list
 ```
 
 显示 `NAME / TAG / REPO / PATH / VERSIONS`。副作用：无。
+
+pending transaction 或无效 store 拓扑不会被吞成正常版本数；list 会失败关闭并提示先诊断/恢复。
+
+## `hukou doctor`
+
+```text
+hukou doctor [--json] [--deep]
+```
+
+- 默认检查 manifest/backup、entry、live SHA/类型/权限、original/current tag、store 拓扑与 transaction inventory。
+- `--deep` 额外 hash retained versions，并检查已登记 live parent 的 hukou 临时文件前缀。
+- manifest 无效时，manifest 外 store tool 标为 `UNCLASSIFIABLE`，不会猜成可删除 orphan。
+- warning/error 会输出完整报告并返回非零；JSON stdout 始终是同一 Report 模型。
+
+副作用：无。当前版本没有 repair 或 repair-all。
 
 ## 退出状态
 
