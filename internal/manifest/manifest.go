@@ -1,12 +1,15 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"path/filepath"
 	"slices"
+
+	"github.com/rtwsvj/hukou/internal/durablefs"
 )
 
 const schemaVersion = 1
@@ -35,17 +38,21 @@ type Manifest struct {
 	Entries       []Entry `json:"entries"`
 }
 
-// Load reads a manifest file. If the file does not exist an empty
-// manifest with SchemaVersion=1 is returned (no error). Any JSON
-// decode error or unknown schema_version is returned as an error.
+// Load reads a regular manifest file without following a symlink. If the file
+// does not exist an empty manifest with SchemaVersion=1 is returned (no error).
+// Any JSON decode error or unknown schema_version is returned as an error.
 func Load(path string) (*Manifest, error) {
-	data, err := os.ReadFile(path)
+	data, _, err := readRegularFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &Manifest{SchemaVersion: schemaVersion, Entries: make([]Entry, 0)}, nil
 		}
 		return nil, err
 	}
+	return decode(data)
+}
+
+func decode(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
@@ -53,7 +60,7 @@ func Load(path string) (*Manifest, error) {
 	if m.SchemaVersion == 0 {
 		m.SchemaVersion = schemaVersion
 	}
-	if m.SchemaVersion > schemaVersion {
+	if m.SchemaVersion < 0 || m.SchemaVersion > schemaVersion {
 		return nil, fmt.Errorf("unsupported schema_version %d (current %d)", m.SchemaVersion, schemaVersion)
 	}
 	if m.Entries == nil {
@@ -62,32 +69,110 @@ func Load(path string) (*Manifest, error) {
 	return &m, nil
 }
 
-// Save writes the manifest atomically: write to a temporary file in the
-// same directory, then os.Rename to the destination.
+type durableOperations interface {
+	AtomicWriteFile(path string, data []byte, mode os.FileMode) error
+}
+
+// Save preserves the previous decodable, supported-schema manifest as
+// path+.bak, then writes the new manifest through a synced same-directory
+// temporary file and persists the final rename. Existing manifest and backup
+// paths must be regular files; a symlink or another file type fails closed.
 func (m *Manifest) Save(path string) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "manifest-*.tmp")
+	return m.save(path, durablefs.FileSystem{})
+}
+
+func (m *Manifest) save(path string, fs durableOperations) error {
+	if m.SchemaVersion < 0 || m.SchemaVersion > schemaVersion {
+		return fmt.Errorf("unsupported schema_version %d (current %d)", m.SchemaVersion, schemaVersion)
+	}
+	toWrite := *m
+	if toWrite.SchemaVersion == 0 {
+		toWrite.SchemaVersion = schemaVersion
+	}
+	var encoded bytes.Buffer
+	enc := json.NewEncoder(&encoded)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(&toWrite); err != nil {
+		return err
+	}
+
+	backupPath := path + ".bak"
+	// Validate the backup namespace even on the first save. A pre-positioned
+	// symlink or non-regular node must not be allowed to become latent state that
+	// only breaks the next update.
+	if err := requireRegularOrMissing(backupPath); err != nil {
+		return fmt.Errorf("validate manifest backup: %w", err)
+	}
+
+	previous, previousInfo, err := readRegularFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read current manifest: %w", err)
+	}
+	if err == nil {
+		if _, err := decode(previous); err != nil {
+			return fmt.Errorf("current manifest is not valid; refusing to replace it: %w", err)
+		}
+		if err := fs.AtomicWriteFile(backupPath, previous, 0o600); err != nil {
+			return fmt.Errorf("preserve previous manifest: %w", err)
+		}
+		currentInfo, statErr := os.Lstat(path)
+		if statErr != nil {
+			return fmt.Errorf("recheck current manifest: %w", statErr)
+		}
+		if !currentInfo.Mode().IsRegular() || currentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(previousInfo, currentInfo) {
+			return fmt.Errorf("current manifest changed while saving: %s", path)
+		}
+	}
+
+	if err := fs.AtomicWriteFile(path, encoded.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+	return nil
+}
+
+func readRegularFile(path string) ([]byte, os.FileInfo, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("manifest must not be a symlink: %s", path)
+	}
+	if !before.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("manifest is not a regular file: %s", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	after, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return nil, nil, fmt.Errorf("manifest changed while opening: %s", path)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, before, nil
+}
+
+func requireRegularOrMissing(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	// Ensure the temp file is removed if anything goes wrong.
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-
-	enc := json.NewEncoder(tmp)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(m); err != nil {
-		_ = tmp.Close()
-		return err
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path must not be a symlink: %s", path)
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("atomic rename: %w", err)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("path is not a regular file: %s", path)
 	}
 	return nil
 }

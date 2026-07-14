@@ -133,3 +133,19 @@ func TestHukouDetectorMissingManifest(t *testing.T) {
 		t.Fatal("expected no match with empty registry")
 	}
 }
+
+func TestHukouDetectorRejectsPendingTransactionState(t *testing.T) {
+	root := t.TempDir()
+	pending := filepath.Join(root, "transactions", "pending-test")
+	if err := os.MkdirAll(pending, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d := NewHukouDetector()
+	err := d.Load(Env{HukouManifest: filepath.Join(root, "manifest.json")})
+	if err == nil || !strings.Contains(err.Error(), "unfinished transaction") {
+		t.Fatalf("expected pending transaction error, got %v", err)
+	}
+	if d.Match(scan.Binary{Path: "/usr/local/bin/tool"}) != nil {
+		t.Fatal("pending state must not produce hukou attribution")
+	}
+}

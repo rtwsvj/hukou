@@ -12,6 +12,7 @@
 | Phase 2：收编、升级、回滚、清单 | 已实现 | `specs/phase2-adopt-upgrade.md`、`records/` |
 | H1 安全硬化 | 已交付；GitHub-hosted runner 计费例外已记录 | `codex/verification-reports/2026-07-13-hukou-hardening-local.md` |
 | 首个 SemVer 发布 | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布 | `codex/verification-reports/2026-07-13-v0.1.0-release.md` |
+| H2 恢复与诊断基础 | 持久化事务、目录 durability、manifest backup 与只读 doctor 已实现，最终验证进行中 | `codex/execution-reports/2026-07-14-h2-recovery-doctor.md` |
 | 风险提示、生态导出、Windows | 未实现 | `02-roadmap.md` |
 
 任何“通过”结论必须同时给出提交号和 `codex/verification-reports/` 中的报告。当前执行报告不等于验证报告。

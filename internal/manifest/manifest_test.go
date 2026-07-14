@@ -130,6 +130,182 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	}
 }
 
+func TestSavePreservesPreviousValidManifest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	oldManifest := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{fixtureEntry()}}
+	if err := oldManifest.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	oldBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newEntry := fixtureEntry()
+	newEntry.Tag = "v2.0.0"
+	newManifest := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{newEntry}}
+	if err := newManifest.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	backupBytes, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backupBytes) != string(oldBytes) {
+		t.Fatalf("backup does not contain the previous manifest\ngot:  %s\nwant: %s", backupBytes, oldBytes)
+	}
+	backup, err := manifest.Load(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := backup.Get("mybin"); got == nil || got.Tag != "v1.0.0" {
+		t.Fatalf("backup entry=%+v", got)
+	}
+}
+
+func TestSaveRejectsSymlinkManifest(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	original := []byte(`{"schema_version":1,"entries":[]}`)
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "manifest.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	err := (&manifest.Manifest{SchemaVersion: 1}).Save(path)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error=%v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("symlink target changed: %q", got)
+	}
+}
+
+func TestSaveRejectsNonRegularManifest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := (&manifest.Manifest{SchemaVersion: 1}).Save(path)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := manifest.Load(path); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("Load error=%v", err)
+	}
+}
+
+func TestSaveRejectsInvalidCurrentManifest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	invalid := []byte("not json\n")
+	if err := os.WriteFile(path, invalid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := (&manifest.Manifest{SchemaVersion: 1}).Save(path)
+	if err == nil || !strings.Contains(err.Error(), "not valid") {
+		t.Fatalf("error=%v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(invalid) {
+		t.Fatalf("invalid current manifest was overwritten: %q", got)
+	}
+	if _, err := os.Lstat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("backup unexpectedly created: %v", err)
+	}
+}
+
+func TestSaveRejectsSymlinkBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	first := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{fixtureEntry()}}
+	if err := first.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupTarget := filepath.Join(dir, "outside")
+	if err := os.WriteFile(backupTarget, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(backupTarget, path+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	err = (&manifest.Manifest{SchemaVersion: 1}).Save(path)
+	if err == nil || !strings.Contains(err.Error(), "backup") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error=%v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(current) {
+		t.Fatalf("current manifest changed after backup validation failure")
+	}
+	outside, err := os.ReadFile(backupTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outside) != "outside" {
+		t.Fatalf("backup symlink target changed: %q", outside)
+	}
+}
+
+func TestFirstSaveRejectsPrepositionedSymlinkBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	backupTarget := filepath.Join(dir, "outside")
+	if err := os.WriteFile(backupTarget, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(backupTarget, path+".bak"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := (&manifest.Manifest{SchemaVersion: 1}).Save(path)
+	if err == nil || !strings.Contains(err.Error(), "backup") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("first manifest was written despite hostile backup: %v", err)
+	}
+	outside, err := os.ReadFile(backupTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outside) != "outside" {
+		t.Fatalf("backup symlink target changed: %q", outside)
+	}
+}
+
+func TestLoadRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`{"schema_version":1,"entries":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "manifest.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Load(path); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestLegacyEntryLoadsWithoutOptionalAssetFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legacy.json")
@@ -242,6 +418,21 @@ func TestUnknownSchemaVersion(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported schema_version") {
 		t.Errorf("error message = %q; want it to contain 'unsupported schema_version'", err.Error())
+	}
+}
+
+func TestNegativeSchemaVersionRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "negative.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":-1,"entries":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Load(path); err == nil || !strings.Contains(err.Error(), "unsupported schema_version") {
+		t.Fatalf("expected negative schema rejection, got %v", err)
+	}
+
+	if err := (&manifest.Manifest{SchemaVersion: -1}).Save(filepath.Join(dir, "saved.json")); err == nil {
+		t.Fatal("expected Save to reject negative schema")
 	}
 }
 

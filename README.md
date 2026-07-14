@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-项目已经交付 Phase 1 `scan`、Phase 2 `adopt / upgrade / rollback / list` 与 H1 安全硬化。[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布；最终通过情况与 GitHub Actions 基础设施例外见 [`docs/codex/verification-reports/`](docs/codex/verification-reports/)。
+项目已经交付 Phase 1 `scan`、Phase 2 `adopt / upgrade / rollback / list`、H1 安全硬化，以及 H2 的持久化事务恢复与只读 `doctor` 基础。[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 是当前已发布版本；当前分支通过情况与 GitHub Actions 基础设施例外见 [`docs/codex/verification-reports/`](docs/codex/verification-reports/)。
 
 - 目标平台：macOS、Linux
 - 当前模块工具链：以 [`go.mod`](go.mod) 的 `go` 指令为准
@@ -20,6 +20,7 @@
 3. **upgrade**：查询已收编工具的最新 GitHub Release，选择平台资产、下载、校验、入库并原子替换活跃常规文件。
 4. **rollback**：切换回指定版本或最近的旧版本，并同步 manifest。
 5. **list**：查看当前户口清单与本地保留版本数。
+6. **doctor**：以文本或稳定 JSON 只读审计 manifest、live、store、事务日志和临时残留；`--deep` 增加 retained version 摘要与 live 目录检查。
 
 hukou 不代理 Homebrew、npm、Cargo 等其他管理器的升级。默认拒绝收编已被其他管理器认领的二进制；`--force` 是显式逃生口。
 
@@ -68,6 +69,8 @@ hukou upgrade tool
 hukou rollback tool
 hukou rollback tool --to v1.0.0
 hukou list
+hukou doctor
+hukou doctor --deep --json
 ```
 
 `upgrade` 与 `rollback` 会修改被收编工具所在路径。首次在真实工具上操作前，请先阅读 [`docs/04-data-and-api.md`](docs/04-data-and-api.md) 和 [`docs/08-risk-and-debt.md`](docs/08-risk-and-debt.md)。
@@ -80,6 +83,8 @@ hukou list
 ${XDG_DATA_HOME:-$HOME/.local/share}/hukou/
 ├── state.lock
 ├── manifest.json
+├── manifest.json.bak       # 存在上一版可解析且 schema 受支持的 manifest 时
+├── transactions/
 └── store/
     ├── .tmp/
     └── <name>/
@@ -93,7 +98,7 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/hukou/
 | `XDG_DATA_HOME` | 未设置 `HUKOU_DATA_DIR` 时决定默认数据位置 |
 | `GITHUB_TOKEN` / `GH_TOKEN` | 提高 GitHub API 限额；下载请求不会向非授权宿主泄露 token |
 
-`state.lock` 只串行化 adopt、真实 upgrade 和 rollback；scan 与纯 `--dry-run` 不持写锁。
+`state.lock` 只串行化 adopt、真实 upgrade 和 rollback；写命令取得锁后会先恢复 pending transaction。scan、list、doctor 与纯 `--dry-run` 不持写锁；它们会在各自检查时报告已知 pending transaction，但结果只是时间点诊断，不承诺与并发的非协作写入形成一致快照。
 
 安全契约：
 
@@ -101,8 +106,9 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/hukou/
 - upgrade/rollback 前核对当前二进制与 manifest 的 SHA-256。
 - 上游提供 checksum 时必须成功找到并验证所选资产，否则失败关闭。
 - 下载资产 hash 与激活后二进制 hash 分开记录，便于审计和完整性检查。
-- 活跃文件通过同目录临时常规文件加 rename 原子替换；可观测错误路径必须补偿恢复。
-- H1 只承诺处理正常错误返回；断电、`SIGKILL` 等崩溃一致性仍是已知债务。
+- 活跃文件通过同目录临时常规文件加 rename 原子替换；文件和父目录都在返回成功前同步。
+- adopt/upgrade/rollback 在改变 live、original 或 manifest 前持久化 before/after WAL：`PREPARED` 崩溃回滚，durable `COMMIT` 后崩溃前滚；恢复预检及写入前复核发现的未知外部漂移会失败关闭并保留日志证据。
+- doctor 默认零写、零网络，不自动删除 retained version、orphan 或未知临时文件。
 
 ## 发布
 

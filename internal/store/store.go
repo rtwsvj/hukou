@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rtwsvj/hukou/internal/durablefs"
 )
 
 // Store manages versioned binary artifacts under Root.
@@ -25,6 +27,25 @@ import (
 // regular file or the new regular file.
 type Store struct {
 	Root string
+	fs   durableOperations
+}
+
+type durableOperations interface {
+	SyncFile(*os.File) error
+	SyncDir(string) error
+	Mkdir(string, os.FileMode) error
+	MkdirAll(string, os.FileMode) error
+	Rename(string, string) error
+	Link(string, string) error
+	Remove(string) error
+	RemoveAll(string) error
+}
+
+func (s *Store) durability() durableOperations {
+	if s.fs != nil {
+		return s.fs
+	}
+	return durablefs.FileSystem{}
 }
 
 func (s *Store) absRoot() (string, error) {
@@ -45,7 +66,7 @@ func (s *Store) storeDir(create bool, parts ...string) (string, error) {
 		return "", err
 	}
 	if create {
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := s.durability().MkdirAll(root, 0o755); err != nil {
 			return "", err
 		}
 	}
@@ -62,7 +83,7 @@ func (s *Store) storeDir(create bool, parts ...string) (string, error) {
 		if part == "" || part == "." || part == ".." || filepath.Base(part) != part || strings.ContainsAny(part, `/\`) {
 			return "", fmt.Errorf("invalid store directory component %q", part)
 		}
-		current, err = resolveStoreChild(current, part, create)
+		current, err = resolveStoreChild(s.durability(), current, part, create)
 		if err != nil {
 			return "", err
 		}
@@ -70,7 +91,7 @@ func (s *Store) storeDir(create bool, parts ...string) (string, error) {
 	return current, nil
 }
 
-func resolveStoreChild(parent, requested string, create bool) (string, error) {
+func resolveStoreChild(fs durableOperations, parent, requested string, create bool) (string, error) {
 	path := filepath.Join(parent, requested)
 	for attempt := 0; attempt < 2; attempt++ {
 		entries, err := os.ReadDir(parent)
@@ -94,12 +115,20 @@ func resolveStoreChild(parent, requested string, create bool) (string, error) {
 			if !info.IsDir() {
 				return "", fmt.Errorf("store path is not a directory: %s", path)
 			}
+			// Mutating callers may be retrying a mkdir that became visible before
+			// its parent sync completed. Read-only callers must not turn a lookup
+			// into a filesystem sync merely by inspecting the store.
+			if create {
+				if err := fs.SyncDir(parent); err != nil {
+					return "", fmt.Errorf("persist existing store directory %s: %w", path, err)
+				}
+			}
 			return path, nil
 		}
 		if !create {
 			return "", &os.PathError{Op: "lstat", Path: path, Err: os.ErrNotExist}
 		}
-		if err := os.Mkdir(path, 0o755); err == nil {
+		if err := fs.Mkdir(path, 0o755); err == nil {
 			return path, nil
 		} else if !os.IsExist(err) {
 			return "", err
@@ -185,6 +214,7 @@ func (s *Store) ensureUnderRoot(p string) (string, error) {
 // The write is staged through <Root>/.tmp and committed with a no-replace hard
 // link so an existing version can never be overwritten.
 func (s *Store) Put(name, tag, srcPath string) error {
+	fs := s.durability()
 	if err := validateNameTag("name", name); err != nil {
 		return err
 	}
@@ -203,28 +233,35 @@ func (s *Store) Put(name, tag, srcPath string) error {
 	if _, err := s.storeDir(true, name); err != nil {
 		return err
 	}
+	// A prior process may have durably created the final version directory and
+	// then exited before linking the completed file into it. An empty, validated
+	// directory is therefore a recoverable staging state; any other unexpected
+	// contents still fail closed.
 	dstDir, err := s.storeDir(false, name, tag)
 	if err == nil {
-		dstPath := filepath.Join(dstDir, filepath.Base(srcPath))
 		entries, err := os.ReadDir(dstDir)
 		if err != nil {
 			return err
 		}
-		if len(entries) != 1 || entries[0].Name() != filepath.Base(srcPath) || !entries[0].Type().IsRegular() {
+		if len(entries) == 0 {
+			// Continue below and install the staged inode with a no-replace link.
+		} else if len(entries) != 1 || entries[0].Name() != filepath.Base(srcPath) || !entries[0].Type().IsRegular() {
 			return fmt.Errorf("version %s/%s already exists with unexpected contents", name, tag)
+		} else {
+			dstPath := filepath.Join(dstDir, filepath.Base(srcPath))
+			srcSHA, err := SHA256File(srcPath)
+			if err != nil {
+				return err
+			}
+			dstSHA, err := SHA256File(dstPath)
+			if err != nil {
+				return err
+			}
+			if srcSHA != dstSHA {
+				return fmt.Errorf("immutable version %s/%s already exists with different content", name, tag)
+			}
+			return syncExistingVersion(s.durability(), dstPath, dstDir)
 		}
-		srcSHA, err := SHA256File(srcPath)
-		if err != nil {
-			return err
-		}
-		dstSHA, err := SHA256File(dstPath)
-		if err != nil {
-			return err
-		}
-		if srcSHA != dstSHA {
-			return fmt.Errorf("immutable version %s/%s already exists with different content", name, tag)
-		}
-		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -248,7 +285,7 @@ func (s *Store) Put(name, tag, srcPath string) error {
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.Remove(tmpPath)
+			_ = fs.Remove(tmpPath)
 		}
 	}()
 
@@ -279,7 +316,7 @@ func (s *Store) Put(name, tag, srcPath string) error {
 		_ = tmpFile.Close()
 		return err
 	}
-	if err := tmpFile.Sync(); err != nil {
+	if err := fs.SyncFile(tmpFile); err != nil {
 		_ = tmpFile.Close()
 		return err
 	}
@@ -287,20 +324,56 @@ func (s *Store) Put(name, tag, srcPath string) error {
 		return err
 	}
 
-	dstDir, err = s.storeDir(true, name, tag)
-	if err != nil {
-		return err
+	if dstDir == "" {
+		dstDir, err = s.storeDir(true, name, tag)
+		if err != nil {
+			return err
+		}
 	}
 	dstPath := filepath.Join(dstDir, filepath.Base(srcPath))
 	// Link the completed staging inode into the final name. Unlike Rename,
 	// Link fails with EEXIST and therefore cannot overwrite a version that
 	// appeared between the initial existence check and this commit point.
-	if err := os.Link(tmpPath, dstPath); err != nil {
+	if err := fs.Link(tmpPath, dstPath); err != nil {
 		return fmt.Errorf("commit immutable version %s/%s: %w", name, tag, err)
 	}
 	// Keep cleanup=true: the deferred remove unlinks the staging name while the
 	// final hard link remains. A failed cleanup is harmless to the committed
 	// immutable version and will be retried by GC.
+	return nil
+}
+
+// syncExistingVersion repairs the indeterminate edge where a previous hard
+// link became visible before its parent directory sync completed. Both the
+// inode and its directory entry are reaffirmed before an idempotent Put reports
+// success.
+func syncExistingVersion(fs durableOperations, path, dir string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	info, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return statErr
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return fmt.Errorf("stored version is not a regular file: %s", path)
+	}
+	if err := fs.SyncFile(file); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("persist existing version file %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close existing version file %s: %w", path, err)
+	}
+	if err := fs.SyncDir(filepath.Dir(dir)); err != nil {
+		return fmt.Errorf("persist existing version directory entry %s: %w", dir, err)
+	}
+	if err := fs.SyncDir(dir); err != nil {
+		return fmt.Errorf("persist existing version directory %s: %w", dir, err)
+	}
 	return nil
 }
 
@@ -383,11 +456,11 @@ func (s *Store) Activate(name, tag, livePath string) error {
 	}
 
 	liveDir := filepath.Dir(livePath)
-	if err := os.MkdirAll(liveDir, 0o755); err != nil {
+	if err := s.durability().MkdirAll(liveDir, 0o755); err != nil {
 		return err
 	}
 
-	return atomicCopyFile(absTarget, livePath, liveDir)
+	return atomicCopyFile(s.durability(), absTarget, livePath, liveDir)
 }
 
 // AdoptOriginal copies the regular file at binPath into the store's
@@ -430,7 +503,7 @@ func (s *Store) AdoptOriginal(name, binPath string) error {
 	if err != nil {
 		return err
 	}
-	return atomicCopyFileNoReplace(binPath, dstPath, tmpDir)
+	return atomicCopyFileNoReplace(s.durability(), binPath, dstPath, tmpDir)
 }
 
 // Prune removes old versions of name, keeping the most recent keep versions by
@@ -508,7 +581,7 @@ func (s *Store) Prune(name string, keep int, protectedTag, protectedSHA string) 
 		if err != nil {
 			return err
 		}
-		if err := os.RemoveAll(versionDir); err != nil {
+		if err := s.durability().RemoveAll(versionDir); err != nil {
 			return err
 		}
 	}
@@ -549,19 +622,19 @@ func (s *Store) verifyVersionSHA(name, tag, wantSHA string) error {
 
 // atomicCopyFile copies srcPath into a complete temporary regular file beside
 // dstPath, fsyncs and closes it, then atomically renames it over dstPath.
-func atomicCopyFile(srcPath, dstPath, dstDir string) error {
-	return atomicCopyFileWithMode(srcPath, dstPath, dstDir, true)
+func atomicCopyFile(fs durableOperations, srcPath, dstPath, dstDir string) error {
+	return atomicCopyFileWithMode(fs, srcPath, dstPath, dstDir, true)
 }
 
 // atomicCopyFileNoReplace installs a completed copy only if dstPath does not
 // already exist. The final hard-link operation is atomic and fails closed on a
 // competing creator, which keeps the original backup write-once.
-func atomicCopyFileNoReplace(srcPath, dstPath, stagingDir string) error {
-	return atomicCopyFileWithMode(srcPath, dstPath, stagingDir, false)
+func atomicCopyFileNoReplace(fs durableOperations, srcPath, dstPath, stagingDir string) error {
+	return atomicCopyFileWithMode(fs, srcPath, dstPath, stagingDir, false)
 }
 
-func atomicCopyFileWithMode(srcPath, dstPath, stagingDir string, replace bool) error {
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+func atomicCopyFileWithMode(fs durableOperations, srcPath, dstPath, stagingDir string, replace bool) error {
+	if err := fs.MkdirAll(stagingDir, 0o755); err != nil {
 		return err
 	}
 
@@ -586,7 +659,7 @@ func atomicCopyFileWithMode(srcPath, dstPath, stagingDir string, replace bool) e
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.Remove(tmpPath)
+			_ = fs.Remove(tmpPath)
 		}
 	}()
 
@@ -617,7 +690,7 @@ func atomicCopyFileWithMode(srcPath, dstPath, stagingDir string, replace bool) e
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := fs.SyncFile(tmp); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -625,13 +698,13 @@ func atomicCopyFileWithMode(srcPath, dstPath, stagingDir string, replace bool) e
 		return err
 	}
 	if replace {
-		if err := os.Rename(tmpPath, dstPath); err != nil {
+		if err := fs.Rename(tmpPath, dstPath); err != nil {
 			return err
 		}
 		cleanup = false
 		return nil
 	}
-	if err := os.Link(tmpPath, dstPath); err != nil {
+	if err := fs.Link(tmpPath, dstPath); err != nil {
 		return fmt.Errorf("commit without replacing %s: %w", dstPath, err)
 	}
 	// The deferred cleanup removes only the staging name; dstPath is a distinct
@@ -645,10 +718,10 @@ func (s *Store) GC() error {
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(tmpDir); err != nil {
+	if err := s.durability().RemoveAll(tmpDir); err != nil {
 		return err
 	}
-	return os.Mkdir(tmpDir, 0o755)
+	return s.durability().Mkdir(tmpDir, 0o755)
 }
 
 // SHA256File returns the hex-encoded SHA-256 digest of the file at path.
@@ -672,7 +745,7 @@ func SHA256File(path string) (string, error) {
 // as either the old link or the new link. Same-directory rename is required for
 // atomicity across filesystems.
 func atomicSymlink(target, linkPath, linkDir string) error {
-	if err := os.MkdirAll(linkDir, 0o755); err != nil {
+	if err := durablefs.MkdirAll(linkDir, 0o755); err != nil {
 		return err
 	}
 
@@ -682,20 +755,24 @@ func atomicSymlink(target, linkPath, linkDir string) error {
 	}
 	tmpPath := tmpFile.Name()
 	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
+		_ = durablefs.Remove(tmpPath)
 		return err
 	}
-	if err := os.Remove(tmpPath); err != nil {
+	if err := durablefs.Remove(tmpPath); err != nil {
 		return err
 	}
 
 	if err := os.Symlink(target, tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
+		_ = durablefs.Remove(tmpPath)
+		return err
+	}
+	if err := durablefs.SyncDir(linkDir); err != nil {
+		_ = durablefs.Remove(tmpPath)
 		return err
 	}
 
-	if err := os.Rename(tmpPath, linkPath); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := durablefs.Rename(tmpPath, linkPath); err != nil {
+		_ = durablefs.Remove(tmpPath)
 		return err
 	}
 	return nil

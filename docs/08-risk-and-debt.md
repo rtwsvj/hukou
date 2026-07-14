@@ -14,17 +14,25 @@
 
 | 风险 | 当前边界 | 后续方向 |
 |---|---|---|
-| 断电/SIGKILL | 仅处理正常错误返回；目录 `fsync` 与 WAL 未实现，live 目录可能留下未生效的 `.hukou-tmp-*` 文件 | 目录持久化、WAL/事务日志、doctor 与临时文件清理 |
+| 断电/SIGKILL | 单全局 WAL、file/dir sync 与真实进程 kill 测试已覆盖 hukou 协作事务；普通 CI 不能完全模拟硬件掉电缓存重排 | 在 APFS/ext4 等目标文件系统做周期性 crash harness；不扩大到未验证平台 |
 | 非协作外部原地写 | 下载后和 snapshot 后均复核 SHA，regular snapshot 为独立副本；但最终复核到 activate 仍有窄窗口 | 文件描述符绑定与 OS 级协调策略 |
 | 文件元数据 | 复制只保证字节与 rwx 权限位；owner/group、ACL、xattr、mtime、特殊权限位与 hardlink topology 不保留，`adopt` 拒绝特权/特殊权限位 | 如需扩展保留范围，先定义跨平台契约与失败语义 |
 | 默认 rollback 选择 | 按 store 目录 mtime 选最近的其他 tag/original，不是历史栈；连续默认回滚可在两个 tag 之间来回切换 | 显式历史栈或可审计的激活序列 |
-| manifest 损坏 | Load 返回错误，无自动修复 | 备份与 repair |
-| store 孤儿版本 | 失败可能留下不可达版本 | doctor/GC 审计 |
+| manifest 损坏 | Save 保留上一份可解析且 schema 受支持的 `.bak`，doctor 继续验证其语义恢复候选资格；仍不自动覆盖损坏主文件 | 显式 backup hash + state fingerprint 绑定的 restore action |
+| store 孤儿版本 | doctor 区分 manifest 外 tool 与合法 retained version，只报告不删除 | 显式逐项 quarantine + undo，不做 repair-all |
 | tar.xz | 明确不支持 | 决定是否引入 xz 依赖 |
 | 版本比较 | tag 字符串不等即更新 | 是否引入语义版本策略 |
 | 固定保留 3 版 | 当前不可配置 | manifest/global config |
 | 真实网络覆盖 | PR 仅 httptest | 独立 fixture smoke |
 | 平台 | Windows 未支持 | 单独设计和 CI |
+
+## H2 恢复边界
+
+- WAL 只覆盖 journal 中精确绑定的 before/after。恢复会先分类全部参与者，并在写入前复核；此时发现 live/manifest/original 已变成第三种状态会停止并保留 pending evidence。非协作外部写仍可命中最后一次复核与 rename/remove 系统调用之间的窄 TOCTOU 窗口。
+- scan、list、doctor 与纯 `--dry-run` 不持写锁；它们会报告检查瞬间已知的 pending transaction，但不会对并发的非协作文件系统写入提供一致快照保证。
+- durability 返回成功表示操作系统接受了 file/dir sync；不等于磁盘介质、控制器或文件系统绝不损坏。
+- 旧版本遗留的 `.hukou-rollback-*` 没有 transaction ID，doctor 只能报告，不能猜测恢复。
+- doctor 当前没有自动 repair；这是刻意的安全边界，不是遗漏一个通用删除按钮。
 
 ## Phase 1 已知限制
 

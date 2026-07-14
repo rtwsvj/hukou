@@ -8,6 +8,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/scan"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
 // HukouDetector attributes binaries that hukou itself has adopted, by
@@ -25,6 +26,9 @@ func (d *HukouDetector) Load(env Env) error {
 	d.byPath = map[string]manifest.Entry{}
 	if env.HukouManifest == "" {
 		return nil
+	}
+	if err := statejournal.CheckClean(filepath.Dir(env.HukouManifest)); err != nil {
+		return fmt.Errorf("hukou state may be inconsistent: %w", err)
 	}
 	m, err := manifest.Load(env.HukouManifest)
 	if err != nil {

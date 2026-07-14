@@ -10,6 +10,9 @@
 | `internal/output` | 表格与 JSON | 表格清理控制字符，JSON 保留完整错误 |
 | `internal/manifest` | schema 与原子保存 | 向后兼容，写入由命令层锁保护 |
 | `internal/store` | original/版本目录、激活、Prune、GC | name/tag/目标限制，同目录常规文件原子替换 |
+| `internal/durablefs` | 文件与目录持久化原语 | file sync、same-dir rename/link/remove 后 parent sync |
+| `internal/transaction` | 单全局 before/after WAL 与恢复 | PREPARED 回滚、COMMITTED 前滚、预检可见的 unknown drift 零覆盖 |
+| `internal/doctor` | 只读状态审计与稳定报告 | 无写入/网络；损坏 manifest 下不猜测 orphan |
 | `internal/ghrelease` | GitHub API 与下载 | host 白名单、token 隔离、超时、大小限制 |
 | `internal/assetpick` | 平台资产选择 | 无交互、结果确定性 |
 | `internal/archive` | tar.gz/zip/gz/裸文件解包 | 防路径穿越与解压炸弹；不支持容器不得退化成可激活裸文件，裸资产还需可执行格式识别 |
@@ -48,7 +51,7 @@ PATH + --dir
 -> 失败则补偿，成功后 Prune
 ```
 
-网络只允许出现在 `internal/ghrelease`。真实升级前后的路径拓扑和 manifest 是一个逻辑事务；H1 覆盖可观测错误，H2 再覆盖进程崩溃。
+网络只允许出现在 `internal/ghrelease`。真实升级前后的路径拓扑和 manifest 是一个持久化逻辑事务：取得 state lock 后先恢复旧 journal，业务资源改变前发布 PREPARED，live/manifest durable 后写 COMMIT，再进入 cleanup-only 状态。
 
 活跃路径保持为常规文件：`Activate` 把不可变 store 版本复制到活跃目录内的完整临时文件，设置 mode、`fsync`、关闭后再 rename。这样读者始终打开旧或新 regular inode，避免 macOS/APFS 在并发替换 symlink inode 时出现瞬时 `EINVAL`。旧版本遗留 symlink 仍可被事务快照恢复，首次成功激活会迁移为常规文件。
 
@@ -66,3 +69,30 @@ PATH + --dir
 - adopt/upgrade/rollback 对同一 data root 使用进程级锁。
 - manifest 内部数据结构不承诺跨进程并发；命令层负责串行化。
 - release 构建使用固定 commit、固定 Go 版本和固定归档时间戳。
+
+## 崩溃恢复状态机
+
+```text
+.building-* --payload + intent durable--> pending-* (PREPARED)
+PREPARED --apply live/original + manifest--> COMMIT durable
+COMMIT --rename--> completed-* --cleanup--> removed
+
+Recover(PREPARED)  -> all resources converge to before
+Recover(COMMITTED) -> all resources converge to after
+preflight drift    -> no writes, keep pending evidence
+```
+
+`upgrade --dry-run`、list、scan 的 hukou detector 和 doctor 只执行 transaction inventory，不自动恢复；普通写命令在锁内恢复。
+
+恢复会先分类全部参与者，并在每次替换/删除前再次复核当前状态。该机制保护 hukou 协作写入和检查时已可见的外部漂移；不合作的外部进程若恰在最后一次复核与 rename/remove 系统调用之间改写同一路径，仍存在不可消除的窄 TOCTOU 窗口。
+
+## doctor 流程
+
+```text
+只读 lstat/read/hash
+-> manifest syntax + semantic audit
+-> live/store/backup/transaction cross-check
+-> orphan 或 UNCLASSIFIABLE 分类
+-> stable Report
+-> text 或 JSON renderer
+```

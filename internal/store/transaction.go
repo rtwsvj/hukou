@@ -5,7 +5,65 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/rtwsvj/hukou/internal/durablefs"
 )
+
+// ActivationSource resolves the single immutable regular file backing a store
+// version. Transaction preparation uses this before publishing PREPARED so the
+// redo payload is captured independently of the store entry.
+func (s *Store) ActivationSource(name, tag string) (string, error) {
+	if err := validateNameTag("name", name); err != nil {
+		return "", err
+	}
+	if err := validateActivationTag(tag); err != nil {
+		return "", err
+	}
+	tagDir, err := s.storeDir(false, name, tag)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(tagDir)
+	if err != nil {
+		return "", err
+	}
+	var binary string
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if binary != "" {
+			return "", fmt.Errorf("version %s/%s contains multiple binaries", name, tag)
+		}
+		binary = filepath.Join(tagDir, entry.Name())
+	}
+	if binary == "" {
+		return "", fmt.Errorf("no binary found in version %s/%s", name, tag)
+	}
+	resolved, err := s.ensureUnderRoot(binary)
+	if err != nil {
+		return "", fmt.Errorf("activation source: %w", err)
+	}
+	return resolved, nil
+}
+
+// PrepareOriginalPath creates and validates the immutable original namespace
+// without writing the backup file itself. The transaction journal can then
+// model original as an absent->regular mutation and recover an interrupted
+// first adoption without leaving a retry-blocking orphan.
+func (s *Store) PrepareOriginalPath(name, binaryName string) (string, error) {
+	if err := validateNameTag("name", name); err != nil {
+		return "", err
+	}
+	if binaryName == "" || filepath.Base(binaryName) != binaryName {
+		return "", fmt.Errorf("invalid original binary name %q", binaryName)
+	}
+	dir, err := s.storeDir(true, name, "original")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, binaryName), nil
+}
 
 // LiveSnapshot captures the filesystem topology and contents at a live binary
 // path before an activation. Restore returns the path to the previous bytes and
@@ -79,7 +137,7 @@ func (s *LiveSnapshot) Restore() error {
 	if s.backupPath == "" {
 		return fmt.Errorf("regular-file snapshot has no backup")
 	}
-	if err := os.Rename(s.backupPath, s.path); err != nil {
+	if err := durablefs.Rename(s.backupPath, s.path); err != nil {
 		return fmt.Errorf("restore live path: %w", err)
 	}
 	s.done = true
@@ -92,7 +150,7 @@ func (s *LiveSnapshot) Commit() error {
 		return nil
 	}
 	if s.backupPath != "" {
-		if err := os.Remove(s.backupPath); err != nil && !os.IsNotExist(err) {
+		if err := durablefs.Remove(s.backupPath); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -116,10 +174,13 @@ func copySnapshot(srcPath, dstPath string, mode os.FileMode) error {
 		_ = os.Remove(dstPath)
 		return err
 	}
-	if err := dst.Sync(); err != nil {
+	if err := durablefs.SyncFile(dst); err != nil {
 		_ = dst.Close()
 		_ = os.Remove(dstPath)
 		return err
 	}
-	return dst.Close()
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	return durablefs.SyncParent(dstPath)
 }

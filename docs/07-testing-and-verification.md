@@ -53,6 +53,12 @@ H1 至少覆盖：
 - 写锁在同进程和子进程竞争时立即返回 `ErrLocked`，释放后可重新获取；锁路径软链被拒绝。
 - adopt 同名冲突不覆盖 original/manifest。
 - dry-run 不创建 data root、不 GC、不下载。
+- PREPARED 的 live/manifest before/after 四种组合全部收敛到 before。
+- durable COMMIT 后相同四种组合全部收敛到 after。
+- transaction payload/COMMIT 损坏，或预检/写入前复核发现任一资源 unknown drift 时，零覆盖并保留 pending evidence。
+- 子进程在 PREPARED/COMMITTED 窗口被强杀后，下一次 Recover 分别回滚/前滚。
+- absent→regular/symlink 使用原子 no-replace，检查后竞争写不会被覆盖。
+- doctor 在 data root 缺失、健康和损坏 fixture 上都保持零写；文本/JSON同源且稳定。
 
 ## 覆盖率
 

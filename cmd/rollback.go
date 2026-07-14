@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +40,7 @@ func doRollback(stdout, stderr io.Writer, name, to string) error {
 }
 
 func doRollbackWithSave(stdout, stderr io.Writer, name, to string, save func(*manifest.Manifest) error) error {
-	return doRollbackWithDeps(stdout, stderr, name, to, save, store.SnapshotLive)
+	return doRollbackWithDeps(stdout, stderr, name, to, save, nil)
 }
 
 func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*manifest.Manifest) error, snapshotLive func(string) (*store.LiveSnapshot, error)) error {
@@ -79,52 +81,74 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 		return nil
 	}
 
-	snapshot, err := snapshotLive(e.Path)
-	if err != nil {
-		return fail(fmt.Errorf("snapshot current installation: %w", err))
-	}
-	postSnapshotSHA, err := store.SHA256File(e.Path)
-	if err != nil || postSnapshotSHA != e.SHA256 {
-		operationErr := err
-		if operationErr == nil {
-			operationErr = fmt.Errorf("当前文件在创建事务快照时被外部修改；拒绝覆盖")
-		}
-		return fail(discardLiveAfterError(snapshot, operationErr))
-	}
 	oldEntry := *e
-
-	if target == "original" {
-		if err := activateOriginal(s, name, e.Path); err != nil {
-			return fail(discardLiveAfterError(snapshot, fmt.Errorf("activate original: %w", err)))
-		}
-	} else {
-		if err := s.Activate(name, target, e.Path); err != nil {
-			return fail(discardLiveAfterError(snapshot, fmt.Errorf("activate %s: %w", target, err)))
-		}
-	}
-
-	newSHA, err := store.SHA256File(e.Path)
+	targetSource, err := s.ActivationSource(name, target)
 	if err != nil {
-		return fail(restoreLiveAfterError(snapshot, fmt.Errorf("读取回滚后文件失败: %w", err)))
+		return fail(fmt.Errorf("resolve rollback source %s: %w", target, err))
 	}
-
-	// Rewrite manifest tag + sha256 to match the newly active binary.
-	e.Tag = target
-	e.SHA256 = newSHA
-	e.UpdatedAt = rfc3339Now()
-	e.AssetName = ""
-	e.AssetSHA256 = ""
-	e.ChecksumAsset = ""
-	e.ChecksumVerified = false
-	m.Put(*e)
+	newSHA, err := store.SHA256File(targetSource)
+	if err != nil {
+		return fail(fmt.Errorf("sha256 rollback source: %w", err))
+	}
+	newEntry := oldEntry
+	newEntry.Tag = target
+	newEntry.SHA256 = newSHA
+	newEntry.UpdatedAt = rfc3339Now()
+	newEntry.AssetName = ""
+	newEntry.AssetSHA256 = ""
+	newEntry.ChecksumAsset = ""
+	newEntry.ChecksumVerified = false
+	afterManifest := cloneManifest(m)
+	afterManifest.Put(newEntry)
+	manifestBytes, err := encodeManifest(afterManifest)
+	if err != nil {
+		return fail(fmt.Errorf("encode rollback manifest: %w", err))
+	}
+	tx, err := statejournal.Begin(dataRoot(), "rollback", name, []statejournal.Spec{
+		{Role: "live", Path: e.Path, After: statejournal.RegularFile(targetSource)},
+		{Role: "manifest", Path: manifestPath(), After: statejournal.RegularBytes(manifestBytes, 0o600)},
+	})
+	if err != nil {
+		return fail(fmt.Errorf("prepare rollback transaction: %w", err))
+	}
+	if err := validateTransactionStateSHA(tx, "live", oldEntry.SHA256, false); err != nil {
+		return fail(abortStateTransaction(tx, fmt.Errorf("当前文件在创建事务日志时被外部修改；拒绝覆盖: %w", err)))
+	}
+	if err := validateTransactionStateSHA(tx, "live", newSHA, true); err != nil {
+		return fail(abortStateTransaction(tx, err))
+	}
+	if snapshotLive != nil {
+		// Test-only compatibility seam: existing adversarial tests can mutate the
+		// live path after PREPARED. The durable journal remains authoritative.
+		probe, probeErr := snapshotLive(e.Path)
+		if probeErr != nil {
+			return fail(abortStateTransaction(tx, probeErr))
+		}
+		if cleanupErr := probe.Commit(); cleanupErr != nil {
+			return fail(abortStateTransaction(tx, cleanupErr))
+		}
+	}
+	if err := tx.Apply("live"); err != nil {
+		return fail(abortStateTransaction(tx, fmt.Errorf("当前文件在事务应用前被外部修改或无法激活；拒绝覆盖: activate %s: %w", target, err)))
+	}
+	if err := tx.Verify("manifest", false); err != nil {
+		return fail(abortStateTransaction(tx, fmt.Errorf("manifest changed during rollback; refusing overwrite: %w", err)))
+	}
+	*e = newEntry
+	m.Put(newEntry)
 	if err := save(m); err != nil {
 		*e = oldEntry
 		m.Put(oldEntry)
-		return fail(restoreLiveAfterError(snapshot, fmt.Errorf("save manifest: %w", err)))
+		return fail(abortStateTransaction(tx, fmt.Errorf("save manifest: %w", err)))
 	}
-	if err := snapshot.Commit(); err != nil {
-		fmt.Fprintf(stderr, "警告: %s 回滚已完成，但清理事务快照失败: %v\n", name, err)
+	if err := commitStateTransaction(tx); err != nil {
+		refreshErr := refreshManifest(m)
+		if current := m.Get(name); current != nil {
+			*e = *current
+		}
+		return fail(errors.Join(fmt.Errorf("commit rollback transaction: %w", err), refreshErr))
 	}
+	finalizeStateTransaction(tx, stderr, name, "回滚")
 
 	fmt.Fprintf(stdout, "已回滚 %s → %s\n", name, target)
 	_ = stderr // reserved for future diagnostics
