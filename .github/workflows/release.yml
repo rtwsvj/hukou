@@ -98,15 +98,41 @@ jobs:
           expected="hukou $VERSION (commit $commit, built $build_date)"
           printf '%s\n' "$actual"
           test "$actual" = "$expected"
+      - name: Prepare packaged binaries for SBOM scanning
+        run: |
+          set -euo pipefail
+          sbom_root="$RUNNER_TEMP/hukou-sbom-root"
+          rm -rf "$sbom_root"
+          mkdir -p "$sbom_root"
+          for archive in dist/*.tar.gz; do
+            package="$(basename "$archive" .tar.gz)"
+            tar -xzf "$archive" -C "$sbom_root" "$package/hukou"
+          done
+          test "$(find "$sbom_root" -type f -name hukou | wc -l | tr -d ' ')" = 4
       - name: Generate SPDX JSON SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          path: ./dist
+          path: ${{ runner.temp }}/hukou-sbom-root
           format: spdx-json
           output-file: ./dist/hukou_${{ env.VERSION }}_sbom.spdx.json
           artifact-name: hukou-${{ env.VERSION }}-sbom.spdx.json
+          syft-version: v1.46.0
           upload-artifact: false
           upload-release-assets: false
+      - name: Verify SBOM describes every packaged binary
+        env:
+          SBOM: dist/hukou_${{ env.VERSION }}_sbom.spdx.json
+        run: |
+          set -euo pipefail
+          jq -e '
+            .spdxVersion == "SPDX-2.3" and
+            .SPDXID == "SPDXRef-DOCUMENT" and
+            (.files | length) == 4 and
+            ([.packages[] | select(.name == "github.com/rtwsvj/hukou")] | length) == 4 and
+            ([.packages[] | select(.name == "github.com/spf13/cobra")] | length) == 4 and
+            ([.packages[] | select(.name == "github.com/spf13/pflag")] | length) == 4 and
+            ([.packages[] | select(.name == "golang.org/x/mod")] | length) == 4
+          ' "$SBOM" >/dev/null
       - name: Upload release artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
