@@ -12,7 +12,7 @@
 | Phase 2：收编、升级、回滚、清单 | 已实现 | `specs/phase2-adopt-upgrade.md`、`records/` |
 | H1 安全硬化 | 已交付；GitHub-hosted runner 计费例外已记录 | `codex/verification-reports/2026-07-13-hukou-hardening-local.md` |
 | 首个 SemVer 发布 | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布 | `codex/verification-reports/2026-07-13-v0.1.0-release.md` |
-| H2 恢复与诊断基础 | 持久化事务、目录 durability、manifest backup 与只读 doctor 已实现，最终验证进行中 | `codex/execution-reports/2026-07-14-h2-recovery-doctor.md` |
+| H2 恢复与诊断基础 | 已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布并完成验证；后续边界见路线图 | `codex/verification-reports/2026-07-14-h2-recovery-doctor.md`、`codex/verification-reports/2026-07-14-v0.2.0-release.md` |
 | 风险提示、生态导出、Windows | 未实现 | `02-roadmap.md` |
 
 任何“通过”结论必须同时给出提交号和 `codex/verification-reports/` 中的报告。当前执行报告不等于验证报告。
@@ -42,6 +42,7 @@
 - [`09-decision-log.md`](09-decision-log.md)：重要决策索引
 - [`09-release.md`](09-release.md)：版本与发布流程
 - [`10-glossary.md`](10-glossary.md)：术语
+- [`pinhaoma-sources.md`](pinhaoma-sources.md)：历史调研来源、许可证与复用边界
 - [`adr/`](adr/)：不可轻易反转的技术决策
 - [`codex/`](codex/)：执行、改动和验证记录
 - [`records/`](records/)：历史阶段完成记录

@@ -1,5 +1,23 @@
 # Codex Session Log
 
+## 2026-07-14 — v0.2 文档一致性验收
+
+- Branch: `codex/hukou-v0.2-docs-acceptance`
+- Base: `main@728fc22b07f0e9d65276d1ac71a7add81af33161`
+- Subject Commit: `a5d48d170f0cca23652595d9babdd98139775d49`
+- PR: `https://github.com/rtwsvj/hukou/pull/5`
+- Execution Report: `execution-reports/2026-07-14-v0.2-documentation-acceptance.md`
+- Change Record: `change-records/2026-07-14-v0.2-documentation-acceptance.md`
+- Verification Report: `verification-reports/2026-07-14-v0.2-documentation-acceptance.md`
+- Status: verification pass with GitHub-hosted Actions infrastructure exception
+
+### 结论
+
+- 三路独立复核确认文档体系已有 project brief → requirements → roadmap → architecture/data/CLI → development/testing/risk/decision/release/glossary → ADR/specs → Codex records 的闭环。
+- 修正总入口 H2 状态、brief/spec 的 doctor/WAL 范围，以及 release report 的 main 时点表述；未改代码、tag 或 Release。
+- Markdown links、`make verify`、普通/race 401 tests、73.8% coverage 与 GitHub 发布对象复核通过，未发现 P0/P1。
+- PR #5 hosted run `29336431803` 仍在 0 steps 前被 billing/spending limit 阻塞；不写成代码通过或失败。
+
 ## 2026-07-14 — H2 崩溃恢复、doctor 与 v0.2.0
 
 - Implementation Branch: `codex/hukou-h2-recovery-doctor`
