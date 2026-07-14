@@ -6,8 +6,9 @@
 - Date: 2026-07-14
 - Execution Report: `../execution-reports/2026-07-14-h2-recovery-doctor.md`
 - Branch: `codex/hukou-h2-recovery-doctor`
-- Status: implemented; subject commit pending
-- Verification Status: working-tree gates pass; commit-bound report pending
+- Subject Commit: `fa00ac1f4c3b2073828b7479248ab020b3c24495`
+- Status: implemented
+- Verification Status: pass (`../verification-reports/2026-07-14-h2-recovery-doctor.md`)
 
 ## 用户请求
 
@@ -39,7 +40,7 @@
 
 ## 当前验证证据
 
-以下结果绑定当前工作树；最终 commit hash 与复跑结果写入对应 verification report：
+以下结果已在 subject commit 上复跑；完整证据见对应 verification report：
 
 | 检查 | 结果 |
 |---|---|
@@ -63,8 +64,7 @@
 
 ## 下一步
 
-1. 创建 subject commit，并生成绑定 commit 的 verification report。
-2. 推送 PR；远端 gate 可用则等待通过，不可用则记录精确 0-step 证据并使用既有隔离发布门禁。
-3. 合并 `main` 后发布新的 SemVer，不移动 `v0.1.0`。
+1. 推送 PR；远端 gate 可用则等待通过，不可用则记录精确 0-step 证据并使用既有隔离发布门禁。
+2. 合并 `main` 后发布新的 SemVer，不移动 `v0.1.0`。
 
 一次 Linux/amd64 QEMU 容器尝试在下载依赖阶段由 Go 工具链自身触发 SIGSEGV，尚未执行项目测试；随后原生 Linux/arm64 非 root 容器在只读模块缓存下完成普通与 race 全量验证。该模拟器故障保留为环境证据，不计作项目测试失败或通过。
