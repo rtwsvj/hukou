@@ -9,6 +9,7 @@
 - Subject Commit: `fa00ac1f4c3b2073828b7479248ab020b3c24495`
 - Status: implemented
 - Verification Status: pass (`../verification-reports/2026-07-14-h2-recovery-doctor.md`)
+- Release Status: published as `v0.2.0` (`../verification-reports/2026-07-14-v0.2.0-release.md`)
 
 ## 用户请求
 
@@ -62,9 +63,9 @@
 - 非协作 writer 在最终状态复核与 rename/remove 系统调用之间仍有窄 TOCTOU；这是已记录边界，不宣称原子 CAS。
 - GitHub-hosted runner 若仍在 0 step 前被 payment/spending limit 拒绝，作为外部基础设施例外单独记录，不改写为代码测试通过。
 
-## 下一步
+## 完成状态
 
-1. PR #3 已推送；Run `29297898605` 的四个 jobs 均在 0 steps 前被 billing/spending-limit 阻断。
-2. 依据本地、原生 Linux 容器与独立回顾证据合并 `main`，随后发布新的 SemVer，不移动 `v0.1.0`。
+1. PR #3 已合并为 `60554bf95c3299ac7daec429b11139034dfee893`；PR/main/tag hosted jobs 均在 0 steps 前被 billing/spending-limit 阻断。
+2. annotated `v0.2.0` 已指向该 merge commit，四平台资产与 checksum 已发布并完成远端逐字节复核；`v0.1.0` 未移动。
 
 一次 Linux/amd64 QEMU 容器尝试在下载依赖阶段由 Go 工具链自身触发 SIGSEGV，尚未执行项目测试；随后原生 Linux/arm64 非 root 容器在只读模块缓存下完成普通与 race 全量验证。该模拟器故障保留为环境证据，不计作项目测试失败或通过。

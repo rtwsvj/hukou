@@ -1,5 +1,40 @@
 # Codex Session Log
 
+## 2026-07-14 — H2 崩溃恢复、doctor 与 v0.2.0
+
+- Implementation Branch: `codex/hukou-h2-recovery-doctor`
+- Closeout Branch: `codex/hukou-v0.2.0-closeout`
+- Base: `main@7fc8ffd8a9bc7f7115919be019a1444a8cefa716`
+- Subject Commit: `fa00ac1f4c3b2073828b7479248ab020b3c24495`
+- PR #3 Merge: `60554bf95c3299ac7daec429b11139034dfee893`
+- Execution Report: `execution-reports/2026-07-14-h2-recovery-doctor.md`
+- Change Record: `change-records/2026-07-14-h2-recovery-doctor.md`
+- Verification Report: `verification-reports/2026-07-14-h2-recovery-doctor.md`
+- Release Report: `verification-reports/2026-07-14-v0.2.0-release.md`
+- Release: `https://github.com/rtwsvj/hukou/releases/tag/v0.2.0`
+- Status: completed with GitHub-hosted Actions infrastructure exception
+
+### 交付
+
+- adopt/upgrade/rollback durable before/after WAL：PREPARED 回滚、COMMIT 后前滚、恢复可重入。
+- durablefs、manifest backup、Store.Put 崩溃续写与 namespace fast-path 再同步。
+- 默认零写/零网络的 `hukou doctor` 文本/JSON诊断。
+- pending transaction 对 list/provenance/dry-run 失败关闭；批量升级遇未决状态停止。
+
+### 核验与发布
+
+- macOS：401 tests、race、73.8% coverage；transaction/store/doctor/batch-stop 定向压力和 1203 次 shuffle 通过。
+- 原生 Linux/arm64 非 root 容器：普通与 race 全仓通过。
+- 三路独立回顾发现的 fast-path durability、Store.Put retry、batch pending、backup topology、doctor determinism 等缺口均在 subject commit 前关闭；最终无 P0/P1。
+- PR/main/tag GitHub-hosted jobs 因 billing/spending limit 在 0 steps 前被拒绝，明确记为 infrastructure-blocked。
+- 两个全新 Linux 容器运行正式 release 脚本；四平台资产逐字节一致，4/4 checksum、三平台 buildinfo 与远端重新下载复核通过。
+- Colima 从停止状态临时启动，发布后已恢复停止。
+
+### 保留边界
+
+- 不宣称硬件掉电缓存重排证明；非协作 writer 最终 syscall 前 TOCTOU 已记录。
+- doctor 无自动 repair；激活历史/retention、公共 fixture smoke、Windows 与签名/attestation 留后续。
+
 ## 2026-07-13 — H1 安全硬化与首个发布
 
 - Branch: `codex/hukou-hardening-release`

@@ -2,7 +2,7 @@
 
 ## 当前正式版本
 
-[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布，包含 Darwin/Linux × amd64/arm64 四个归档与 `checksums.txt`。本次 GitHub-hosted CI/snapshot/tag workflow 因账户 payment/spending limit 在 runner 调度前失败；发布仅在两个全新 Go/Linux 容器运行正式脚本得到逐字节一致结果、双平台 buildinfo smoke 通过、远端重新下载与本地产物逐字节一致后，使用同一 annotated tag 手动完成。该例外不改变未来正常流程的 runner gate 要求。
+[`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 是当前正式版本，包含 Darwin/Linux × amd64/arm64 四个归档与 `checksums.txt`；[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 保持不变。本次 GitHub-hosted CI/tag workflow 因账户 payment/spending limit 在 runner 调度前失败；发布仅在两个全新 Go/Linux 容器运行正式脚本得到逐字节一致结果、三平台 buildinfo smoke 通过、远端重新下载与本地产物逐字节一致后，使用同一 annotated tag 手动完成。该例外不改变未来正常流程的 runner gate 要求。
 
 ## 版本策略
 
@@ -38,7 +38,7 @@ dist/
 ## 本地 snapshot
 
 ```bash
-VERSION=v0.1.0 ALLOW_DIRTY=1 bash scripts/release.sh  # 仅当前未提交开发树实验
+VERSION=v0.2.0 ALLOW_DIRTY=1 bash scripts/release.sh  # 仅当前未提交开发树实验
 ```
 
 要求 GNU tar；macOS 默认 BSD tar 时安装并使用 `gtar`。生成物位于被忽略的 `dist/`。
@@ -59,7 +59,7 @@ tag 发布还会强制检查：tag 为 annotated tag、目标 commit 已在 `ori
 ## 发布清单
 
 1. 工作树干净，目标 commit 已进入 `main`。
-2. H1 verification report 为 pass。
+2. 当前变更 verification report 为 pass。
 3. CI 的 Linux/macOS test、race、build、coverage 全绿。
 4. 手动 snapshot archive 可解压，`version` 正确。
 5. `checksums.txt` 可验证全部 archive。

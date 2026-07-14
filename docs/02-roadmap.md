@@ -39,12 +39,13 @@
 
 ## H2：运维与崩溃恢复
 
-状态：**恢复与只读诊断基础已实现，repair/历史策略与网络 smoke 尚未完成**。
+状态：**恢复与只读诊断基础已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布；repair/历史策略与网络 smoke 尚未完成**。
 
 - [x] adopt/upgrade/rollback 单全局 WAL：PREPARED 回滚、COMMITTED 前滚、unknown drift 失败关闭
 - [x] manifest、store、live、事务 payload 的文件与父目录持久化
 - [x] 上一份可解析且 schema 受支持的 `manifest.json.bak`
 - [x] 默认零写、零网络的 `doctor` 文本/JSON审计与 orphan/unclassifiable 区分
+- [x] macOS + 原生 Linux 全量/race、崩溃/持久化压力、四平台可重复资产与远端下载复核
 - [ ] 显式枚举、state fingerprint 绑定的安全 repair 动作
 - [ ] 激活历史与可配置版本保留策略
 - [ ] 真实公共 fixture repo 的定时 smoke
