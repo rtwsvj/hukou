@@ -5,7 +5,7 @@
 - Date: 2026-07-14
 - Branch: `codex/hukou-h2-recovery-doctor`
 - Base: `main@7fc8ffd8a9bc7f7115919be019a1444a8cefa716`
-- Status: implemented and locally verified; publish in progress
+- Status: implemented and locally verified; PR #3 remote gate infrastructure-blocked; publish in progress
 - Approval: Eric 明确要求“还有什么没做好的，继续”
 
 ## 用户请求

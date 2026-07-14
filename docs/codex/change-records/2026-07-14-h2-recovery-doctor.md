@@ -64,7 +64,7 @@
 
 ## 下一步
 
-1. 推送 PR；远端 gate 可用则等待通过，不可用则记录精确 0-step 证据并使用既有隔离发布门禁。
-2. 合并 `main` 后发布新的 SemVer，不移动 `v0.1.0`。
+1. PR #3 已推送；Run `29297898605` 的四个 jobs 均在 0 steps 前被 billing/spending-limit 阻断。
+2. 依据本地、原生 Linux 容器与独立回顾证据合并 `main`，随后发布新的 SemVer，不移动 `v0.1.0`。
 
 一次 Linux/amd64 QEMU 容器尝试在下载依赖阶段由 Go 工具链自身触发 SIGSEGV，尚未执行项目测试；随后原生 Linux/arm64 非 root 容器在只读模块缓存下完成普通与 race 全量验证。该模拟器故障保留为环境证据，不计作项目测试失败或通过。

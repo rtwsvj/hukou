@@ -9,10 +9,12 @@
 - Environment: macOS 27.0 Darwin 27.0.0 arm64；原生 Linux/arm64 容器
 - Go: `go1.26.5 darwin/arm64`；`golang:1.26.5-bookworm`
 - Verdict: **pass**
-- Remote Gate: PR 尚未推送；不把 GitHub Actions 结果计入本报告的本地 verdict
+- Remote Gate: **infrastructure-blocked**；PR #3 CI Run `29297898605` 的四个 jobs 均为 0 steps、`runner_id=0`
 - Related Change: `CHANGE-20260714-h2-recovery-doctor`
 
 该 commit 的 macOS 普通、race、压力、乱序、覆盖率、四目标构建、隔离 CLI smoke，以及非 root Linux/arm64 普通与 race 全量验证均通过。验证没有读写真实 hukou 状态或替换真实 PATH 二进制。
+
+PR: `https://github.com/rtwsvj/hukou/pull/3`。GitHub Actions Run `29297898605` 在 2026-07-14 对 format、Ubuntu、macOS、coverage 四个 jobs 均未启动任何 step；job API 的 runner 为空，check annotation 明确为近期账户付款失败或 spending limit 需要提高。该结果记录为仓库外基础设施例外，不纳入代码 pass/fail 判断。
 
 ## Claims vs Evidence
 
@@ -51,6 +53,7 @@
 | Markdown 相对链接检查 | 0 | 48 个 Markdown 文件无缺失相对目标 |
 | `gofmt -l .` / `git diff --check` | 0 | 无输出 |
 | 隔离 CLI smoke | 0 | version、help、doctor JSON；不存在的 `HUKOU_DATA_DIR` 保持零写 |
+| PR #3 CI Run `29297898605` | 远端 failure | 4 jobs / 0 steps / runner_id=0；billing/spending-limit annotation，infrastructure-blocked |
 
 ## 独立只读回顾
 
@@ -73,4 +76,4 @@
 - 未验证 Windows crash/directory-sync 运行时语义，也不声明 Windows 支持。
 - doctor 不自动 repair、删除 orphan、恢复旧无 transaction ID 的 snapshot，属于刻意安全边界。
 - 一次 Linux/amd64 QEMU 容器尝试在依赖下载/模块索引阶段由 Go 工具链自身 SIGSEGV，项目测试尚未开始；该模拟器故障不计作代码失败或通过。amd64 由静态交叉构建覆盖，Linux 运行时由原生 arm64 容器覆盖。
-- PR CI、合并 commit、tag workflow 与 release assets 将在推送后由单独发布/收尾证据补充。
+- 合并 commit、tag workflow 与 release assets 由单独发布/收尾证据补充。
