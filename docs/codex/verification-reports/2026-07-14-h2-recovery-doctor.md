@@ -11,6 +11,7 @@
 - Verdict: **pass**
 - Remote Gate: **infrastructure-blocked**；PR #3 CI Run `29297898605` 的四个 jobs 均为 0 steps、`runner_id=0`
 - Related Change: `CHANGE-20260714-h2-recovery-doctor`
+- Release Report: `2026-07-14-v0.2.0-release.md`
 
 该 commit 的 macOS 普通、race、压力、乱序、覆盖率、四目标构建、隔离 CLI smoke，以及非 root Linux/arm64 普通与 race 全量验证均通过。验证没有读写真实 hukou 状态或替换真实 PATH 二进制。
 
@@ -76,4 +77,4 @@ PR: `https://github.com/rtwsvj/hukou/pull/3`。GitHub Actions Run `29297898605` 
 - 未验证 Windows crash/directory-sync 运行时语义，也不声明 Windows 支持。
 - doctor 不自动 repair、删除 orphan、恢复旧无 transaction ID 的 snapshot，属于刻意安全边界。
 - 一次 Linux/amd64 QEMU 容器尝试在依赖下载/模块索引阶段由 Go 工具链自身 SIGSEGV，项目测试尚未开始；该模拟器故障不计作代码失败或通过。amd64 由静态交叉构建覆盖，Linux 运行时由原生 arm64 容器覆盖。
-- 合并 commit、tag workflow 与 release assets 由单独发布/收尾证据补充。
+- merge commit、tag workflow 与 release assets 已由 `2026-07-14-v0.2.0-release.md` 核验。

@@ -6,11 +6,11 @@
 
 ## 当前状态
 
-项目已经交付 Phase 1 `scan`、Phase 2 `adopt / upgrade / rollback / list`、H1 安全硬化，以及 H2 的持久化事务恢复与只读 `doctor` 基础。[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 是当前已发布版本；当前分支通过情况与 GitHub Actions 基础设施例外见 [`docs/codex/verification-reports/`](docs/codex/verification-reports/)。
+项目已经交付 Phase 1 `scan`、Phase 2 `adopt / upgrade / rollback / list`、H1 安全硬化，以及 H2 的持久化事务恢复与只读 `doctor` 基础。[`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 是当前已发布版本；验证与 GitHub Actions 基础设施例外见 [`docs/codex/verification-reports/`](docs/codex/verification-reports/)。
 
 - 目标平台：macOS、Linux
 - 当前模块工具链：以 [`go.mod`](go.mod) 的 `go` 指令为准
-- 分发状态：private repository，已提供四平台 `v0.1.0` Release 资产；尚未声明原创代码的公开分发许可证
+- 分发状态：private repository，已提供四平台 `v0.2.0` Release 资产；尚未声明原创代码的公开分发许可证
 - Windows、topgrade 集成、mise/Brewfile 导出、changelog 风险层：未实现
 
 ## 能做什么
