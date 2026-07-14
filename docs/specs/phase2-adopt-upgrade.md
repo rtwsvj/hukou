@@ -1,10 +1,10 @@
-# Phase 2 规格:adopt / upgrade / rollback
+# Phase 2 规格：adopt / upgrade / rollback / doctor
 
-状态:主体已实现，2026-07-13 H1 安全契约修订中。最终通过以当前 commit 的 verification report 为准。
+状态：主体与 H2 崩溃恢复/只读诊断基础已随 `v0.2.0` 实现并验证；自动 repair、激活历史/可配置保留策略与公共 fixture smoke 后置。最终通过以当前 commit 的 verification report 为准。
 
 ## 目标
 
-把 scan 找出的无主二进制**收编**进 hukou 管理,提供 GitHub release **升级**与**回滚**。
+把 scan 找出的无主二进制**收编**进 hukou 管理，提供 GitHub release **升级**、**回滚**、协作事务崩溃恢复与只读状态诊断。
 
 ## 命令
 
@@ -13,6 +13,7 @@ hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force]
 hukou upgrade [name ...] [--all] [--dry-run] [--asset <substr>]
 hukou rollback <name> [--to <tag|original>]
 hukou list
+hukou doctor [--json] [--deep]
 ```
 
 - **adopt**:登记一个已存在的二进制。repo 推导:Go 二进制经 buildinfo 的 ModulePath(github.com/owner/repo 前缀直接取);其余必须显式给 owner/repo。二进制已被其他管理器认领(scan 归属非 unknown/curl-installer/local-project)时拒绝,`--force` 才放行。登记时记录当前 sha256 并把原始二进制**备份**进 store(original/)。
@@ -20,19 +21,23 @@ hukou list
 - **upgrade**:仅对已收编工具。查最新 release → 比较 tag(字符串不等即视为可升级,不做 semver 猜测)→ 选资产 → 下载到 store → 校验 → 原子替换。`--dry-run` 只报告不动手。
 - **rollback**:把 store 中上一个(或 --to 指定)版本原子复制到活跃常规文件。
 - **list**:收编清单(名称/版本/repo/路径/store 版本数)。
+- **doctor**：默认零写、零网络审计 manifest/backup、live、store、transaction 与临时残留；`--deep` 扩大只读检查范围，不自动修复。
 
 ## 数据布局(XDG)
 
 ```
 ~/.local/share/hukou/manifest.json          # 户口清单,schema_version=1
+~/.local/share/hukou/manifest.json.bak      # 上一份可解析且 schema 受支持的 manifest
 ~/.local/share/hukou/state.lock             # 写命令进程互斥
+~/.local/share/hukou/transactions/          # 持久化 before/after WAL
+~/.local/share/hukou/store/.tmp/            # 下载/解包临时目录
 ~/.local/share/hukou/store/<name>/<tag>/<bin>   # 各版本
 ~/.local/share/hukou/store/<name>/original/<bin> # 收编时的原件备份
 ```
 
 manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active binary), adopted_at, updated_at, upstream(如 go module path), asset_name, asset_sha256(下载归档), checksum_asset, checksum_verified。H1 新增审计字段可选，保持 schema v1 向后兼容。写入必须原子(临时文件+rename)。
 
-数据根优先使用 `HUKOU_DATA_DIR`，否则 `${XDG_DATA_HOME}/hukou`，默认 `~/.local/share/hukou`。adopt、真实 upgrade、rollback 非阻塞获取 `<dataRoot>/state.lock`；锁已占用时立即报错。scan 和纯 dry-run 不持写锁。
+数据根优先使用 `HUKOU_DATA_DIR`，否则 `${XDG_DATA_HOME}/hukou`，默认 `~/.local/share/hukou`。adopt、真实 upgrade、rollback 非阻塞获取 `<dataRoot>/state.lock`；锁已占用时立即报错。scan、list、doctor 和纯 dry-run 不持写锁。
 
 **替换模型**：original 与各版本在 store 中保持不可变副本。升级/回滚把目标版本复制为 PATH 位置同目录的完整临时常规文件，设置 mode、`fsync`、close 后 rename 覆盖活跃文件，并同步父目录。新激活不交换 symlink inode；旧版遗留 symlink 作为兼容输入，首次成功激活后迁移为常规文件。
 
@@ -73,13 +78,14 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active
 
 ## 验收
 
-1. `go build ./... && go vet ./... && go test ./...` 全绿(测试 `&&` 串联)
+1. `make verify` 全绿，覆盖 fmt、module verify、vet、test、race、coverage 与 build
 2. 网络层/升级流程用 httptest 假 GitHub API 全覆盖:latest/指定 tag/429 退避/资产 404/校验失败中止
 3. assetpick 表驱动测试:用 fzf、gh、lazygit、ripgrep、uv 真实 release 的资产名清单做用例,darwin/arm64 下全部选中正确资产
-4. e2e(真网络,GITHUB_TOKEN 可用时):在临时目录放一个旧版真实小工具二进制 → adopt → upgrade --dry-run 报告出新 tag 与选中资产 → 真实 upgrade 到临时目录 → rollback 复原,全程不触碰 PATH 真实文件
+4. L6 真实公共 fixture repo E2E 当前后置且未记录为通过：后续应在临时目录完成 adopt → upgrade dry-run → upgrade → rollback，全程不触碰真实 PATH 文件
 5. 无新第三方依赖(仍仅 cobra);gobin.go/detect.go vendor 文件不改核心逻辑
 6. 失败注入覆盖 checksum 缺条目、manifest 保存失败补偿、锁竞争、adopt 同名冲突与纯 dry-run 无写入
 7. 发布前在临时 HOME/PATH/HUKOU_DATA_DIR 完成 CLI smoke;不得触碰真实用户二进制与真实 manifest
+8. PREPARED/COMMITTED crash matrix、真实子进程 kill、unknown drift、doctor 零写/确定性与 Linux 目录同步路径通过定向验证
 
 ## 禁止事项
 
