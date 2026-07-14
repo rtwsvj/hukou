@@ -90,33 +90,36 @@ V0.3 还必须覆盖：
   并测试 directory、symlink-to-directory 与预检后竞争；dry-run 零写。
 - release archive 包含 LICENSE、THIRD_PARTY_NOTICES、双语 README、LICENSES，SBOM 与 checksums 对应固定 commit。
 
-## V0.3 当前工作树阶段证据（2026-07-15）
+## V0.3 固定提交证据（2026-07-15）
 
 | 检查 | 当前结果 | 能证明/不能证明 |
 |---|---|---|
-| 安全关键路径定向 audit | 321 passed / 6 packages | schema/activation/archive/store 等最新修复的阶段证据；不等于固定提交验收 |
-| `go test -count=1 ./...` | 641 passed / 21 packages | 最新 direct uncached ordinary；仍需绑定最终 commit 复跑 |
-| `go test -count=1 -race ./...` | 641 passed / 21 packages | 最新 direct uncached race；仍需绑定最终 commit 复跑 |
+| 安全关键路径定向 audit | 321 passed / 6 packages | 固定 subject commit 的 schema/activation/ghrelease/manifest/repair/store 证据 |
+| `go test -count=1 ./...` | 641 passed / 21 packages | subject `1fa45a0` direct uncached ordinary，零失败 |
+| `go test -count=1 -race ./...` | 641 passed / 21 packages | subject `1fa45a0` direct uncached race，零失败 |
 | `GOPROXY=https://goproxy.cn,direct make release-verify` | exit 0 | 全 target pass；coverage 72.9%；govuln 无已知漏洞；默认 proxy 路径另有 IPv6 timeout |
 | explain name/path 只读定向 | 5 passed | 独立目录快照与 `http.DefaultTransport` spy 证明该批次零写/零网络 |
 | `scripts/install_test.sh` | pass | 含 Perl link(2)/rename(2)、Linux 无 Perl `-T` fallback、directory/symlink-dir/竞争/duplicate member |
 | `scripts/release_test.sh` | pass | v-prefix、无 build metadata 的 strict shell SemVer matrix；不证明 snapshot |
-| Linux/arm64 non-root container ordinary/race | pass / all packages | `golang:1.26.5-bookworm`、UID 65532、repo read-only、mirror；最终 commit 仍需复跑 |
+| Linux/arm64 non-root container ordinary/race | pass / all packages | 固定 image digest、UID/GID 65534、source/module cache read-only、`GOPROXY=off` |
 | Linux GNU tar 1.34 installer/release tests | pass | release test 在配置 git safe.directory 后通过；root/default-proxy 首次失败不计代码失败 |
-| actionlint 1.7.12 / Ruby YAML parse / Action pin 对账 | pass | workflow 静态结构与固定 SHA；不证明 hosted run |
-| Markdown links / production 汉字 sweep / `git diff --check` | 68 Markdown、89 targets、0 missing；0 汉字；diff pass | 当前文档/界面阶段门禁 |
+| 四目标双构建与 snapshot | pass | 两次目录逐字节一致；4/4 checksum、单 root/单 executable、buildinfo 与 installer smoke 通过 |
+| Syft 1.46.0 SPDX JSON | 21 packages / 4 files | 四个平台真实二进制与四组直接依赖均被列入；空壳 SBOM 缺口已关闭 |
+| actionlint 1.7.12 / Ruby YAML parse / Action pin 对账 | pass | workflow 静态结构与固定 SHA；hosted run 仍须单独解释 |
+| Markdown links / production 汉字 sweep / secret scan / `git diff --check` | 68 Markdown、89 targets、0 missing；0 汉字；0 leak；diff pass | 文档、界面与提交卫生门禁 |
 
-未完成：最终 commit 的全仓/coverage/build/Linux 复跑与证据固化、最终四目标与
-双构建、release snapshot/SBOM、远端 Actions 和独立 `pinhaoma-review`。只有新的
-verification report 绑定最终 commit 后，才能把这些项目改成通过。
+独立 `pinhaoma-review` 对固定 subject 的结论为 P0/P1/P2 = 0。Draft PR #6 的
+GitHub-hosted CI run `29352308455` 五个 job 均在任何 step 前因 billing/spending limit
+失败，不能记为远端代码失败或远端绿色；CodeQL run `29352310557` 在 private repository
+按设计 skipped。
 
 Gap audit 缺口已在工作树关闭：installer 有 Perl时采用 `link(2)` atomic no-replace /
 force `rename(2)`，Linux 无 Perl时采用 `ln -T`/`mv -T` fallback；覆盖 directory、
 symlink-to-directory、预检后竞争并拒绝重复目标 member。Release workflow
 删除历史 `v0.1.0` 手动 snapshot default。另新增 schema-specific manifest required
 fields、legacy v2-only smuggling rejection、activation safe tag 与 tag/SHA binding、
-list original completeness，以及 symlink adopt→upgrade→implicit rollback E2E。它们仍需
-随最终 subject commit 复跑，不能仅凭实现存在改成 RC pass。
+list original completeness，以及 symlink adopt→upgrade→implicit rollback E2E；上述契约
+已随最终 subject commit 的全仓与定向门禁复跑。
 
 Gap audit 的后续两个 P2 也已在工作树关闭：Store.Versions 对非目录/畸形版本
 失败关闭并有两组测试；explain 已补上述 5 项零写/network-spy 定向测试。
@@ -130,6 +133,10 @@ GitHub API body cap、installer 总解压体积/member 数膨胀预算，以及 
 - profile 是 CI artifact，不进入 Git。
 - H1 首先建立当前真实基线；在不知道基线前不虚构百分比门槛。
 - 后续不得无说明降低总体覆盖率。
+- V0.3 总覆盖率 72.9%，比 v0.2/H2 的 73.8% 下降 0.9 个百分点。原因是新增
+  repair、support、policy 与 supply-chain 路径扩大了生产代码面；安全关键契约已有
+  321 项定向测试、641 项全仓 ordinary/race 与故障矩阵覆盖。本 private RC 接受该
+  小幅下降并记录为 P3，后续优先提高 support/store/repair/output 分支覆盖率。
 - `cmd`、store、manifest、verify、archive、ghrelease 是优先提高的安全关键包。
 
 ## 隔离要求

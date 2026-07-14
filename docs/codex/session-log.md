@@ -1,43 +1,47 @@
 # Codex Session Log
 
-## 2026-07-14 — V0.3 private release candidate（进行中）
+## 2026-07-14 — V0.3 private release candidate
 
 - Branch: `codex/hukou-v0.3-private-rc`
 - Base: `main@bd4faa32d9b5b604b1b224f97fe891ed670f3742`
+- Subject Commit: `1fa45a0d8473446e3208490f037aef924abea181`
+- Draft PR: `https://github.com/rtwsvj/hukou/pull/6`
 - Execution Report: `execution-reports/2026-07-14-v0.3-private-rc.md`
 - Change Record: `change-records/2026-07-14-v0.3-private-rc.md`
-- Verification Report: `verification-reports/2026-07-14-v0.3-private-rc.md`（进行中骨架）
-- Status: implementation present; targeted verification partial; full RC gate pending
+- Verification Report: `verification-reports/2026-07-14-v0.3-private-rc.md`
+- Status: local/private RC readiness pass; GitHub-hosted gate infrastructure-blocked
 - Boundary: repository remains private; no `v0.3.0` tag or public release
 
-### 当前进度
+### 最终结论
 
 - V0.3 spec 与两份 ADR 已落盘；trust-first、manifest v2/history/policy/retention、
-  两类 repair 与脱敏 support bundle 已进入共享工作树。
+  两类 repair 与脱敏 support bundle 已进入固定 subject commit。
 - 许可证、notices、双语入口、社区模板、HTTPS/checksum 安装器、SBOM 与
   public-only attestation/CodeQL 配置已进入共享工作树；这些都没有改变仓库可见性。
-- 已证实工作树阶段结果：安全关键路径 audit 321 tests / 6 packages；direct
+- 已证实固定提交结果：安全关键路径 audit 321 tests / 6 packages；direct
   uncached 全仓 ordinary/race 各 641 tests / 21 packages；命令级 GOPROXY mirror
   下 `make release-verify` exit 0、coverage 72.9%、govuln 无已知漏洞。默认
   `proxy.golang.org` IPv6 timeout 仍单独保留，不能记为默认网络路径通过。
-- non-root Linux/arm64（UID 65532、只读 repo、`golang:1.26.5-bookworm`）全仓
-  ordinary/race 通过；GNU tar 1.34 下 installer test 与配置 safe.directory 后的
-  release test 通过。首次 root/default-proxy 失败分别由权限测试绕过与代理 timeout
-  造成，已用符合契约的 non-root/mirror 环境纠正。
+- non-root Linux/arm64（UID/GID 65534、只读 source/module cache、固定
+  `golang:1.26.5-bookworm` digest、`GOPROXY=off`）全仓 ordinary/race 通过；GNU tar
+  1.34 下 installer/release tests 通过。
 - manifest schema-specific required fields/legacy v2 smuggling、activation safe tag 与
   tag/SHA binding、installer link(2)/rename(2)+duplicate member、shell/Go strict SemVer、
   list original completeness 已进入定向回归。
 - actionlint/Ruby YAML、68 Markdown/89 relative targets、production 汉字 sweep、
-  official Action pin 对账与 diff check 已通过工作树阶段门禁。
-- 独立 gap audit 当前未发现剩余 P0/P1；其后两个 P2 也已关闭：Store.Versions
-  malformed topology fail-closed 测试与 explain 5 项零写/network-spy 定向已加入。
-- 实现已收口并等待 baseline commit，最终 subject commit 尚不存在；上述 ordinary/race 范围必须
-  在固定 commit 复跑，不能提前声称 RC 全门禁绿色。
-- 主 README/CHANGELOG 与 project docs 已按“已实现但未正式发布”同步；最终还需
-  文档链接/diff 对账和 pinhaoma-review。
-- 最终 commit 全仓/coverage/build/Linux 复跑与证据固化、最终四目标/双构建、release
-  snapshot/SBOM、GitHub-hosted Actions、commit/push/draft private PR 尚未全部完成；
-  draft PR 合并还需独立 Go/No-Go，不得把本条写成 RC 完成证明。
+  official Action pin 对账、secret scan 与 diff check 通过。
+- 四目标 release build 两次逐字节一致；checksums、archive root/mode、buildinfo、
+  installer smoke 通过。本地可运行二进制为 `bin/hukou`，固定 RC snapshot 位于被忽略的
+  `dist/release-builds/v0.3.0-rc.1/`。
+- SBOM 验收发现旧 workflow 扫描 `dist/` 仅得到 1 package/0 files；修复后使用 Syft
+  1.46.0 扫描四个平台二进制，得到 SPDX 2.3、21 packages/4 files。
+- 独立 `pinhaoma-review` 最终结论 P0/P1/P2 = 0；coverage 73.8%→72.9% 的 -0.9pp
+  作为代码面扩大后的 P3 记录并接受，不隐瞒。
+- 分支已推送并创建 draft PR #6。CI run `29352308455` 的五个 job 均 `steps=[]`，
+  billing/spending annotation 明确为账户基础设施阻断；CodeQL run `29352310557`
+  在 private repository 按设计 skipped。
+- local/private RC readiness 已通过；draft PR 合并、tag、Release、仓库公开与公共
+  fixture/Homebrew 仍需独立 Go/No-Go。
 - 后续 defense-in-depth 明确保留：duplicate JSON key、GitHub API body cap、installer
   总解压体积/member 数预算、`openat`/目录 fd 路径锚定。
 

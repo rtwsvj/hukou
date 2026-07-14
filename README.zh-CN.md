@@ -11,8 +11,9 @@ hukou 扫描 `PATH` 中的可执行文件，解释它们从哪里来，收编没
 负责的二进制，通过 GitHub Releases 校验升级，并保留本地回滚路径。
 
 当前正式版本是面向 macOS 和 Linux 的 **v0.2.0**。私有的 **v0.3 RC
-开发分支**已经包含 trust-first 命令、manifest v2、repair/support 和分发准备，
-但仍在验收中：v0.3 尚未打 tag、尚未发布，仓库也没有因此公开。
+分支**已经包含 trust-first 命令、manifest v2、repair/support 和分发准备；固定提交
+`1fa45a0` 已通过 local/private RC readiness 门禁。GitHub-hosted job 仍因账户计费
+限制在执行前被阻断；v0.3 尚未打 tag、发布或合并，仓库也没有因此公开。
 
 ## 为什么需要 hukou？
 
@@ -106,10 +107,10 @@ Windows 当前不受支持。项目不会把“能交叉编译”直接写成“
 
 ## 安装 v0.2
 
-在私有 RC 完成完整发布门禁前，请继续使用 v0.2 Release 归档或从源码构建。
-v0.3 分支已经实现校验安装器和 SBOM workflow，但没有发布任何 v0.3 安装端点
-或 SBOM。Homebrew 和 Windows 包不存在；公开 artifact attestation 刻意以仓库
-可见性为启用条件。
+需要已发布版本时，请继续使用 v0.2 Release 归档；也可以从源码构建私有 RC。
+v0.3 分支的安装器和 SBOM 内容检查已经通过 local/private readiness 门禁，但没有
+发布任何 v0.3 安装端点或 SBOM。Homebrew 和 Windows 包不存在；公开 artifact
+attestation 刻意以仓库可见性为启用条件。
 
 ### Release 归档
 
@@ -241,13 +242,14 @@ v0.2 已交付持久化事务恢复与只读诊断。私有 v0.3 分支已经实
 检查、manifest v2 activation history、策略化更新与保留、窄版 repair、脱敏
 support、安装器，以及供应链和社区准备。
 
-这只是实现状态，不是发布声明。最新工作树阶段已通过 321 tests / 6 packages 的
-安全关键路径 audit、21 packages 共 641 tests 的 direct uncached ordinary/race、
-coverage 72.9% 的完整本地 `release-verify`，以及 non-root Linux/arm64 全仓
-ordinary/race 与 installer/release-script tests。这些结果尚未绑定最终固定 commit；
-最终复跑、release snapshot、SBOM 检查、独立 review 和 draft private PR 门禁仍在收口。
-GitHub-hosted Actions 还受账户 billing/spending 限制影响，
-因此这里不声称远端绿色。
+这是私有候选版验收状态，不是发布声明。固定提交 `1fa45a0` 已通过 321 tests / 6
+packages 的安全关键路径 audit、21 packages 共 641 tests 的 direct uncached
+ordinary/race、coverage 72.9% 的完整本地 `release-verify`，以及 non-root
+Linux/arm64 全仓 ordinary/race 与 installer/release-script tests。四目标双构建逐字节
+一致，checksums、归档内容、buildinfo、安装 smoke 和 21 packages / 4 files 的 SPDX
+SBOM 均通过；独立 review 未发现 P0/P1/P2，[draft PR #6](https://github.com/rtwsvj/hukou/pull/6)
+已创建。GitHub-hosted Actions 仍受账户 billing/spending 限制影响，因此这里不声称
+远端绿色。
 
 本 RC 仍明确不做：
 

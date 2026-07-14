@@ -13,17 +13,16 @@
 | H1 安全硬化 | 已交付；GitHub-hosted runner 计费例外已记录 | `codex/verification-reports/2026-07-13-hukou-hardening-local.md` |
 | 首个 SemVer 发布 | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布 | `codex/verification-reports/2026-07-13-v0.1.0-release.md` |
 | H2 恢复与诊断基础 | 已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布并完成验证；后续边界见路线图 | `codex/verification-reports/2026-07-14-h2-recovery-doctor.md`、`codex/verification-reports/2026-07-14-v0.2.0-release.md` |
-| V0.3 private RC | 当前分支已实现 trust-first、manifest v2/history/policy/retention、窄版 repair、脱敏 support、安装/社区/供应链准备；完整 RC 验收进行中，未发布、未公开 | `specs/v0.3-private-rc.md`、`codex/execution-reports/2026-07-14-v0.3-private-rc.md` |
+| V0.3 private RC | subject `1fa45a0` 已完成 local/private RC readiness 验收；hosted gate 因 billing infrastructure-blocked；未合并、未发布、未公开 | `specs/v0.3-private-rc.md`、`codex/verification-reports/2026-07-14-v0.3-private-rc.md` |
 | 公共 fixture、公共安装渠道、跨管理器执行、Windows | 未实现/不在本 RC | `02-roadmap.md`、`integrations/topgrade.md` |
 
 任何“通过”结论必须同时给出提交号和 `codex/verification-reports/` 中的报告。当前执行报告不等于验证报告。
 
-V0.3 当前已有本地工作树阶段证据：安全关键路径 audit 321 tests / 6 packages；
-direct uncached 全仓 ordinary/race 各 641 tests / 21 packages；完整本地
-`release-verify` 在命令级 GOPROXY mirror 下 exit 0、coverage 72.9%、govuln 无已知
-漏洞；non-root Linux/arm64 全仓与 installer/release tests 通过。最终 fixed commit
-复跑、发布快照、SBOM、远端 Actions 与独立 review 仍以本轮 verification report
-的最终结果为准。
+V0.3 固定提交证据：安全关键路径 audit 321 tests / 6 packages；direct uncached 全仓
+ordinary/race 各 641 tests / 21 packages；完整本地 `release-verify` 在命令级 GOPROXY
+mirror 下 exit 0、coverage 72.9%、govuln 无已知漏洞；non-root Linux/arm64、四目标
+双构建、installer/release tests 与 21 packages/4 files 的 SPDX SBOM 通过。最终边界、
+产物哈希、远端 billing exception 与独立 review 见本轮 verification report。
 
 ## 事实源优先级
 

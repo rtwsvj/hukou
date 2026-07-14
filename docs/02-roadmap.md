@@ -52,9 +52,9 @@
 
 ## V0.3：Trust-first 私有 Release Candidate
 
-状态：**实现已进入 `codex/hukou-v0.3-private-rc`，工作树阶段全仓与
-`release-verify` 已通过；固定提交上的 Linux 复跑、release/SBOM/PR 门禁尚未完成，未打
-tag、未发布、仓库仍 private**。
+状态：**subject commit `1fa45a0` 已完成 local/private RC readiness 验收并进入
+[draft PR #6](https://github.com/rtwsvj/hukou/pull/6)；GitHub-hosted CI 因 billing 在
+0 steps 前 infrastructure-blocked。未合并、未打 tag、未发布、仓库仍 private**。
 
 - [x] `explain`、`adopt --dry-run --json`、共享 inventory
 - [x] `outdated` 与 upgrade dry-run/真实升级共享 policy-aware checker
@@ -66,28 +66,31 @@ tag、未发布、仓库仍 private**。
 - [x] 英文默认 CLI、双语 README、Apache-2.0、notices、community health 文件
 - [x] checksum 安装器、license/install/shell gates、SBOM 与 public-only attest/CodeQL 配置
 - [x] Topgrade custom command 集成文档；`upgrade --all` 继续只管 hukou entries
-- [ ] uncached 全仓 ordinary/race/coverage/vet/build 最终绿灯并固化 commit
-- [ ] macOS/Linux、四目标 build、双构建可重复性与 release snapshot/SBOM 内容验收
-- [ ] `pinhaoma-review` claims-vs-evidence 独立复核
-- [ ] 推送私有分支并创建 draft private PR；合并需独立 Go/No-Go；GitHub-hosted gate 若继续被 billing 阻断则记录 external gate
+- [x] uncached 全仓 ordinary/race/coverage/vet/build 最终绿灯并固化 commit
+- [x] macOS/Linux、四目标 build、双构建可重复性与 release snapshot/SBOM 内容验收
+- [x] `pinhaoma-review` claims-vs-evidence 独立复核（P0/P1/P2 = 0）
+- [x] 推送私有分支并创建 draft private PR；hosted gate 的 billing 阻断已记录为 external gate
 
-当前局部证据：
+最终固定提交证据：
 
 - 安全关键路径定向 audit：321 tests / 6 packages。
-- direct uncached 全仓 ordinary/race：各 641 tests / 21 packages；最终 subject
-  commit 仍需复跑/固化。
+- direct uncached 全仓 ordinary/race：各 641 tests / 21 packages，零失败。
 - `GOPROXY=https://goproxy.cn,direct make release-verify`：exit 0，coverage 72.9%，
   govuln `No vulnerabilities found`；默认 `proxy.golang.org` IPv6 timeout 另行保留。
 - installer link(2)/rename(2)、重复 member、symlink/竞争与 strict shell SemVer；
   manifest schema-specific/legacy-smuggling、activation safe-tag/tag-SHA、list original
   完整性等定向矩阵：pass。
 - actionlint/Ruby YAML、68 Markdown/89 relative targets、production 汉字 sweep、
-  official Action tag pin 对账与 `git diff --check`：pass。
-- non-root Linux/arm64 全仓 ordinary/race 与 GNU tar 1.34 installer/release tests：
-  pass；最终 fixed commit 仍需复跑。
+  official Action tag pin 对账、secret scan 与 `git diff --check`：pass。
+- non-root Linux/arm64（UID 65534、source/module cache read-only、`GOPROXY=off`）
+  全仓 ordinary/race 与 GNU tar 1.34 installer/release tests：pass。
+- 四目标双构建逐字节一致，4/4 checksums、archive 内容/mode、buildinfo、installer
+  smoke：pass。Syft 1.46.0 SBOM 为 SPDX 2.3、21 packages/4 files。
+- Draft PR #6 的 CI run `29352308455` 五个 job 均 `steps=[]`，billing annotation
+  明确为账户基础设施阻断；CodeQL private skip 不记 pass。
 
-这些阶段结果不能替代最终 verification report。最终 commit 复跑、跨平台和发布
-门禁仍列为 pending，不能从本地结果推导为 private RC 已验收。
+这些结果只关闭 V0.3 local/private RC readiness。合并、tag、Release、public visibility
+与公开配套仓库仍需独立 Go/No-Go。
 
 ## V0.3 之后
 

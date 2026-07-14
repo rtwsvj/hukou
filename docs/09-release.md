@@ -4,9 +4,9 @@
 
 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 是当前正式版本，包含 Darwin/Linux × amd64/arm64 四个归档与 `checksums.txt`；[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 保持不变。本次 GitHub-hosted CI/tag workflow 因账户 payment/spending limit 在 runner 调度前失败；发布仅在两个全新 Go/Linux 容器运行正式脚本得到逐字节一致结果、三平台 buildinfo smoke 通过、远端重新下载与本地产物逐字节一致后，使用同一 annotated tag 手动完成。该例外不改变未来正常流程的 runner gate 要求。
 
-V0.3 当前只是 private RC 开发分支。没有 `v0.3.0`/prerelease tag，没有 V0.3
-GitHub Release，也没有改变 repository visibility。本页后续 V0.3 内容描述当前分支
-已配置的发布契约；在 release snapshot 与 verification report 完成前不代表该契约已通过。
+V0.3 当前是已完成 local/private readiness 验收的 private RC 分支。没有
+`v0.3.0`/prerelease tag，没有 V0.3 GitHub Release，也没有改变 repository visibility。
+本页后续 V0.3 内容描述 subject `1fa45a0` 已验证的发布契约；该结论不等于公开发布。
 本轮只创建 draft private PR；即使本地门禁通过，合并仍需单独 Go/No-Go，不能由
 “测试通过”自动授权。
 
@@ -74,21 +74,24 @@ date 与当前提交完全一致。打包 job 只有 `contents: read`；仅在 L
 全部打包门禁成功后，独立 publish job 获得 `contents: write` 并创建 Release。
 
 package job 会解开 Linux amd64 archive 并运行 `hukou version`，确认 archive
-布局和 ldflags 注入；随后对 `dist/` 生成 SPDX JSON SBOM，并将四个 archive、
-`checksums.txt` 与 SBOM 作为 workflow artifact 上传。
+布局和 ldflags 注入；随后从四个 archive 各提取一个平台二进制到隔离 scan root，
+用固定 Syft 1.46.0 生成 SPDX JSON SBOM，并强制断言 hukou 与三项直接依赖各出现
+4 次、files 为 4。四个 archive、`checksums.txt` 与 SBOM 作为 workflow artifact 上传。
 
-截至 2026-07-15，工作树阶段已完成 direct uncached ordinary/race 各 641 tests /
-21 packages，命令级 mirror override 下 `make release-verify` exit 0（coverage 72.9%、
-govuln 无已知漏洞），并在 non-root Linux/arm64 + GNU tar 1.34 环境通过全仓
-ordinary/race 与 installer/release tests。actionlint、Ruby YAML parse 和官方 Action
-tag→SHA 对账也通过。默认 `proxy.golang.org` 的 IPv6 timeout 仍如实保留；这些结果
-尚未绑定最终 fixed commit，也没有生成最终 release snapshot 或 SBOM。
+截至 2026-07-15，subject `1fa45a0` 已完成 direct uncached ordinary/race 各
+641 tests / 21 packages，命令级 mirror override 下 `make release-verify` exit 0
+（coverage 72.9%、govuln 无已知漏洞），并在 non-root Linux/arm64 + GNU tar 1.34
+环境通过全仓 ordinary/race 与 installer/release tests。四目标独立构建两次逐字节
+一致，4/4 checksums、archive root/mode、buildinfo 与 installer smoke 通过。Syft 1.46.0
+最终 SBOM 为 SPDX 2.3、21 packages/4 files；验收发现并修复了旧方案 1 package/0 files
+的空壳 SBOM。默认 `proxy.golang.org` IPv6 timeout 仍如实保留。
 
 Artifact attestation 只在 repository visibility 为 public 时运行。public tag 发布
 必须等 build provenance 与 SBOM attestation 成功；private tag 跳过 attest 仍可进入
 publish，因此 private snapshot/Release 不能声称拥有 GitHub attestation。CodeQL 同样
-只对 public repository 启用。当前 hosted Actions 仍可能因 billing/spending limit 在
-0 steps 前被阻断，必须记录为 external infrastructure gate。
+只对 public repository 启用。Draft PR #6 的 CI run `29352308455` 五个 job 已确认
+`steps=[]`，被 billing/spending limit 在执行前阻断；必须记录为 external
+infrastructure gate，不能称作远端 CI 绿色。
 
 ## 发布清单
 

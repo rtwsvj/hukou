@@ -13,10 +13,11 @@ package manager, verifies upgrades from GitHub Releases, and keeps a local
 rollback path.
 
 The current release is **v0.2.0** for macOS and Linux. A **private v0.3
-release-candidate branch** now contains the planned trust-first commands,
-manifest v2, repair/support tooling, and distribution preparation. Those
-changes are implemented but are still under verification: v0.3 has not been
-tagged, released, or made public.
+release-candidate branch** contains the trust-first commands, manifest v2,
+repair/support tooling, and distribution preparation. Fixed commit `1fa45a0`
+passed the local/private RC readiness gate; GitHub-hosted jobs remain blocked
+before execution by the account billing limit. v0.3 has not been tagged,
+released, merged, or made public.
 
 ## Why hukou?
 
@@ -130,11 +131,12 @@ under [docs/codex/verification-reports](docs/codex/verification-reports/).
 
 ## Install v0.2
 
-Until the private RC passes its complete release gate, use the v0.2 release
-archives or build from source. A verified installer and SBOM workflow are
-implemented on the v0.3 branch, but no v0.3 installer endpoint or SBOM has
-been released. Homebrew and Windows packages do not exist. Public artifact
-attestations are intentionally gated on repository visibility.
+Use the v0.2 release archives for the current published version, or build the
+private RC from source. The v0.3 branch has passed its local/private readiness
+gate, including its installer and SBOM content checks, but no v0.3 installer
+endpoint or SBOM has been released. Homebrew and Windows packages do not
+exist. Public artifact attestations are intentionally gated on repository
+visibility.
 
 ### Release archive
 
@@ -274,15 +276,16 @@ private v0.3 branch implements trust-first inspection, manifest v2 activation
 history, policy-aware updates and retention, narrow repair, redacted support,
 an installer, and supply-chain/community preparation.
 
-This is an implementation status, not a release claim. The latest worktree
-stage passed a 321-test/six-package security audit, direct uncached ordinary
-and race runs of 641 tests across 21 packages, the complete local
+This is a private-readiness status, not a release claim. Fixed commit
+`1fa45a0` passed a 321-test/six-package security audit, direct uncached
+ordinary and race runs of 641 tests across 21 packages, the complete local
 `release-verify` target at 72.9% coverage, and non-root Linux/arm64 ordinary,
-race, installer, and release-script tests. These results are not yet bound to
-the final fixed commit. The final rerun, release snapshot and SBOM inspection,
-independent review, and draft private PR gate are still being completed.
-GitHub-hosted Actions are also subject to the account's existing
-billing/spending block, so no remote-green claim is made.
+race, installer, and release-script tests. Two four-target release builds were
+byte-identical; checksums, archive contents, build information, installer
+smoke, and a 21-package/4-file SPDX SBOM passed inspection. Independent review
+found no P0/P1/P2 findings, and [draft PR #6](https://github.com/rtwsvj/hukou/pull/6)
+is open. GitHub-hosted jobs are blocked before execution by the account's
+billing/spending limit, so no remote-green claim is made.
 
 Still outside this RC:
 

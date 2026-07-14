@@ -17,12 +17,12 @@
 | 断电/SIGKILL | 单全局 WAL、file/dir sync 与真实进程 kill 测试已覆盖 hukou 协作事务；普通 CI 不能完全模拟硬件掉电缓存重排 | 在 APFS/ext4 等目标文件系统做周期性 crash harness；不扩大到未验证平台 |
 | 非协作外部原地写 | 下载后和 snapshot 后均复核 SHA，regular snapshot 为独立副本；但最终复核到 activate 仍有窄窗口 | 文件描述符绑定与 OS 级协调策略 |
 | 文件元数据 | 复制只保证字节与 rwx 权限位；owner/group、ACL、xattr、mtime、特殊权限位与 hardlink topology 不保留，`adopt` 拒绝特权/特殊权限位 | 如需扩展保留范围，先定义跨平台契约与失败语义 |
-| 默认 rollback 选择 | V0.3 分支已改用 manifest v2 activation parent，不再读取 mtime；完整 RC 验收 pending，v0.2 仍是旧行为 | 通过 lineage fault matrix 与发布报告后关闭旧债务 |
+| 默认 rollback 选择 | V0.3 subject 已改用 manifest v2 activation parent，不再读取 mtime；lineage fault matrix 与固定提交回归已通过，v0.2 仍是旧行为 | 公开发布前继续保留真实用户迁移观察 |
 | manifest 损坏 | V0.3 分支已有 fingerprint-bound backup restore，但只接受 main 缺失/无效、backup 语义有效、transaction clean、全部 live SHA 匹配 | 保持窄 action，不扩成自动 merge/猜测恢复 |
 | store 孤儿版本 | doctor 区分 manifest 外 tool 与合法 retained version，只报告不删除 | 显式逐项 quarantine + undo，不做 repair-all |
 | tar.xz | 明确不支持 | 决定是否引入 xz 依赖 |
-| 版本比较 | V0.3 分支已有 SemVer/GitHub-latest、channel、pin 与降级保护；真实网络和全仓发布门禁 pending | 公共 fixture smoke 后再宣称公开稳定 |
-| 固定保留 3 版 | V0.3 分支改为 global/entry rollback depth 与 lineage/pin/pending 保护集；缺口同样受 RC 验收约束 | 观察历史增长，后续设计压缩/归档而非猜删 |
+| 版本比较 | V0.3 subject 已有 SemVer/GitHub-latest、channel、pin 与降级保护；本地/隔离 Linux 门禁通过，未做公共 fixture 网络 smoke | 公共 fixture smoke 后再宣称公开稳定 |
+| 固定保留 3 版 | V0.3 subject 改为 global/entry rollback depth 与 lineage/pin/pending 保护集，固定提交故障矩阵通过 | 观察历史增长，后续设计压缩/归档而非猜删 |
 | 真实网络覆盖 | PR 仅 httptest | 独立 fixture smoke |
 | 平台 | Windows 未支持 | 单独设计和 CI |
 
@@ -38,12 +38,12 @@
 | repair apply 的 lock 痕迹 | apply 会确认 existing root durability 并创建/使用 `state.lock`，但 fingerprint 失败不得改 live/store/manifest/journal | verification report 明确区分锁文件与业务状态零写 |
 | support 隐私 | 当前只输出匿名序号/计数/枚举；仍需持续用 secret fixture 回归，用户也应在公开提交前人工查看 | 未来字段默认 deny-list 不够，应保持显式 allow-list |
 | 安装器信任根 | checksum 与 archive 来自同一 GitHub Release；能发现传输/意外损坏，不等于独立签名身份 | public 后启用并验证 provenance/attestation；评估签名 |
-| 安装目标竞争 | V0.3 工作树已把 dangling symlink 计为 existing；有 Perl时最终目录项使用 `link(2)` atomic no-replace / force `rename(2)`，Linux 无 Perl时回退 `ln -T`/`mv -T`；directory、symlink-to-directory、预检后竞争与 duplicate member tests 已通过，最终 commit 复跑 pending | 保持目标目录同文件系统前提；force 仍是显式允许覆盖的独立路径 |
+| 安装目标竞争 | V0.3 subject 已把 dangling symlink 计为 existing；有 Perl时最终目录项使用 `link(2)` atomic no-replace / force `rename(2)`，Linux 无 Perl时回退 `ln -T`/`mv -T`；directory、symlink-to-directory、预检后竞争与 duplicate member tests 已在固定提交通过 | 保持目标目录同文件系统前提；force 仍是显式允许覆盖的独立路径 |
 | 安装包膨胀 | 当前检查 archive root、目标 member 唯一性和目标文件类型；尚未给总展开字节数与 member 数设置独立预算 | 为压缩炸弹/超多 member 增加 streaming budget，超限时在写目标前失败关闭 |
 | release list 上限 | 最多 10×100 releases，填满上限时失败关闭 | 如确有超大仓库，再引入有边界的完整性证明 |
 | GitHub API body | request 有总超时和有界分页，但 JSON response 尚无独立 body byte cap | 使用有界 reader 并测试超限 response，避免异常服务端造成内存放大 |
 | 路径遍历 TOCTOU | 当前按组件拒绝 symlink/非目录、在写前重检并验证 tag/SHA；非协作 writer 仍可能命中 check 与 syscall 间窗口 | 评估 `openat`/目录 fd anchored traversal；先定义 Darwin/Linux 一致失败语义 |
-| explain 只读证据 | V0.3 工作树已增加 name/path 独立目录快照与 `http.DefaultTransport` spy；5 项定向测试通过，最终 commit 复跑 pending | 保持测试，避免未来 detector 漂移破坏零写/零网络契约 |
+| explain 只读证据 | V0.3 subject 已增加 name/path 独立目录快照与 `http.DefaultTransport` spy；5 项定向测试与固定提交全仓回归通过 | 保持测试，避免未来 detector 漂移破坏零写/零网络契约 |
 
 ## H2 恢复边界
 
@@ -64,16 +64,17 @@
 
 - 仓库仍 private，但 V0.3 分支已加入 Apache-2.0 根 LICENSE、THIRD_PARTY_NOTICES
   和依赖/改编来源许可证；这属于公开准备，不代表仓库已经公开或 V0.3 已发布。
-- release archive 已配置包含双语 README、根 LICENSE、notices 与 `LICENSES/`；
-  archive/SBOM 实际内容仍需 release snapshot 验收。
-- 工作树阶段已在 non-root Linux/arm64 容器完成 ordinary/race，并在 GNU tar 1.34 下
-  完成 installer/release tests；最终 fixed commit 仍必须复跑，不能写成最终 Linux gate。
+- release archive 的双语 README、根 LICENSE、notices 与 `LICENSES/` 已在四目标
+  双构建 snapshot 验收；4/4 checksums、root/mode/buildinfo 与安装器 smoke 通过。
+- 固定 subject 已在 non-root Linux/arm64 容器完成 ordinary/race，并在 GNU tar 1.34
+  下完成 installer/release tests；source/module cache read-only，`GOPROXY=off`。
 - GitHub hosted runner 与 Action 主版本会演进，workflow 升级应单独验证。
-- GitHub-hosted Actions 当前可能因账户 billing/spending limit 在 0 steps 前失败；
-  不得以本地结果冒充远端绿色。
+- Draft PR #6 的 CI run `29352308455` 已确认五个 job 均因账户 billing/spending limit
+  在 0 steps 前失败；不得以本地结果冒充远端绿色。
 - CodeQL job 当前只对 public repository 运行；private 中 skipped 不等于通过。
-- SBOM 可在 private package job 生成；artifact attestation 仅 public repository 执行。
-  public 发布 workflow 要求 attest 成功，private tag 不要求该 job。
+- workflow 会先从四个 archive 提取四个平台二进制，再用固定 Syft 1.46.0 生成并
+  断言 SPDX 内容。验收曾发现扫描压缩包目录只得到 1 package/0 files 的空壳 SBOM，
+  修复后为 21 packages/4 files；artifact attestation 仍仅 public repository 执行。
 - 手动 workflow 只生成 snapshot，防止误发布；只有已推送 tag 触发 Release。
 - 本轮授权禁止创建 `v0.3.0` tag、正式 Release 或改变 repository visibility。
 

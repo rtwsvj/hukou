@@ -7,9 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-Status: implemented on the private v0.3 release-candidate branch and still
-under verification. No v0.3 tag or release exists, and the repository has not
-been made public.
+Status: fixed commit `1fa45a0` passed local/private RC readiness; the hosted
+gate is infrastructure-blocked by the account billing limit. No v0.3 tag or
+release exists, the PR is not merged, and the repository has not been made public.
 
 ### Added
 
@@ -63,9 +63,11 @@ been made public.
   environment variables, binaries, hashes tied to private paths, and WAL
   payloads.
 
-The entries above describe the development branch, not the v0.2.0 release.
-Complete RC verification, private PR checks, release snapshot inspection, and
-an independent claim-vs-evidence review remain release gates.
+The entries above describe the private RC branch, not the v0.2.0 release.
+Local fixed-commit verification, release snapshot/SBOM inspection, and an
+independent claim-vs-evidence review passed. Hosted PR jobs remain blocked
+before execution; merge, tag, Release, and public visibility still require a
+separate Go/No-Go decision.
 
 ## [0.2.0] - 2026-07-14
 
