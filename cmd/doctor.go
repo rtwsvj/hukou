@@ -18,17 +18,18 @@ var errDoctorFindings = errors.New("hukou doctor found state problems")
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "只读检查 manifest、store 与活跃文件的一致性",
-	Long: `doctor 对 hukou 本地状态执行只读诊断。
-默认不创建目录、不获取写锁、不清理临时文件，也不联网。
---deep 额外计算保留版本摘要并检查已登记活跃目录中的 hukou 临时文件。`,
+	Short: "Audit the manifest, store, journal, and live files without writing",
+	Long: `doctor performs a read-only audit of hukou's local state.
+By default it creates no directories, takes no mutation lock, removes no
+temporary files, and makes no network request. --deep also hashes retained
+versions and checks registered live directories for hukou temporary files.`,
 	Args: cobra.NoArgs,
 	RunE: runDoctor,
 }
 
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "输出稳定 JSON 报告")
-	doctorCmd.Flags().BoolVar(&doctorDeep, "deep", false, "深度检查保留版本与活跃目录临时文件")
+	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "emit a stable JSON report")
+	doctorCmd.Flags().BoolVar(&doctorDeep, "deep", false, "hash retained versions and inspect live-directory temporary files")
 	rootCmd.AddCommand(doctorCmd)
 }
 

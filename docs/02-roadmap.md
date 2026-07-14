@@ -39,22 +39,64 @@
 
 ## H2：运维与崩溃恢复
 
-状态：**恢复与只读诊断基础已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布；repair/历史策略与网络 smoke 尚未完成**。
+状态：**恢复与只读诊断基础已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布；repair/历史策略已进入未发布的 V0.3 分支，公共网络 smoke 尚未完成**。
 
 - [x] adopt/upgrade/rollback 单全局 WAL：PREPARED 回滚、COMMITTED 前滚、unknown drift 失败关闭
 - [x] manifest、store、live、事务 payload 的文件与父目录持久化
 - [x] 上一份可解析且 schema 受支持的 `manifest.json.bak`
 - [x] 默认零写、零网络的 `doctor` 文本/JSON审计与 orphan/unclassifiable 区分
 - [x] macOS + 原生 Linux 全量/race、崩溃/持久化压力、四平台可重复资产与远端下载复核
-- [ ] 显式枚举、state fingerprint 绑定的安全 repair 动作
-- [ ] 激活历史与可配置版本保留策略
+- [ ] 显式枚举、state fingerprint 绑定的安全 repair 动作（V0.3 分支已实现两类窄 action；RC 全门禁待完成）
+- [ ] 激活历史与可配置版本保留策略（V0.3 分支已实现 manifest v2；全仓/发布验收待完成）
 - [ ] 真实公共 fixture repo 的定时 smoke
 
-## 后续产品能力
+## V0.3：Trust-first 私有 Release Candidate
+
+状态：**实现已进入 `codex/hukou-v0.3-private-rc`，工作树阶段全仓与
+`release-verify` 已通过；固定提交上的 Linux 复跑、release/SBOM/PR 门禁尚未完成，未打
+tag、未发布、仓库仍 private**。
+
+- [x] `explain`、`adopt --dry-run --json`、共享 inventory
+- [x] `outdated` 与 upgrade dry-run/真实升级共享 policy-aware checker
+- [x] `policy show/set`：SemVer/GitHub-latest、channel、exact pin、rollback depth
+- [x] manifest schema v2、v0/v1 deterministic migration、strict validation
+- [x] activation lineage、parent-based rollback、history-aware prune plan
+- [x] fingerprint-bound `repair plan/apply` 两类动作
+- [x] offline redacted `support bundle`
+- [x] 英文默认 CLI、双语 README、Apache-2.0、notices、community health 文件
+- [x] checksum 安装器、license/install/shell gates、SBOM 与 public-only attest/CodeQL 配置
+- [x] Topgrade custom command 集成文档；`upgrade --all` 继续只管 hukou entries
+- [ ] uncached 全仓 ordinary/race/coverage/vet/build 最终绿灯并固化 commit
+- [ ] macOS/Linux、四目标 build、双构建可重复性与 release snapshot/SBOM 内容验收
+- [ ] `pinhaoma-review` claims-vs-evidence 独立复核
+- [ ] 推送私有分支并创建 draft private PR；合并需独立 Go/No-Go；GitHub-hosted gate 若继续被 billing 阻断则记录 external gate
+
+当前局部证据：
+
+- 安全关键路径定向 audit：321 tests / 6 packages。
+- direct uncached 全仓 ordinary/race：各 641 tests / 21 packages；最终 subject
+  commit 仍需复跑/固化。
+- `GOPROXY=https://goproxy.cn,direct make release-verify`：exit 0，coverage 72.9%，
+  govuln `No vulnerabilities found`；默认 `proxy.golang.org` IPv6 timeout 另行保留。
+- installer link(2)/rename(2)、重复 member、symlink/竞争与 strict shell SemVer；
+  manifest schema-specific/legacy-smuggling、activation safe-tag/tag-SHA、list original
+  完整性等定向矩阵：pass。
+- actionlint/Ruby YAML、68 Markdown/89 relative targets、production 汉字 sweep、
+  official Action tag pin 对账与 `git diff --check`：pass。
+- non-root Linux/arm64 全仓 ordinary/race 与 GNU tar 1.34 installer/release tests：
+  pass；最终 fixed commit 仍需复跑。
+
+这些阶段结果不能替代最终 verification report。最终 commit 复跑、跨平台和发布
+门禁仍列为 pending，不能从本地结果推导为 private RC 已验收。
+
+## V0.3 之后
 
 - 版本快照、changelog diff、风险提示。
-- topgrade custom command。
 - mise/Brewfile 导出。
 - 非 Go 二进制自动 repo 匹配。
 - tar.xz 支持决策。
 - Windows 设计与测试。
+- 公共 fixture repo、定时真实网络 smoke、Homebrew Tap 与公开 beta Go/No-Go。
+- 若未来需要跨管理器控制平面，另立 ADR；V0.3 只让 Topgrade 负责外层编排。
+- Defense-in-depth backlog：duplicate JSON key rejection、GitHub API body cap、
+  installer 总解压体积/member 数预算、`openat`/目录 fd 路径锚定。

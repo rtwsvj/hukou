@@ -169,6 +169,38 @@ func TestVersions(t *testing.T) {
 	}
 }
 
+func TestVersionsFailsClosedOnMalformedToolTopology(t *testing.T) {
+	t.Run("unexpected file", func(t *testing.T) {
+		root := t.TempDir()
+		toolDir := filepath.Join(root, "tool")
+		if err := os.MkdirAll(toolDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(toolDir, "stray"), []byte("unexpected"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := (&store.Store{Root: root}).Versions("tool"); err == nil {
+			t.Fatal("Versions ignored an unexpected non-directory store entry")
+		}
+	})
+
+	t.Run("malformed version", func(t *testing.T) {
+		root := t.TempDir()
+		versionDir := filepath.Join(root, "tool", "v1.0.0")
+		if err := os.MkdirAll(versionDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"one", "two"} {
+			if err := os.WriteFile(filepath.Join(versionDir, name), []byte(name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := (&store.Store{Root: root}).Versions("tool"); err == nil {
+			t.Fatal("Versions accepted a version directory with multiple binaries")
+		}
+	})
+}
+
 func TestActivateSwitchAndRollback(t *testing.T) {
 	root := t.TempDir()
 	s := &store.Store{Root: root}

@@ -2,8 +2,10 @@ package manifest_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,7 +18,7 @@ func fixtureEntry() manifest.Entry {
 		Path:             "/usr/local/bin/mybin",
 		Repo:             "owner/repo",
 		Tag:              "v1.0.0",
-		SHA256:           "deadbeef",
+		SHA256:           strings.Repeat("d", 64),
 		Upstream:         "github.com/owner/repo",
 		AdoptedAt:        "2025-01-01T00:00:00Z",
 		UpdatedAt:        "2025-01-01T00:00:00Z",
@@ -27,6 +29,52 @@ func fixtureEntry() manifest.Entry {
 	}
 }
 
+func fixtureEntryWithUpgrade() manifest.Entry {
+	entry := manifest.PrepareEntry(fixtureEntry())
+	active := manifest.ActivationEvent{
+		ID:          "upgrade-v2",
+		ParentID:    entry.ActiveActivationID,
+		Operation:   "upgrade",
+		Tag:         "v2.0.0",
+		SHA256:      strings.Repeat("e", 64),
+		ActivatedAt: "2026-07-14T00:00:00Z",
+	}
+	entry.Tag = active.Tag
+	entry.SHA256 = active.SHA256
+	entry.UpdatedAt = active.ActivatedAt
+	entry.ActiveActivationID = active.ID
+	entry.Activations = append(entry.Activations, active)
+	return entry
+}
+
+func requireValidateAndDecodeRejected(t *testing.T, candidate *manifest.Manifest) {
+	t.Helper()
+	if err := candidate.Validate(); err == nil {
+		t.Fatal("Validate accepted an unsafe manifest")
+	}
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Decode(raw); err == nil {
+		t.Fatal("Decode accepted an unsafe manifest")
+	}
+}
+
+func requireValidateAndDecodeAccepted(t *testing.T, candidate *manifest.Manifest) {
+	t.Helper()
+	if err := candidate.Validate(); err != nil {
+		t.Fatalf("Validate rejected a safe manifest: %v", err)
+	}
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Decode(raw); err != nil {
+		t.Fatalf("Decode rejected a safe manifest: %v", err)
+	}
+}
+
 // T01 – missing file returns empty manifest, no error.
 func TestLoadMissingFile(t *testing.T) {
 	dir := t.TempDir()
@@ -34,8 +82,8 @@ func TestLoadMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if m.SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d; want 1", m.SchemaVersion)
+	if m.SchemaVersion != manifest.CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d; want %d", m.SchemaVersion, manifest.CurrentSchemaVersion)
 	}
 	if m.Entries == nil {
 		t.Fatal("Entries must not be nil after Load")
@@ -117,15 +165,16 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d; want 1", loaded.SchemaVersion)
+	if loaded.SchemaVersion != manifest.CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d; want %d", loaded.SchemaVersion, manifest.CurrentSchemaVersion)
 	}
 	if len(loaded.Entries) != 1 {
 		t.Fatalf("len(Entries) = %d; want 1", len(loaded.Entries))
 	}
 	e := loaded.Entries[0]
-	want := fixtureEntry()
-	if e != want {
+	want := manifest.PrepareEntry(fixtureEntry())
+	want.UpdatePolicy = manifest.UpdatePolicy{Mode: manifest.UpdateModeLegacy, Channel: manifest.UpdateChannelStable}
+	if !reflect.DeepEqual(e, want) {
 		t.Errorf("entry mismatch: got %+v want %+v", e, want)
 	}
 }
@@ -309,7 +358,7 @@ func TestLoadRejectsSymlink(t *testing.T) {
 func TestLegacyEntryLoadsWithoutOptionalAssetFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legacy.json")
-	raw := `{"schema_version":1,"entries":[{"name":"legacy","path":"/usr/local/bin/legacy","repo":"owner/repo","tag":"v1.0.0","sha256":"deadbeef","upstream":"github.com/owner/repo","adopted_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}]}`
+	raw := `{"schema_version":1,"entries":[{"name":"legacy","path":"/usr/local/bin/legacy","repo":"owner/repo","tag":"v1.0.0","sha256":"` + strings.Repeat("d", 64) + `","upstream":"github.com/owner/repo","adopted_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}]}`
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +404,7 @@ func TestSaveAtomicity(t *testing.T) {
 			Path:      "/old/path",
 			Repo:      "o/r",
 			Tag:       "v0.1",
-			SHA256:    "oldhash",
+			SHA256:    strings.Repeat("a", 64),
 			AdoptedAt: "2024-01-01T00:00:00Z",
 			UpdatedAt: "2024-01-01T00:00:00Z",
 		}},
@@ -384,7 +433,7 @@ func TestSaveAtomicity(t *testing.T) {
 			Path:      "/new/path",
 			Repo:      "n/r",
 			Tag:       "v9.9",
-			SHA256:    "newhash",
+			SHA256:    strings.Repeat("b", 64),
 			AdoptedAt: "2024-12-31T00:00:00Z",
 			UpdatedAt: "2024-12-31T00:00:00Z",
 		}},
@@ -404,17 +453,17 @@ func TestSaveAtomicity(t *testing.T) {
 	}
 }
 
-// T08 – schema_version > 1 is rejected.
+// T08 – schema_version above the current version is rejected.
 func TestUnknownSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.json")
-	raw := `{"schema_version":2,"entries":[]}` // nolint:lll
+	raw := `{"schema_version":3,"entries":[]}` // nolint:lll
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := manifest.Load(path)
 	if err == nil {
-		t.Fatal("expected error for schema_version > 1, got nil")
+		t.Fatal("expected error for future schema_version, got nil")
 	}
 	if !strings.Contains(err.Error(), "unsupported schema_version") {
 		t.Errorf("error message = %q; want it to contain 'unsupported schema_version'", err.Error())
@@ -474,11 +523,11 @@ func TestJSONFormatStable(t *testing.T) {
 	}
 }
 
-// T10 – schema_version 0 in file is normalised to 1 on Load.
+// T10 – schema_version 0 in file is deterministically migrated to v2 on Load.
 func TestSchemaZeroNormalised(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "m.json")
-	raw := `{"schema_version":0,"entries":[{"name":"x","path":"/p","repo":"o/r","tag":"v1","sha256":"h","adopted_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]}`
+	raw := `{"schema_version":0,"entries":[{"name":"x","path":"/p","repo":"o/r","tag":"v1","sha256":"` + strings.Repeat("c", 64) + `","adopted_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}]}`
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +535,391 @@ func TestSchemaZeroNormalised(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if m.SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d; want 1 after normalisation", m.SchemaVersion)
+	if m.SchemaVersion != manifest.CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d; want %d after migration", m.SchemaVersion, manifest.CurrentSchemaVersion)
+	}
+}
+
+func TestDecodeRejectsNullSchemaVersionButPreservesImplicitZero(t *testing.T) {
+	if _, err := manifest.Decode([]byte(`{"schema_version":null,"entries":[]}`)); err == nil || !strings.Contains(err.Error(), "must be an integer, not null") {
+		t.Fatalf("null schema_version error = %v", err)
+	}
+	m, err := manifest.Decode([]byte(`{"entries":[]}`))
+	if err != nil {
+		t.Fatalf("implicit schema zero was rejected: %v", err)
+	}
+	if m.SchemaVersion != manifest.CurrentSchemaVersion || m.Retention != manifest.DefaultRetentionPolicy() || m.Entries == nil {
+		t.Fatalf("implicit schema zero migration = %+v", m)
+	}
+}
+
+func TestV1MigrationIsDeterministicAndRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{"schema_version":1,"entries":[{"name":"tool","path":"/usr/local/bin/tool","repo":"owner/repo","tag":"v1.2.3","sha256":"` + strings.Repeat("a", 64) + `","upstream":"github.com/owner/repo","adopted_at":"2026-01-01T00:00:00Z","updated_at":"2026-02-01T00:00:00Z"}]}`
+	firstPath := filepath.Join(dir, "first.json")
+	secondPath := filepath.Join(dir, "second.json")
+	if err := os.WriteFile(firstPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := manifest.Load(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manifest.Load(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("migration is not deterministic\nfirst=%+v\nsecond=%+v", first, second)
+	}
+	if first.SchemaVersion != manifest.CurrentSchemaVersion || first.Retention.RollbackDepth != manifest.DefaultRollbackDepth {
+		t.Fatalf("manifest defaults=%+v", first)
+	}
+	entry := first.Entries[0]
+	if entry.UpdatePolicy.Mode != manifest.UpdateModeLegacy || entry.UpdatePolicy.Channel != manifest.UpdateChannelStable {
+		t.Fatalf("legacy policy=%+v", entry.UpdatePolicy)
+	}
+	if len(entry.Activations) != 1 || entry.ActiveActivationID != entry.Activations[0].ID {
+		t.Fatalf("legacy activation=%+v", entry)
+	}
+	event := entry.Activations[0]
+	if !strings.HasPrefix(event.ID, "legacy-") || event.Operation != "legacy" ||
+		event.Tag != entry.Tag || event.SHA256 != entry.SHA256 || event.ActivatedAt != entry.UpdatedAt {
+		t.Fatalf("legacy event=%+v", event)
+	}
+
+	roundTrip := filepath.Join(dir, "roundtrip-v2.json")
+	if err := first.Save(roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.Load(roundTrip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first, loaded) {
+		t.Fatalf("v2 round trip changed migration\nfirst=%+v\nloaded=%+v", first, loaded)
+	}
+}
+
+func TestDecodeRequiresExplicitSchemaV2TopLevelState(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "missing retention and entries", raw: `{"schema_version":2}`, want: `top-level field "retention"`},
+		{name: "missing retention", raw: `{"schema_version":2,"entries":[]}`, want: `top-level field "retention"`},
+		{name: "missing entries", raw: `{"schema_version":2,"retention":{"rollback_depth":0}}`, want: `top-level field "entries"`},
+		{name: "null retention", raw: `{"schema_version":2,"retention":null,"entries":[]}`, want: `field "retention" must be an object`},
+		{name: "retention missing depth", raw: `{"schema_version":2,"retention":{},"entries":[]}`, want: `missing required field "rollback_depth"`},
+		{name: "null entries", raw: `{"schema_version":2,"retention":{"rollback_depth":0},"entries":null}`, want: `field "entries" must be an array`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := manifest.Decode([]byte(test.raw)); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Decode error = %v; want it to contain %q", err, test.want)
+			}
+		})
+	}
+
+	m, err := manifest.Decode([]byte(`{"schema_version":2,"retention":{"rollback_depth":0},"entries":[]}`))
+	if err != nil {
+		t.Fatalf("explicit legal zero retention was rejected: %v", err)
+	}
+	if m.Retention.RollbackDepth != 0 || m.Entries == nil || len(m.Entries) != 0 {
+		t.Fatalf("explicit zero/empty state changed during decode: %+v", m)
+	}
+}
+
+func TestDecodeRejectsV2OnlyStateInLegacySchemas(t *testing.T) {
+	mutations := map[string]func(map[string]any, map[string]any){
+		"top-level retention": func(document, _ map[string]any) {
+			document["retention"] = map[string]any{"rollback_depth": 2}
+		},
+		"active activation id": func(_, entry map[string]any) {
+			entry["active_activation_id"] = "legacy-smuggled"
+		},
+		"activations": func(_, entry map[string]any) {
+			entry["activations"] = []any{}
+		},
+		"update policy": func(_, entry map[string]any) {
+			entry["update_policy"] = map[string]any{"mode": "semver", "channel": "stable"}
+		},
+		"entry retention": func(_, entry map[string]any) {
+			entry["retention"] = map[string]any{"rollback_depth": 0}
+		},
+	}
+	for _, schemaVersion := range []int{0, 1} {
+		for name, mutate := range mutations {
+			t.Run(fmt.Sprintf("schema_%d/%s", schemaVersion, name), func(t *testing.T) {
+				entry := map[string]any{
+					"name":       "legacy",
+					"path":       "/usr/local/bin/legacy",
+					"repo":       "owner/repo",
+					"tag":        "v1.0.0",
+					"sha256":     strings.Repeat("a", 64),
+					"upstream":   "github.com/owner/repo",
+					"adopted_at": "2026-01-01T00:00:00Z",
+					"updated_at": "2026-01-01T00:00:00Z",
+				}
+				document := map[string]any{
+					"schema_version": schemaVersion,
+					"entries":        []any{entry},
+				}
+				baseline, err := json.Marshal(document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := manifest.Decode(baseline); err != nil {
+					t.Fatalf("valid legacy baseline was rejected: %v", err)
+				}
+				mutate(document, entry)
+				raw, err := json.Marshal(document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := manifest.Decode(raw); err == nil {
+					t.Fatal("legacy schema accepted v2-only state")
+				}
+			})
+		}
+	}
+}
+
+func TestDecodeRejectsMissingSchemaV2EntryPolicyAndHistoryFields(t *testing.T) {
+	entry := manifest.PrepareEntry(fixtureEntry())
+	base := map[string]any{
+		"schema_version": manifest.CurrentSchemaVersion,
+		"retention":      map[string]any{"rollback_depth": 0},
+		"entries":        []any{},
+	}
+	entryRaw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entryDocument map[string]any
+	if err := json.Unmarshal(entryRaw, &entryDocument); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"active_activation_id", "activations", "update_policy"} {
+		t.Run(field, func(t *testing.T) {
+			copyRaw, err := json.Marshal(entryDocument)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var candidate map[string]any
+			if err := json.Unmarshal(copyRaw, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			delete(candidate, field)
+			base["entries"] = []any{candidate}
+			raw, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manifest.Decode(raw); err == nil || !strings.Contains(err.Error(), field) {
+				t.Fatalf("missing %s error = %v", field, err)
+			}
+		})
+	}
+}
+
+func TestPrepareEntryAddsDeterministicCompatibilityTransition(t *testing.T) {
+	entry := manifest.PrepareEntry(fixtureEntry())
+	oldActive := entry.ActiveActivationID
+	entry.Tag = "v2.0.0"
+	entry.SHA256 = strings.Repeat("e", 64)
+	entry.UpdatedAt = "2026-07-14T00:00:00Z"
+	first := manifest.PrepareEntry(entry)
+	second := manifest.PrepareEntry(entry)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("compatibility transition is not deterministic")
+	}
+	if len(first.Activations) != 2 || first.ActiveActivationID == oldActive {
+		t.Fatalf("transition=%+v", first)
+	}
+	transition := first.Activations[1]
+	if transition.ParentID != oldActive || transition.Tag != first.Tag || transition.SHA256 != first.SHA256 {
+		t.Fatalf("transition=%+v", transition)
+	}
+	if again := manifest.PrepareEntry(first); len(again.Activations) != 2 {
+		t.Fatalf("normalization is not idempotent: %+v", again.Activations)
+	}
+}
+
+func TestCloneDoesNotAliasActivationOrRetentionState(t *testing.T) {
+	entry := manifest.PrepareEntry(fixtureEntry())
+	entry.Retention = &manifest.RetentionPolicy{RollbackDepth: 7}
+	original := &manifest.Manifest{
+		SchemaVersion: manifest.CurrentSchemaVersion,
+		Retention:     manifest.DefaultRetentionPolicy(),
+		Entries:       []manifest.Entry{entry},
+	}
+	clone := original.Clone()
+	clone.Entries[0].Activations[0].Tag = "changed"
+	clone.Entries[0].Retention.RollbackDepth = 1
+	if original.Entries[0].Activations[0].Tag == "changed" {
+		t.Fatal("Clone aliased activation slice")
+	}
+	if original.Entries[0].Retention.RollbackDepth != 7 {
+		t.Fatal("Clone aliased retention pointer")
+	}
+}
+
+func TestValidateAndDecodeRejectUnsafeHistoricalActivationTags(t *testing.T) {
+	unsafeTags := []string{"", ".", "..", "v1..0", "../escape", "release/v1", `release\v1`, "Original"}
+	for _, position := range []string{"inactive", "active"} {
+		for _, tag := range unsafeTags {
+			t.Run(position+"/"+fmt.Sprintf("%q", tag), func(t *testing.T) {
+				entry := fixtureEntryWithUpgrade()
+				if position == "inactive" {
+					entry.Activations[0].Tag = tag
+				} else {
+					last := len(entry.Activations) - 1
+					entry.Activations[last].Tag = tag
+					entry.Tag = tag
+				}
+				candidate := &manifest.Manifest{
+					SchemaVersion: manifest.CurrentSchemaVersion,
+					Retention:     manifest.DefaultRetentionPolicy(),
+					Entries:       []manifest.Entry{entry},
+				}
+				requireValidateAndDecodeRejected(t, candidate)
+			})
+		}
+	}
+}
+
+func TestValidateAndDecodeAcceptStoreSafeActivationTags(t *testing.T) {
+	for _, tag := range []string{"local", "v1.2.3-rc.1+build.7", "legacy-build_42", "original"} {
+		t.Run(tag, func(t *testing.T) {
+			entry := manifest.PrepareEntry(fixtureEntry())
+			entry.Tag = tag
+			entry.Activations[0].Tag = tag
+			if tag == "original" {
+				entry.Activations[0].Operation = "rollback"
+			}
+			candidate := &manifest.Manifest{
+				SchemaVersion: manifest.CurrentSchemaVersion,
+				Retention:     manifest.DefaultRetentionPolicy(),
+				Entries:       []manifest.Entry{entry},
+			}
+			requireValidateAndDecodeAccepted(t, candidate)
+		})
+	}
+}
+
+func TestValidateAndDecodeRejectActivationTagDigestRebinding(t *testing.T) {
+	for _, tag := range []string{"v1.0.0", "original"} {
+		t.Run(tag, func(t *testing.T) {
+			entry := fixtureEntryWithUpgrade()
+			entry.Activations[0].Tag = tag
+			entry.Activations[1].Tag = tag
+			entry.Tag = tag
+			if tag == "original" {
+				entry.Activations[0].Operation = "rollback"
+				entry.Activations[1].Operation = "rollback"
+			}
+			candidate := &manifest.Manifest{
+				SchemaVersion: manifest.CurrentSchemaVersion,
+				Retention:     manifest.DefaultRetentionPolicy(),
+				Entries:       []manifest.Entry{entry},
+			}
+			requireValidateAndDecodeRejected(t, candidate)
+		})
+	}
+}
+
+func TestValidateAndDecodeAllowRepeatedRollbackWithSameTagAndDigest(t *testing.T) {
+	for _, tag := range []string{"v1.0.0", "original"} {
+		t.Run(tag, func(t *testing.T) {
+			entry := manifest.PrepareEntry(fixtureEntry())
+			sha256 := entry.SHA256
+			root := entry.Activations[0]
+			root.Tag = tag
+			if tag == "original" {
+				root.Operation = "rollback"
+			}
+			first := manifest.ActivationEvent{
+				ID:          "rollback-1",
+				Operation:   "rollback",
+				Tag:         tag,
+				SHA256:      strings.ToUpper(sha256),
+				ActivatedAt: "2026-07-14T01:00:00Z",
+				RevertsID:   root.ID,
+			}
+			second := manifest.ActivationEvent{
+				ID:          "rollback-2",
+				Operation:   "rollback",
+				Tag:         tag,
+				SHA256:      sha256,
+				ActivatedAt: "2026-07-14T02:00:00Z",
+				RevertsID:   first.ID,
+			}
+			entry.Tag = tag
+			entry.SHA256 = sha256
+			entry.UpdatedAt = second.ActivatedAt
+			entry.ActiveActivationID = second.ID
+			entry.Activations = []manifest.ActivationEvent{root, first, second}
+			candidate := &manifest.Manifest{
+				SchemaVersion: manifest.CurrentSchemaVersion,
+				Retention:     manifest.DefaultRetentionPolicy(),
+				Entries:       []manifest.Entry{entry},
+			}
+			requireValidateAndDecodeAccepted(t, candidate)
+		})
+	}
+}
+
+func TestLoadRejectsSchemaV2WithoutValidExplicitLineage(t *testing.T) {
+	base := manifest.PrepareEntry(fixtureEntry())
+	tests := map[string]func(*manifest.Entry){
+		"missing lineage": func(entry *manifest.Entry) {
+			entry.ActiveActivationID = ""
+			entry.Activations = nil
+		},
+		"missing parent": func(entry *manifest.Entry) {
+			entry.Activations[0].ParentID = "missing"
+		},
+		"active mismatch": func(entry *manifest.Entry) {
+			entry.Tag = "v9.0.0"
+		},
+	}
+	for name, corrupt := range tests {
+		t.Run(name, func(t *testing.T) {
+			entry := manifest.PrepareEntry(base)
+			corrupt(&entry)
+			candidate := manifest.Manifest{
+				SchemaVersion: manifest.CurrentSchemaVersion,
+				Retention:     manifest.DefaultRetentionPolicy(),
+				Entries:       []manifest.Entry{entry},
+			}
+			raw, err := json.Marshal(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "manifest.json")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manifest.Load(path); err == nil {
+				t.Fatal("Load accepted an invalid schema v2 lineage")
+			}
+		})
+	}
+}
+
+func TestEffectiveRetentionUsesEntryOverrideIncludingZero(t *testing.T) {
+	m := &manifest.Manifest{Retention: manifest.RetentionPolicy{RollbackDepth: 3}}
+	entry := manifest.Entry{}
+	if got := m.EffectiveRetention(&entry).RollbackDepth; got != 3 {
+		t.Fatalf("inherited depth=%d", got)
+	}
+	entry.Retention = &manifest.RetentionPolicy{RollbackDepth: 0}
+	if got := m.EffectiveRetention(&entry).RollbackDepth; got != 0 {
+		t.Fatalf("explicit zero depth=%d", got)
 	}
 }

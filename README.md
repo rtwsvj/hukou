@@ -1,37 +1,171 @@
-# hukou（户口）
+# hukou
 
-给机器上的 CLI 工具上户口：扫描、溯源、收编、校验升级和回滚。
+> Safety-first management for CLI binaries your package manager does not own.
 
-> brew 管不着的那些工具，归我管。
+[简体中文](README.zh-CN.md) ·
+[Documentation](docs/README.md) ·
+[Latest release](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) ·
+[Security](SECURITY.md)
 
-## 当前状态
+hukou (户口, “household registry”) finds standalone executables on your
+`PATH`, explains where they came from, adopts the binaries that have no
+package manager, verifies upgrades from GitHub Releases, and keeps a local
+rollback path.
 
-项目已经交付 Phase 1 `scan`、Phase 2 `adopt / upgrade / rollback / list`、H1 安全硬化，以及 H2 的持久化事务恢复与只读 `doctor` 基础。[`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 是当前已发布版本；验证与 GitHub Actions 基础设施例外见 [`docs/codex/verification-reports/`](docs/codex/verification-reports/)。
+The current release is **v0.2.0** for macOS and Linux. A **private v0.3
+release-candidate branch** now contains the planned trust-first commands,
+manifest v2, repair/support tooling, and distribution preparation. Those
+changes are implemented but are still under verification: v0.3 has not been
+tagged, released, or made public.
 
-- 目标平台：macOS、Linux
-- 当前模块工具链：以 [`go.mod`](go.mod) 的 `go` 指令为准
-- 分发状态：private repository，已提供四平台 `v0.2.0` Release 资产；尚未声明原创代码的公开分发许可证
-- Windows、topgrade 集成、mise/Brewfile 导出、changelog 风险层：未实现
+## Why hukou?
 
-## 能做什么
+Package managers already do a good job for software they own. The awkward
+cases are binaries installed from a GitHub Release, copied from another
+machine, built with `go install`, or dropped into a private `bin`
+directory. Those files are easy to forget and risky to replace by hand.
 
-1. **scan**：遍历 `PATH` 与额外目录，识别 Homebrew、MacPorts、语言包管理器、版本管理器、系统工具以及 hukou 自己收编的工具。
-2. **adopt**：登记一个现有可执行文件；Go 二进制可从 build info 推导 GitHub repo，其他工具显式指定 `owner/repo`，本地工具使用 `--local`。
-3. **upgrade**：查询已收编工具的最新 GitHub Release，选择平台资产、下载、校验、入库并原子替换活跃常规文件。
-4. **rollback**：切换回指定版本或最近的旧版本，并同步 manifest。
-5. **list**：查看当前户口清单与本地保留版本数。
-6. **doctor**：以文本或稳定 JSON 只读审计 manifest、live、store、事务日志和临时残留；`--deep` 增加 retained version 摘要与 live 目录检查。
+hukou provides a deliberately narrow workflow:
 
-hukou 不代理 Homebrew、npm、Cargo 等其他管理器的升级。默认拒绝收编已被其他管理器认领的二进制；`--force` 是显式逃生口。
+```text
+scan safely
+    → identify unmanaged binaries
+    → adopt one explicitly
+    → preview an upgrade
+    → verify and activate it
+    → roll back if needed
+```
 
-## 构建
+It does **not** replace Homebrew, MacPorts, npm, Cargo, pipx, mise, or other
+package managers. By default, hukou refuses to adopt a binary already owned
+by another manager.
+
+## What the current release can do
+
+- **`scan`** — walk `PATH` and optional directories, identify known
+  package managers, version managers, system tools, and hukou-managed tools.
+  Scanning is local, read-only, and does not use the network.
+- **`adopt`** — register an existing executable, preserve its original
+  bytes, and create a manifest entry.
+- **`upgrade`** — inspect the latest GitHub Release, select a platform
+  asset, verify available publisher checksums, store the version, and replace
+  the live regular file atomically.
+- **`rollback`** — activate a retained version or the preserved original.
+- **`list`** — show adopted tools and retained-version counts.
+- **`doctor`** — perform a read-only audit of the manifest, live files,
+  store, transaction journal, and temporary remnants.
+
+## What is implemented on the unreleased v0.3 branch
+
+These interfaces exist in the private development tree. They are not part of
+the latest release and must not yet be treated as a stable public contract.
+
+- **`explain`** — explain the executable selected on `PATH`, its shadowed
+  matches, and the evidence for each ownership attribution.
+- **`adopt --dry-run`** — validate an adoption and emit a plan without
+  creating hukou state; `--json` is available only with the dry run.
+- **`outdated`** — check release metadata and asset selection without
+  downloading or changing local state.
+- **`policy show/set`** — inspect or atomically change SemVer/GitHub-latest,
+  stable/prerelease, exact-pin, and rollback-depth policy.
+- **Deterministic rollback and retention** — manifest v2 records activation
+  lineage; rollback follows logical parents instead of directory times, and
+  pruning protects the current version, original, pins, lineage targets, and
+  unfinished transactions.
+- **`repair plan/apply`** — expose only unfinished-transaction recovery and a
+  tightly checked manifest-backup restore, with plans bound to a state
+  fingerprint.
+- **`support bundle`** — create an offline, redacted JSON diagnostic summary
+  without uploading it.
+
+The branch also contains a checksum-verifying installer whose final directory
+entry uses atomic no-replace/replace primitives and rejects duplicate target
+archive members, licensing/community files, SBOM packaging,
+public-only attestations and CodeQL configuration, and a documented Topgrade
+custom-command integration. The
+[private RC execution record](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)
+tracks what is verified and what remains pending.
+
+## Safety model
+
+hukou prefers a visible refusal over a clever guess:
+
+- On the unreleased v0.3 branch, `scan`, `explain`, `list`, `doctor`,
+  `outdated`, `policy show`, a pure `upgrade --dry-run`, and
+  `adopt --dry-run` do not mutate hukou state. Metadata checks may use the
+  network; scan/explain/doctor/adopt dry-run do not.
+- A missing expected checksum entry fails closed.
+- Downloaded-asset hashes and activated-binary hashes are tracked separately.
+- Adopt, upgrade, and rollback verify the live file before replacing it.
+- State-changing commands are serialized by a process lock.
+- Live binaries are replaced through a same-directory temporary regular file
+  and atomic rename.
+- A durable write-ahead transaction records before/after state. Recovery rolls
+  back a prepared transaction, rolls forward a durable commit, and stops on
+  unknown external drift.
+- `doctor` is zero-write and zero-network by default. It reports problems; it
+  does not silently delete or repair them.
+- On the unreleased v0.3 branch, repair is a separate plan/apply workflow. A
+  plan changes no hukou state but writes only the explicitly requested plan
+  file; apply revalidates the fingerprint while holding the state lock.
+- The unreleased support report omits raw paths, private repository names,
+  usernames, environment variables, binaries, and WAL payloads, and never
+  uploads itself.
+
+Read the [data and API contract](docs/04-data-and-api.md) and
+[known risks](docs/08-risk-and-debt.md) before adopting a valuable binary.
+
+## Supported release targets
+
+v0.2.0 publishes archives for:
+
+| Operating system | Architecture |
+|---|---|
+| macOS | amd64, arm64 |
+| Linux | amd64, arm64 |
+
+Windows is not currently supported. A cross-compiled artifact alone is not
+treated as platform support; the project records actual verification evidence
+under [docs/codex/verification-reports](docs/codex/verification-reports/).
+
+## Install v0.2
+
+Until the private RC passes its complete release gate, use the v0.2 release
+archives or build from source. A verified installer and SBOM workflow are
+implemented on the v0.3 branch, but no v0.3 installer endpoint or SBOM has
+been released. Homebrew and Windows packages do not exist. Public artifact
+attestations are intentionally gated on repository visibility.
+
+### Release archive
+
+1. Open the [v0.2.0 release](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0).
+2. Download the archive matching your OS and architecture, plus
+   `checksums.txt`.
+3. Verify the archive:
 
 ```bash
+# Linux
+sha256sum -c checksums.txt --ignore-missing
+
+# macOS: compare the printed digest with checksums.txt
+shasum -a 256 hukou_0.2.0_darwin_arm64.tar.gz
+```
+
+4. Extract the archive and move `hukou` to a directory already on your
+   `PATH`. Review the destination before using elevated privileges.
+
+### Build from source
+
+Use the Go version declared in [go.mod](go.mod):
+
+```bash
+git clone https://github.com/rtwsvj/hukou.git
+cd hukou
 make build
 ./bin/hukou version
 ```
 
-常用工程命令：
+The project build and verification commands are:
 
 ```bash
 make fmt-check
@@ -39,51 +173,84 @@ make vet
 make test
 make race
 make coverage
+make license-check
+make install-test
+make release-test
 make verify
+make release-verify  # also shellcheck and govulncheck
 ```
 
-## 快速开始
+## Five-minute start
 
-扫描当前 `PATH`：
+Start with the command that cannot modify your tools:
+
+```bash
+hukou scan --unknown-only
+```
+
+Other useful read-only views:
 
 ```bash
 hukou scan
-hukou scan --unknown-only
 hukou scan --json
 hukou scan --source hukou
 hukou scan --dir /path/to/extra/bin
+hukou list
+hukou doctor
+hukou doctor --deep --json
 ```
 
-收编本地工具或带 GitHub 上游的工具：
+When testing a build from the unreleased v0.3 branch, the trust-first entry
+points are:
+
+```bash
+hukou explain tool
+hukou adopt /path/to/tool owner/repo --tag v1.0.0 --dry-run --json
+hukou outdated tool
+hukou policy show tool
+hukou support bundle --format json
+```
+
+`outdated` queries GitHub release metadata for eligible non-local entries;
+the other preview commands above are local. `repair plan` writes a plan file
+by design, so it is not included in this zero-state-change introduction.
+
+Adopt a local-only binary:
 
 ```bash
 hukou adopt /path/to/my-tool --local
+```
+
+Or associate an unmanaged binary with a GitHub repository:
+
+```bash
 hukou adopt /path/to/tool owner/repo --tag v1.0.0
 ```
 
-升级前先预览：
+Always preview the first upgrade:
 
 ```bash
 hukou upgrade tool --dry-run
 hukou upgrade tool
 hukou rollback tool
 hukou rollback tool --to v1.0.0
-hukou list
-hukou doctor
-hukou doctor --deep --json
 ```
 
-`upgrade` 与 `rollback` 会修改被收编工具所在路径。首次在真实工具上操作前，请先阅读 [`docs/04-data-and-api.md`](docs/04-data-and-api.md) 和 [`docs/08-risk-and-debt.md`](docs/08-risk-and-debt.md)。
+`upgrade` and `rollback` replace the adopted tool at its registered path.
+Use a disposable test binary before trusting any new workflow with an
+important executable.
 
-## 数据与环境变量
+## Data location
 
-默认数据目录遵循 XDG：
+By default, hukou follows XDG and stores state below
+`$XDG_DATA_HOME/hukou`, or `$HOME/.local/share/hukou` when
+`XDG_DATA_HOME` is unset.
 
 ```text
-${XDG_DATA_HOME:-$HOME/.local/share}/hukou/
+hukou/
 ├── state.lock
 ├── manifest.json
-├── manifest.json.bak       # 存在上一版可解析且 schema 受支持的 manifest 时
+├── manifest.json.bak
 ├── transactions/
 └── store/
     ├── .tmp/
@@ -92,52 +259,63 @@ ${XDG_DATA_HOME:-$HOME/.local/share}/hukou/
         └── <tag>/<binary>
 ```
 
-| 环境变量 | 作用 |
+Relevant environment variables:
+
+| Variable | Purpose |
 |---|---|
-| `HUKOU_DATA_DIR` | 覆盖 manifest 与 store 根目录；测试必须使用临时目录 |
-| `XDG_DATA_HOME` | 未设置 `HUKOU_DATA_DIR` 时决定默认数据位置 |
-| `GITHUB_TOKEN` / `GH_TOKEN` | 提高 GitHub API 限额；下载请求不会向非授权宿主泄露 token |
+| `HUKOU_DATA_DIR` | Override the complete hukou data root |
+| `XDG_DATA_HOME` | Select the default data root |
+| `GITHUB_TOKEN`, `GH_TOKEN` | Increase GitHub API limits; tokens are not forwarded to untrusted download hosts |
 
-`state.lock` 只串行化 adopt、真实 upgrade 和 rollback；写命令取得锁后会先恢复 pending transaction。scan、list、doctor 与纯 `--dry-run` 不持写锁；它们会在各自检查时报告已知 pending transaction，但结果只是时间点诊断，不承诺与并发的非协作写入形成一致快照。
+## Project status
 
-安全契约：
+v0.2 delivered durable transaction recovery and read-only diagnosis. The
+private v0.3 branch implements trust-first inspection, manifest v2 activation
+history, policy-aware updates and retention, narrow repair, redacted support,
+an installer, and supply-chain/community preparation.
 
-- `scan` 纯本地、只读、不联网。
-- upgrade/rollback 前核对当前二进制与 manifest 的 SHA-256。
-- 上游提供 checksum 时必须成功找到并验证所选资产，否则失败关闭。
-- 下载资产 hash 与激活后二进制 hash 分开记录，便于审计和完整性检查。
-- 活跃文件通过同目录临时常规文件加 rename 原子替换；文件和父目录都在返回成功前同步。
-- adopt/upgrade/rollback 在改变 live、original 或 manifest 前持久化 before/after WAL：`PREPARED` 崩溃回滚，durable `COMMIT` 后崩溃前滚；恢复预检及写入前复核发现的未知外部漂移会失败关闭并保留日志证据。
-- doctor 默认零写、零网络，不自动删除 retained version、orphan 或未知临时文件。
+This is an implementation status, not a release claim. The latest worktree
+stage passed a 321-test/six-package security audit, direct uncached ordinary
+and race runs of 641 tests across 21 packages, the complete local
+`release-verify` target at 72.9% coverage, and non-root Linux/arm64 ordinary,
+race, installer, and release-script tests. These results are not yet bound to
+the final fixed commit. The final rerun, release snapshot and SBOM inspection,
+independent review, and draft private PR gate are still being completed.
+GitHub-hosted Actions are also subject to the account's existing
+billing/spending block, so no remote-green claim is made.
 
-## 发布
+Still outside this RC:
 
-`scripts/release.sh` 在固定提交上交叉构建以下 tar.gz，并生成 `checksums.txt`：
+- making the repository public or publishing `v0.3.0`;
+- a public fixture repository and scheduled real-network smoke test;
+- public installation channels such as Homebrew;
+- cross-manager upgrades or rollback (use Topgrade only as an orchestrator);
+- Windows, GUI, self-update, and default telemetry.
 
-- darwin/amd64
-- darwin/arm64
-- linux/amd64
-- linux/arm64
+See the [roadmap](docs/02-roadmap.md) and
+[changelog](CHANGELOG.md) for current scope.
 
-GitHub Actions 的手动运行只生成快照 artifact；推送 `v*` tag 才会创建 GitHub Release。详见 [`docs/09-release.md`](docs/09-release.md)。
+## Get help and participate
 
-## 文档入口
+These community links are prepared for the public beta and may be unavailable
+while the repository is in private development.
 
-- [项目当前事实与阅读顺序](docs/README.md)
-- [需求与安全不变量](docs/01-requirements.md)
-- [路线图](docs/02-roadmap.md)
-- [架构](docs/03-architecture.md)
-- [开发环境](docs/06-dev-setup.md)
-- [测试与验收](docs/07-testing-and-verification.md)
-- [风险与技术债](docs/08-risk-and-debt.md)
-- [Codex 执行、改动与验证记录](docs/codex/README.md)
+- Usage questions: [GitHub Discussions](https://github.com/rtwsvj/hukou/discussions)
+- Reproducible bugs: [GitHub Issues](https://github.com/rtwsvj/hukou/issues)
+- Security vulnerabilities: [SECURITY.md](SECURITY.md)
+- Support boundaries: [SUPPORT.md](SUPPORT.md)
+- Contributions: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Project governance: [GOVERNANCE.md](GOVERNANCE.md)
+- Expected conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
-## 第三方来源记录
+Before posting diagnostics publicly, remove usernames, filesystem paths,
+repository names, tokens, and details about private tools.
 
-来源与复用关系见 [`docs/pinhaoma-sources.md`](docs/pinhaoma-sources.md)。仓库保留：
+## License and attribution
 
-- `LICENSES/eget-MIT.txt`
-- `LICENSES/gup-APACHE-2.0.txt`
-- `LICENSES/stew-MIT.txt`
+Original hukou work is licensed under the
+[Apache License 2.0](LICENSE), Copyright 2026 Eric (rtwsvj).
 
-禁止复制 topgrade、pacaptr、meta-package-manager 的 GPL 代码；只允许外部集成或独立实现相同思想。
+Adapted code and dependencies remain under their respective licenses. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+[LICENSES/](LICENSES/), and the source-level attribution headers.

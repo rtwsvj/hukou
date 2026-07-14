@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,6 +64,55 @@ func (s *Store) PrepareOriginalPath(name, binaryName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, binaryName), nil
+}
+
+// PreflightOriginalPath validates the store topology an adoption would use
+// without creating, syncing, or removing anything. A missing root or namespace
+// is a valid empty target; an existing original namespace must be empty.
+func (s *Store) PreflightOriginalPath(name, binaryName string) (string, error) {
+	if err := validateNameTag("name", name); err != nil {
+		return "", err
+	}
+	if binaryName == "" || filepath.Base(binaryName) != binaryName {
+		return "", fmt.Errorf("invalid original binary name %q", binaryName)
+	}
+	root, err := s.absRoot()
+	if err != nil {
+		return "", err
+	}
+	planned := filepath.Join(root, name, "original", binaryName)
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return planned, nil
+	} else if err != nil {
+		return "", err
+	}
+
+	// A real adoption runs GC first. Validate an existing staging namespace so
+	// dry-run cannot promise success for a symlink, case alias, or non-directory
+	// that GC would reject.
+	if _, err := s.storeDir(false, ".tmp"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("validate staging namespace: %w", err)
+	}
+	if _, err := s.storeDir(false, name); errors.Is(err, os.ErrNotExist) {
+		return planned, nil
+	} else if err != nil {
+		return "", err
+	}
+	originalDir, err := s.storeDir(false, name, "original")
+	if errors.Is(err, os.ErrNotExist) {
+		return planned, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(originalDir)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) != 0 {
+		return "", fmt.Errorf("original backup namespace is not empty: %s", originalDir)
+	}
+	return filepath.Join(originalDir, binaryName), nil
 }
 
 // LiveSnapshot captures the filesystem topology and contents at a live binary

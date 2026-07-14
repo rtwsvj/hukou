@@ -18,7 +18,7 @@ MVP 范围（Phase 1）：`hukou scan` —— PATH 遍历 + 溯源归属表格�
 
 ## 2. 当前项目判断
 
-- `/Users/eric/hukou` 已建，私有仓库 rtwsvj/hukou 已推送（README + docs/pinhaoma-sources.md）。
+- 本地工作区已建，私有仓库 `rtwsvj/hukou` 已推送（README + `docs/pinhaoma-sources.md`）。
 - 无代码，绿地开发，无需迁就已有结构。
 
 ## 3. 调研结论

@@ -46,7 +46,7 @@ func Extract(archivePath, destDir, wantName string) (string, error) {
 	case FormatTarGz:
 		return extractTarGz(archivePath, destDir, wantName)
 	case FormatTarXz:
-		return "", errors.New("xz 暂不支持（.tar.xz/.txz）")
+		return "", errors.New("xz archives are not supported yet (.tar.xz/.txz)")
 	case FormatUnsupported:
 		return "", fmt.Errorf("unsupported archive format: %s", filepath.Base(archivePath))
 	case FormatZip:

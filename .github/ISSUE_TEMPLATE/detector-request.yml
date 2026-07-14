@@ -1,0 +1,70 @@
+name: Provenance detector request
+description: Request recognition for a CLI installation source or manager.
+title: "[Detector]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Detector evidence should be local, explainable, fast, and testable without accessing a real user's machine.
+  - type: input
+    id: tool
+    attributes:
+      label: Tool or manager
+      placeholder: "ExampleTool"
+    validations:
+      required: true
+  - type: input
+    id: upstream
+    attributes:
+      label: Official upstream
+      description: Link to the official repository or installation documentation.
+      placeholder: "https://github.com/owner/project"
+    validations:
+      required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: Installation methods
+      description: Explain the supported install commands and which files or directories they create.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Stable local evidence
+      description: Describe filesystem paths, symlink targets, manifests, or build metadata that distinguish this source. Replace usernames and private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Sanitized examples and negative cases
+      description: Include representative paths plus unrelated cases that must not match.
+    validations:
+      required: true
+  - type: dropdown
+    id: subprocess
+    attributes:
+      label: Can detection avoid running an external command?
+      options:
+        - "Yes"
+        - "No"
+        - "Unsure"
+    validations:
+      required: true
+  - type: textarea
+    id: contribution
+    attributes:
+      label: Contribution interest
+      description: Say whether you can provide fixtures, tests, documentation, or an implementation.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing detectors, issues, and Discussions.
+          required: true
+        - label: The examples contain no secrets or private machine data.
+          required: true

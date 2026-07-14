@@ -1,0 +1,94 @@
+name: Bug report
+description: Report a reproducible problem in a released hukou version.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve hukou. Do not report vulnerabilities here; use the private security link in the issue chooser.
+
+        Review diagnostics before posting. Remove tokens, usernames, private paths, repository names, and proprietary tool details.
+  - type: input
+    id: version
+    attributes:
+      label: hukou version
+      description: Paste the complete output of `hukou version`.
+      placeholder: "hukou v0.2.0 (commit ..., built ...)"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - GitHub Release archive
+        - Built from source
+        - go install
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: "macOS 15 arm64 or Ubuntu 24.04 amd64"
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: Omit or replace private arguments and paths.
+      placeholder: "hukou upgrade example --dry-run"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact error text after redacting sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Use a disposable binary and temporary data directory whenever possible.
+      placeholder: |
+        1. Set HUKOU_DATA_DIR to a new temporary directory.
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Redacted doctor output
+      description: Paste relevant output from `hukou doctor --deep --json`, or explain why it is unavailable. Review every field first.
+      render: json
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, or related issues. Do not upload real binaries or your complete hukou data directory.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and Discussions.
+          required: true
+        - label: I reproduced this on a released hukou version or clearly identified the commit.
+          required: true
+        - label: I removed credentials, private paths, and proprietary data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

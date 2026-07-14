@@ -12,19 +12,24 @@ import (
 )
 
 func cloneManifest(m *manifest.Manifest) *manifest.Manifest {
-	if m == nil {
-		return nil
-	}
-	clone := *m
-	clone.Entries = append([]manifest.Entry(nil), m.Entries...)
-	return &clone
+	return m.Clone()
 }
 
 func encodeManifest(m *manifest.Manifest) ([]byte, error) {
+	toWrite := m.Clone()
+	if toWrite == nil {
+		return nil, errors.New("cannot encode a nil manifest")
+	}
+	if err := toWrite.Normalize(); err != nil {
+		return nil, err
+	}
+	if err := toWrite.Validate(); err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(m); err != nil {
+	if err := enc.Encode(toWrite); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -78,7 +83,7 @@ func commitStateTransaction(tx *statejournal.Transaction) error {
 
 func finalizeStateTransaction(tx *statejournal.Transaction, stderr io.Writer, name, operation string) {
 	if err := tx.Finalize(); err != nil && stderr != nil {
-		fmt.Fprintf(stderr, "警告: %s %s 已提交，但清理事务日志失败: %v\n", name, operation, err)
+		fmt.Fprintf(stderr, "warning: %s %s committed, but transaction journal cleanup failed: %v\n", name, operation, err)
 	}
 }
 

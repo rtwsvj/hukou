@@ -1,0 +1,35 @@
+# Default owner while the maintainer team is being expanded.
+* @rtwsvj
+
+# Project policy, community health, and public-facing contracts.
+/README.md @rtwsvj
+/README.zh-CN.md @rtwsvj
+/LICENSE @rtwsvj
+/THIRD_PARTY_NOTICES.md @rtwsvj
+/SECURITY.md @rtwsvj
+/GOVERNANCE.md @rtwsvj
+/.github/ @rtwsvj
+
+# Release and dependency supply-chain boundaries.
+/scripts/ @rtwsvj
+/go.mod @rtwsvj
+/go.sum @rtwsvj
+/LICENSES/ @rtwsvj
+
+# Safety-critical state mutation and external-input boundaries.
+/cmd/adopt.go @rtwsvj
+/cmd/upgrade.go @rtwsvj
+/cmd/rollback.go @rtwsvj
+/cmd/state_transaction.go @rtwsvj
+/internal/archive/ @rtwsvj
+/internal/assetpick/ @rtwsvj
+/internal/durablefs/ @rtwsvj
+/internal/ghrelease/ @rtwsvj
+/internal/manifest/ @rtwsvj
+/internal/store/ @rtwsvj
+/internal/verify/ @rtwsvj
+
+# Durable architecture and security decisions.
+/docs/adr/ @rtwsvj
+/docs/08-risk-and-debt.md @rtwsvj
+/docs/09-release.md @rtwsvj

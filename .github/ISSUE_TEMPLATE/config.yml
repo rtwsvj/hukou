@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage questions and troubleshooting
+    url: https://github.com/rtwsvj/hukou/discussions/categories/q-a
+    about: Ask the community before filing a bug when you are unsure whether behavior is incorrect.
+  - name: Ideas and open-ended proposals
+    url: https://github.com/rtwsvj/hukou/discussions/categories/ideas
+    about: Explore a problem and possible directions before scoping implementation work.
+  - name: Private security report
+    url: https://github.com/rtwsvj/hukou/security/advisories/new
+    about: Report vulnerabilities privately. Never disclose exploit details in a public issue.

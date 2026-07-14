@@ -10,9 +10,10 @@ import (
 // rootCmd is the base command for hukou.
 var rootCmd = &cobra.Command{
 	Use:   "hukou",
-	Short: "给机器上所有 CLI 工具上户口：盘点、溯源、收编、安全升级",
-	Long: `hukou（户口）扫描 PATH 中的可执行文件，判定安装来源，
-并提供收编、可校验升级、版本回滚与本地状态追踪。`,
+	Short: "Safely inventory, adopt, upgrade, and roll back standalone CLI tools",
+	Long: `hukou inventories executables on PATH, explains who owns them, and
+safely manages explicitly adopted standalone binaries with verified upgrades,
+deterministic rollback, and inspectable local state.`,
 }
 
 // Execute runs the root command.

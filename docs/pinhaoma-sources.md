@@ -22,5 +22,9 @@
 
 - “改编”文件必须保留来源 commit、版权与对应 `LICENSES/` 路径。
 - “设计参考”不等于逐行复制；若后续发现实质复制，应补来源头并更新本表。
-- 发布归档必须携带仓库 `LICENSES/*.txt`。
+- 发布归档必须携带根 `LICENSE`、`THIRD_PARTY_NOTICES.md`、双语 README 与
+  `LICENSES/*.txt`；V0.3 release snapshot 尚待验证实际内容。
+- Go module 版本以 `go.mod`/`go.sum` 为准；V0.3 新增
+  `golang.org/x/mod/semver` 用于 ADR-0005 的纯 SemVer 选择，许可证与 PATENTS
+  文本记录在 `LICENSES/` 和根 notices。
 - 仓库当前 private，本表只做工程追踪，不替代许可证选择或法律判断。

@@ -21,6 +21,8 @@ const (
 	maxRedirects       = 5
 	maxRetryAfter      = 60 * time.Second
 	defaultMaxDownload = 512 << 20 // 512 MiB
+	releasesPerPage    = 100
+	maxReleasePages    = 10
 )
 
 // Production hosts allowed for HTTPS requests and redirects.
@@ -32,8 +34,10 @@ var allowedHosts = map[string]struct{}{
 }
 
 type Release struct {
-	TagName string  `json:"tag_name"`
-	Assets  []Asset `json:"assets"`
+	TagName    string  `json:"tag_name"`
+	Draft      bool    `json:"draft"`
+	Prerelease bool    `json:"prerelease"`
+	Assets     []Asset `json:"assets"`
 }
 
 type Asset struct {
@@ -107,6 +111,34 @@ func (c *Client) ByTag(owner, repo, tag string) (Release, error) {
 	return c.fetchRelease("/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases/tags/" + url.PathEscape(tag))
 }
 
+// List returns release metadata newest-first using bounded, client-generated
+// pagination. It deliberately does not follow the response Link header: every
+// request stays on the validated API base URL and the requested repository.
+// A repository with more than maxReleasePages full pages fails closed instead
+// of silently selecting from an incomplete candidate set.
+func (c *Client) List(owner, repo string) ([]Release, error) {
+	basePath := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/releases"
+	releases := make([]Release, 0, releasesPerPage)
+	for page := 1; page <= maxReleasePages; page++ {
+		query := url.Values{}
+		query.Set("per_page", strconv.Itoa(releasesPerPage))
+		query.Set("page", strconv.Itoa(page))
+
+		var batch []Release
+		if err := c.fetchJSON(basePath+"?"+query.Encode(), &batch); err != nil {
+			return nil, err
+		}
+		if len(batch) > releasesPerPage {
+			return nil, fmt.Errorf("github releases page %d returned %d items; maximum is %d", page, len(batch), releasesPerPage)
+		}
+		releases = append(releases, batch...)
+		if len(batch) < releasesPerPage {
+			return releases, nil
+		}
+	}
+	return nil, fmt.Errorf("github releases exceed safe pagination limit of %d items", releasesPerPage*maxReleasePages)
+}
+
 // Download streams downloadURL into a temporary file under destDir.
 // expectedSize, when > 0, is the Asset.Size from the release API: the body is
 // limited to expectedSize+1 bytes and the actual count must match exactly.
@@ -176,29 +208,36 @@ func (c *Client) Download(downloadURL, destDir string, expectedSize int64) (stri
 
 func (c *Client) fetchRelease(path string) (Release, error) {
 	var release Release
+	if err := c.fetchJSON(path, &release); err != nil {
+		return Release{}, err
+	}
+	return release, nil
+}
+
+func (c *Client) fetchJSON(path string, target any) error {
 	req, err := http.NewRequest(http.MethodGet, c.apiURL(path), nil)
 	if err != nil {
-		return release, err
+		return err
 	}
 	if err := c.validateURL(req.URL); err != nil {
-		return release, err
+		return err
 	}
 	c.applyHeaders(req)
 
 	resp, err := c.do(req, c.httpClient())
 	if err != nil {
-		return release, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return release, responseStatusError(resp)
+		return responseStatusError(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return release, err
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return err
 	}
-	return release, nil
+	return nil
 }
 
 func (c *Client) do(req *http.Request, client *http.Client) (*http.Response, error) {

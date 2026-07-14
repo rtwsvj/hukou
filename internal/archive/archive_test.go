@@ -441,7 +441,7 @@ func TestExtractTarXzUnsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected xz error")
 	}
-	if !strings.Contains(err.Error(), "xz 暂不支持") {
+	if !strings.Contains(err.Error(), "xz archives are not supported") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -458,7 +458,7 @@ func TestExtractTXZUnsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected xz error")
 	}
-	if !strings.Contains(err.Error(), "xz 暂不支持") {
+	if !strings.Contains(err.Error(), "xz archives are not supported") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(dest, "tool")); !os.IsNotExist(statErr) {
