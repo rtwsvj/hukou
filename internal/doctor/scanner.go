@@ -635,6 +635,10 @@ func scanTransactions(report *Report, root string) {
 	pending := 0
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
+		if strings.HasPrefix(entry.Name(), "quarantined-") {
+			report.add(SeverityWarning, "TRANSACTION_QUARANTINED_PRESENT", "transaction", entry.Name(), entryPath, "quarantined transaction entry is retained for diagnosis; inspect it, then run `hukou repair plan --action purge-quarantine` and apply the plan to delete it")
+			continue
+		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 			report.add(SeverityError, "TRANSACTION_ENTRY_INVALID", "transaction", entry.Name(), entryPath, "transaction entry must be a real directory")
 			if strings.HasPrefix(entry.Name(), "pending-") {
@@ -690,7 +694,7 @@ func scanLiveTemps(report *Report, entries []manifest.Entry) {
 			case strings.HasPrefix(entry.Name(), ".hukou-rollback-"):
 				report.add(SeverityWarning, "LIVE_ROLLBACK_SNAPSHOT_PRESENT", "live", entry.Name(), path, "rollback snapshot is present and may be recovery evidence; doctor will not remove it")
 			case strings.HasPrefix(entry.Name(), ".hukou-txn-"):
-				report.add(SeverityWarning, "LIVE_TRANSACTION_TEMP_PRESENT", "live", entry.Name(), path, "transaction recovery temporary name is present; doctor will not remove it")
+				report.add(SeverityWarning, "LIVE_TRANSACTION_TEMP_PRESENT", "live", entry.Name(), path, "transaction recovery temporary name is present; doctor will not remove it. Run `hukou repair plan --action clean-live-temps` and apply the plan to remove orphaned temporaries older than one hour")
 			}
 		}
 	}

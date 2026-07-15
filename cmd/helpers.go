@@ -45,7 +45,7 @@ func acquireMutationLock() (*state.Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := statejournal.Recover(dataRoot()); err != nil {
+	if _, err := statejournal.Recover(dataRoot()); err != nil {
 		return nil, errors.Join(fmt.Errorf("recover unfinished transaction: %w", err), lock.Release())
 	}
 	return lock, nil

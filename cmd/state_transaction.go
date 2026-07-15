@@ -76,7 +76,8 @@ func abortStateTransaction(tx *statejournal.Transaction, operationErr error) err
 // decision and converges to one complete side before returning the error.
 func commitStateTransaction(tx *statejournal.Transaction) error {
 	if err := tx.Commit(); err != nil {
-		return errors.Join(err, statejournal.Recover(dataRoot()))
+		_, recoverErr := statejournal.Recover(dataRoot())
+		return errors.Join(err, recoverErr)
 	}
 	return nil
 }

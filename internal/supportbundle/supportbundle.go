@@ -89,11 +89,12 @@ type ManifestSummary struct {
 }
 
 type TransactionTopology struct {
-	Status    string `json:"status"`
-	Building  int    `json:"building"`
-	Pending   int    `json:"pending"`
-	Completed int    `json:"completed"`
-	Unknown   int    `json:"unknown"`
+	Status      string `json:"status"`
+	Building    int    `json:"building"`
+	Pending     int    `json:"pending"`
+	Completed   int    `json:"completed"`
+	Unknown     int    `json:"unknown"`
+	Quarantined int    `json:"quarantined"`
 }
 
 type StoreTopology struct {
@@ -231,11 +232,12 @@ func collectTransactions(dataRoot string) TransactionTopology {
 		return TransactionTopology{Status: "unreadable"}
 	}
 	return TransactionTopology{
-		Status:    "ok",
-		Building:  len(status.Building),
-		Pending:   len(status.Pending),
-		Completed: len(status.Completed),
-		Unknown:   len(status.Unknown),
+		Status:      "ok",
+		Building:    len(status.Building),
+		Pending:     len(status.Pending),
+		Completed:   len(status.Completed),
+		Unknown:     len(status.Unknown),
+		Quarantined: len(status.Quarantined),
 	}
 }
 

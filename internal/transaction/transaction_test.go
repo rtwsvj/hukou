@@ -55,7 +55,7 @@ func TestRecoverPreparedCrashStateMatrix(t *testing.T) {
 				mustApply(t, fixture.tx, "manifest")
 			}
 
-			if err := Recover(fixture.root); err != nil {
+			if _, err := Recover(fixture.root); err != nil {
 				t.Fatal(err)
 			}
 			assertFile(t, fixture.live, "live-before", 0o755)
@@ -90,7 +90,7 @@ func TestRecoverCommittedCrashStateMatrix(t *testing.T) {
 				mustConvergeForTest(t, fixture.tx, "manifest", false)
 			}
 
-			if err := Recover(fixture.root); err != nil {
+			if _, err := Recover(fixture.root); err != nil {
 				t.Fatal(err)
 			}
 			assertFile(t, fixture.live, "live-after", 0o755)
@@ -105,7 +105,7 @@ func TestRecoverUnknownDriftFailsClosedBeforeAnyWrite(t *testing.T) {
 	mustApply(t, fixture.tx, "manifest")
 	mustWrite(t, fixture.live, "external-change", 0o755)
 
-	err := Recover(fixture.root)
+	_, err := Recover(fixture.root)
 	if err == nil || !strings.Contains(err.Error(), "unknown drift") {
 		t.Fatalf("expected unknown drift error, got %v", err)
 	}
@@ -223,7 +223,7 @@ func TestMatchedMutableStatesReassertDurability(t *testing.T) {
 		syncMatchedParent = oldParentSync
 	})
 
-	if err := Recover(root); err != nil {
+	if _, err := Recover(root); err != nil {
 		t.Fatal(err)
 	}
 	if fileSyncs[regular] != 1 || parentSyncs[regular] != 1 {
@@ -257,7 +257,7 @@ func TestMatchedAbsentSyncFailureRetainsPendingEvidence(t *testing.T) {
 	}
 	t.Cleanup(func() { syncMatchedParent = oldParentSync })
 
-	err = Recover(root)
+	_, err = Recover(root)
 	if !errors.Is(err, injected) {
 		t.Fatalf("expected durability error, got %v", err)
 	}
@@ -296,7 +296,7 @@ func TestPreparedRecoveryRestoresLegacySymlinkTopology(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustApply(t, tx, "live")
-	if err := Recover(root); err != nil {
+	if _, err := Recover(root); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(live)
@@ -315,7 +315,7 @@ func TestInvalidCommitMarkerFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixture.tx.dir, commitFileName), []byte("torn"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Recover(fixture.root)
+	_, err := Recover(fixture.root)
 	if err == nil || !strings.Contains(err.Error(), "invalid COMMIT") {
 		t.Fatalf("expected invalid COMMIT error, got %v", err)
 	}
@@ -365,7 +365,7 @@ func TestSubprocessSIGKILLRecovery(t *testing.T) {
 			if !errors.As(err, &exitErr) {
 				t.Fatalf("helper was not killed: %v", err)
 			}
-			if err := Recover(root); err != nil {
+			if _, err := Recover(root); err != nil {
 				t.Fatal(err)
 			}
 			if stage == "prepared" {
@@ -423,6 +423,187 @@ func TestTransactionCrashHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {}
+}
+
+func TestRecoverQuarantinesUnknownEntriesAndRecoversKnown(t *testing.T) {
+	fixture := newMatrixFixture(t)
+	// Advance the live participant to its after state; the prepared (uncommitted)
+	// transaction must still roll every participant back to before.
+	mustApply(t, fixture.tx, "live")
+
+	txRoot := filepath.Join(fixture.root, transactionsDirName)
+	buildingDir := filepath.Join(txRoot, buildingPrefix+strings.Repeat("a", 32))
+	completedDir := filepath.Join(txRoot, completedPrefix+strings.Repeat("b", 32))
+	if err := os.Mkdir(buildingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(completedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Two unknown entries with different topologies: a stray file and a stray
+	// directory carrying data that must be preserved, never deleted.
+	strayFile := filepath.Join(txRoot, "stray-note.txt")
+	if err := os.WriteFile(strayFile, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	strayDir := filepath.Join(txRoot, "weird-entry")
+	if err := os.Mkdir(strayDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(strayDir, "inner"), []byte("keep-me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := Recover(fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pending transaction rolled back and the stray journals were cleaned.
+	assertFile(t, fixture.live, "live-before", 0o755)
+	assertFile(t, fixture.manifest, "manifest-before", 0o600)
+	if _, err := os.Lstat(buildingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("building journal not cleaned: %v", err)
+	}
+	if _, err := os.Lstat(completedDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed journal not cleaned: %v", err)
+	}
+
+	// Both unknown entries were quarantined, not deleted, and their data survives.
+	if len(summary.Quarantined) != 2 {
+		t.Fatalf("summary.Quarantined = %+v, want 2 records", summary.Quarantined)
+	}
+	originals := map[string]bool{}
+	for _, record := range summary.Quarantined {
+		originals[record.Original] = true
+		if !strings.HasPrefix(record.Quarantined, quarantinedPrefix) {
+			t.Fatalf("quarantined name lacks prefix: %q", record.Quarantined)
+		}
+		if _, err := os.Lstat(filepath.Join(txRoot, record.Original)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("original entry %q still present: %v", record.Original, err)
+		}
+	}
+	if !originals["stray-note.txt"] || !originals["weird-entry"] {
+		t.Fatalf("unexpected quarantined originals: %+v", originals)
+	}
+
+	status, err := Inspect(fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 2 {
+		t.Fatalf("Inspect quarantined = %v, want 2", status.Quarantined)
+	}
+	if status.NeedsRecovery() {
+		t.Fatalf("quarantined-only state must not need recovery: %+v", status)
+	}
+	// Preserved stray-directory payload is still readable inside quarantine.
+	found := false
+	for _, name := range status.Quarantined {
+		if data, err := os.ReadFile(filepath.Join(txRoot, name, "inner")); err == nil {
+			if string(data) != "keep-me" {
+				t.Fatalf("quarantined data corrupted: %q", data)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("quarantined directory payload was not preserved")
+	}
+}
+
+func TestQuarantineUnblocksBeginNewTransaction(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(txRoot, "leftover-garbage"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Before quarantine, the unknown entry blocks new transactions.
+	if _, err := Begin(root, "upgrade", "tool", []Spec{{
+		Role: "live", Path: filepath.Join(t.TempDir(), "tool"), After: RegularBytes([]byte("x"), 0o755),
+	}}); err == nil {
+		t.Fatal("expected the unknown entry to block Begin before quarantine")
+	}
+
+	summary, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Quarantined) != 1 {
+		t.Fatalf("summary.Quarantined = %+v", summary.Quarantined)
+	}
+
+	status, err := Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.NeedsRecovery() {
+		t.Fatalf("quarantined state must not need recovery: %+v", status)
+	}
+
+	// A fresh transaction now begins and completes normally alongside the
+	// quarantined evidence.
+	dest := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(dest, []byte("before"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := Begin(root, "upgrade", "tool", []Spec{{
+		Role: "live", Path: dest, After: RegularBytes([]byte("after"), 0o755),
+	}})
+	if err != nil {
+		t.Fatalf("Begin after quarantine: %v", err)
+	}
+	mustApply(t, tx, "live")
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, dest, "after", 0o755)
+}
+
+func TestRecoverQuarantineIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(txRoot, "mystery"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Quarantined) != 1 {
+		t.Fatalf("first pass quarantined = %+v", first.Quarantined)
+	}
+	quarantinedName := first.Quarantined[0].Quarantined
+
+	// A recovery interrupted after quarantine and retried must be a no-op: the
+	// already-quarantined entry keeps its name and is never wrapped again.
+	second, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Quarantined) != 0 {
+		t.Fatalf("second pass re-quarantined: %+v", second.Quarantined)
+	}
+	status, err := Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 1 || status.Quarantined[0] != quarantinedName {
+		t.Fatalf("quarantine set drifted across retries: %+v", status.Quarantined)
+	}
+	if data, err := os.ReadFile(filepath.Join(txRoot, quarantinedName)); err != nil || string(data) != "data" {
+		t.Fatalf("quarantined payload changed: data=%q err=%v", data, err)
+	}
 }
 
 func mustApply(t *testing.T, tx *Transaction, role string) {

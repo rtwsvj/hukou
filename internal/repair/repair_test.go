@@ -339,6 +339,220 @@ func TestPlanRoundTripUsesOwnerOnlyFile(t *testing.T) {
 	}
 }
 
+func TestRecoverTransactionRepairQuarantinesUnknownEntry(t *testing.T) {
+	root := t.TempDir()
+	live := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(live, []byte("before"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := statejournal.Begin(root, "test", "tool", []statejournal.Spec{
+		{Role: "live", Path: live, After: statejournal.RegularBytes([]byte("after"), 0o755)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Apply("live"); err != nil {
+		t.Fatal(err)
+	}
+	// A stray unknown entry that previously wedged the recover-transaction action.
+	txRoot := filepath.Join(root, "transactions")
+	if err := os.WriteFile(filepath.Join(txRoot, "stray"), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := BuildPlan(root, ActionRecoverTransaction, time.Now())
+	if err != nil {
+		t.Fatalf("recover-transaction plan wedged on unknown entry: %v", err)
+	}
+	if err := Apply(root, plan); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(live); string(got) != "before" {
+		t.Fatalf("recovery did not roll back: %q", got)
+	}
+	status, err := statejournal.Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 1 {
+		t.Fatalf("unknown entry not quarantined: %+v", status)
+	}
+	if status.NeedsRecovery() {
+		t.Fatalf("state still needs recovery: %+v", status)
+	}
+}
+
+func TestPurgeQuarantinePlanAndApply(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, "transactions")
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A quarantined directory carrying evidence, plus a real completed journal
+	// that purge must leave untouched.
+	quarantined := filepath.Join(txRoot, "quarantined-mystery-"+strings.Repeat("a", 32))
+	if err := os.Mkdir(quarantined, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "evidence"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	completed := filepath.Join(txRoot, "completed-"+strings.Repeat("b", 32))
+	if err := os.Mkdir(completed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	before := snapshotTree(t, root, "state.lock")
+	plan, err := BuildPlan(root, ActionPurgeQuarantine, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := snapshotTree(t, root, "state.lock"); !reflect.DeepEqual(before, after) {
+		t.Fatal("purge-quarantine planning changed state")
+	}
+	if err := Apply(root, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(quarantined); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("quarantined entry not purged: %v", err)
+	}
+	if _, err := os.Lstat(completed); err != nil {
+		t.Fatalf("purge removed a real journal: %v", err)
+	}
+}
+
+func TestPurgeQuarantineRejectsStalePlan(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, "transactions")
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	quarantined := filepath.Join(txRoot, "quarantined-a-"+strings.Repeat("a", 32))
+	if err := os.Mkdir(quarantined, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "x"), []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(root, ActionPurgeQuarantine, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A new quarantined entry appears after planning; apply must fail closed.
+	other := filepath.Join(txRoot, "quarantined-b-"+strings.Repeat("b", 32))
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, plan); !errors.Is(err, ErrStateChanged) {
+		t.Fatalf("error = %v, want ErrStateChanged", err)
+	}
+	if _, err := os.Lstat(quarantined); err != nil {
+		t.Fatalf("stale purge deleted evidence: %v", err)
+	}
+}
+
+func TestCleanLiveTempsPlanAndApply(t *testing.T) {
+	root, _, _, livePath := manifestBackupFixture(t)
+	liveDir := filepath.Dir(livePath)
+	// base is roughly "wall now"; the plan's reference clock is set two hours
+	// ahead so freshly created entries fall before the one-hour cutoff without
+	// backdating a symlink (os.Chtimes follows symlinks and cannot rewrite a
+	// symlink's own mtime).
+	base := time.Now()
+	now := base.Add(2 * time.Hour)
+
+	oldRegular := filepath.Join(liveDir, ".hukou-txn-oldregular")
+	if err := os.WriteFile(oldRegular, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldRegular, base, base); err != nil {
+		t.Fatal(err)
+	}
+	// A stale symlink temporary keeps its natural creation mtime (~base), which
+	// is well before the cutoff (base+1h), so it is selected for removal.
+	oldLink := filepath.Join(liveDir, ".hukou-txn-link-oldlink")
+	if err := os.Symlink("somewhere", oldLink); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh temporary from an in-flight operation must be preserved: its mtime
+	// is set past the cutoff.
+	freshTemp := filepath.Join(liveDir, ".hukou-txn-fresh")
+	if err := os.WriteFile(freshTemp, []byte("busy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(freshTemp, base.Add(90*time.Minute), base.Add(90*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	before := snapshotTree(t, root, "state.lock")
+	plan, err := BuildPlan(root, ActionCleanLiveTemps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := snapshotTree(t, root, "state.lock"); !reflect.DeepEqual(before, after) {
+		t.Fatal("clean-live-temps planning changed the data root")
+	}
+	if err := Apply(root, plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{oldRegular, oldLink} {
+		if _, err := os.Lstat(gone); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("orphan temp %s not removed: %v", gone, err)
+		}
+	}
+	if _, err := os.Lstat(freshTemp); err != nil {
+		t.Fatalf("fresh temp wrongly removed: %v", err)
+	}
+	if _, err := os.Lstat(livePath); err != nil {
+		t.Fatalf("clean-live-temps disturbed the live binary: %v", err)
+	}
+}
+
+func TestCleanLiveTempsRejectsStalePlan(t *testing.T) {
+	root, _, _, livePath := manifestBackupFixture(t)
+	liveDir := filepath.Dir(livePath)
+	now := time.Now()
+	oldTemp := filepath.Join(liveDir, ".hukou-txn-stale")
+	if err := os.WriteFile(oldTemp, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldTemp, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(root, ActionCleanLiveTemps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another aged orphan appears after planning; apply must fail closed and
+	// delete nothing.
+	extra := filepath.Join(liveDir, ".hukou-txn-extra")
+	if err := os.WriteFile(extra, []byte("extra"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(extra, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(root, plan); !errors.Is(err, ErrStateChanged) {
+		t.Fatalf("error = %v, want ErrStateChanged", err)
+	}
+	if _, err := os.Lstat(oldTemp); err != nil {
+		t.Fatalf("stale apply removed a planned temp: %v", err)
+	}
+	if _, err := os.Lstat(extra); err != nil {
+		t.Fatalf("stale apply removed an unplanned temp: %v", err)
+	}
+}
+
+func TestNewRepairActionsRequirePresentState(t *testing.T) {
+	root := t.TempDir()
+	if _, err := BuildPlan(root, ActionPurgeQuarantine, time.Now()); !errors.Is(err, ErrNotRepairable) {
+		t.Fatalf("purge with no quarantine: %v", err)
+	}
+	if _, err := BuildPlan(root, ActionCleanLiveTemps, time.Now()); !errors.Is(err, ErrNotRepairable) {
+		t.Fatalf("clean-live-temps with no orphans: %v", err)
+	}
+}
+
 func manifestBackupFixture(t *testing.T) (root, mainPath, backupPath, livePath string) {
 	t.Helper()
 	root = t.TempDir()

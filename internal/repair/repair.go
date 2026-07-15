@@ -39,7 +39,29 @@ type Action string
 const (
 	ActionRecoverTransaction    Action = "recover-transaction"
 	ActionRestoreManifestBackup Action = "restore-manifest-backup"
+	ActionPurgeQuarantine       Action = "purge-quarantine"
+	ActionCleanLiveTemps        Action = "clean-live-temps"
 )
+
+// liveTransactionTempPrefix is the shared prefix of the temporary names that
+// the transaction journal stages next to a live path before an atomic rename.
+// It covers both the regular-file (".hukou-txn-*") and symlink
+// (".hukou-txn-link-*") staging names.
+const liveTransactionTempPrefix = ".hukou-txn-"
+
+// liveTempMinAge is the minimum age an orphaned live transaction temporary must
+// have before clean-live-temps will plan its removal. It keeps the action from
+// racing a staging temporary that belongs to an in-flight recovery.
+const liveTempMinAge = time.Hour
+
+func isSupportedAction(action Action) bool {
+	switch action {
+	case ActionRecoverTransaction, ActionRestoreManifestBackup, ActionPurgeQuarantine, ActionCleanLiveTemps:
+		return true
+	default:
+		return false
+	}
+}
 
 var (
 	ErrInvalidPlan   = errors.New("invalid repair plan")
@@ -69,6 +91,7 @@ type evaluation struct {
 	fingerprint   string
 	preconditions []Precondition
 	backup        []byte
+	liveTemps     []string
 }
 
 // BuildPlan observes dataRoot without creating, locking, syncing, or changing
@@ -83,7 +106,7 @@ func BuildPlan(dataRoot string, action Action, now time.Time) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	eval, err := evaluate(root, action)
+	eval, err := evaluate(root, action, now)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -179,7 +202,14 @@ func Apply(dataRoot string, plan Plan) (retErr error) {
 	if identity != plan.DataRootIdentity {
 		return fmt.Errorf("%w: data root identity mismatch", ErrStateChanged)
 	}
-	current, err := evaluate(root, plan.Action)
+	// generated_at is validated as RFC3339Nano by validatePlan; it is reused as
+	// the deterministic reference clock for any age-bound action so Apply and the
+	// original plan compute an identical fingerprint.
+	planTime, err := time.Parse(time.RFC3339Nano, plan.GeneratedAt)
+	if err != nil {
+		return fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
+	}
+	current, err := evaluate(root, plan.Action, planTime)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrStateChanged, err)
 	}
@@ -189,20 +219,30 @@ func Apply(dataRoot string, plan Plan) (retErr error) {
 
 	switch plan.Action {
 	case ActionRecoverTransaction:
-		return statejournal.Recover(root)
+		_, recoverErr := statejournal.Recover(root)
+		return recoverErr
 	case ActionRestoreManifestBackup:
 		return durablefs.AtomicWriteFile(filepath.Join(root, "manifest.json"), current.backup, 0o600)
+	case ActionPurgeQuarantine:
+		_, purgeErr := statejournal.PurgeQuarantined(root)
+		return purgeErr
+	case ActionCleanLiveTemps:
+		return applyCleanLiveTemps(current.liveTemps)
 	default:
 		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
 	}
 }
 
-func evaluate(root string, action Action) (evaluation, error) {
+func evaluate(root string, action Action, now time.Time) (evaluation, error) {
 	switch action {
 	case ActionRecoverTransaction:
 		return evaluateRecoverTransaction(root)
 	case ActionRestoreManifestBackup:
 		return evaluateRestoreManifestBackup(root)
+	case ActionPurgeQuarantine:
+		return evaluatePurgeQuarantine(root)
+	case ActionCleanLiveTemps:
+		return evaluateCleanLiveTemps(root, now)
 	default:
 		return evaluation{}, fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, action)
 	}
@@ -223,9 +263,11 @@ func evaluateRecoverTransaction(root string) (evaluation, error) {
 	if !status.NeedsRecovery() {
 		return evaluation{}, fmt.Errorf("%w: no unfinished transaction state exists", ErrNotRepairable)
 	}
-	if len(status.Unknown) != 0 {
-		return evaluation{}, fmt.Errorf("%w: transaction root contains unknown entries", ErrNotRepairable)
-	}
+	// Unknown entries no longer block recovery: Apply routes through
+	// statejournal.Recover, which quarantines each unknown entry (preserving its
+	// data) before converging the known journals. The full transaction tree is
+	// still captured in the fingerprint below, so any change to those entries
+	// between planning and apply fails closed.
 	if len(status.Pending) > 1 {
 		return evaluation{}, fmt.Errorf("%w: multiple pending transactions are ambiguous", ErrNotRepairable)
 	}
@@ -393,6 +435,168 @@ func evaluateRestoreManifestBackup(root string) (evaluation, error) {
 	}, nil
 }
 
+type purgeQuarantineObservation struct {
+	Action Action            `json:"action"`
+	Nodes  []nodeObservation `json:"nodes"`
+}
+
+func evaluatePurgeQuarantine(root string) (evaluation, error) {
+	status, err := statejournal.Inspect(root)
+	if err != nil {
+		return evaluation{}, fmt.Errorf("%w: inspect transaction state: %v", ErrNotRepairable, err)
+	}
+	if len(status.Quarantined) == 0 {
+		return evaluation{}, fmt.Errorf("%w: no quarantined transaction entries exist", ErrNotRepairable)
+	}
+	txRoot := filepath.Join(root, "transactions")
+	nodes := make([]nodeObservation, 0, len(status.Quarantined))
+	for _, name := range status.Quarantined {
+		path := filepath.Join(txRoot, name)
+		observed, err := observeNode(path, name)
+		if err != nil {
+			return evaluation{}, fmt.Errorf("%w: observe quarantined entry: %v", ErrNotRepairable, err)
+		}
+		nodes = append(nodes, observed)
+		if observed.Kind == "directory" {
+			subtree, err := observeTree(path)
+			if err != nil {
+				return evaluation{}, fmt.Errorf("%w: observe quarantined subtree: %v", ErrNotRepairable, err)
+			}
+			for _, child := range subtree {
+				if child.Name == "." {
+					continue
+				}
+				child.Name = filepath.Join(name, child.Name)
+				nodes = append(nodes, child)
+			}
+		}
+	}
+	fp, err := fingerprint(purgeQuarantineObservation{Action: ActionPurgeQuarantine, Nodes: nodes})
+	if err != nil {
+		return evaluation{}, err
+	}
+	return evaluation{
+		fingerprint:   fp,
+		preconditions: []Precondition{{Code: "quarantined_entries_present", Satisfied: true}},
+	}, nil
+}
+
+type liveTempNode struct {
+	Dir        string `json:"dir"`
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Mode       uint32 `json:"mode,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	ModTime    string `json:"mod_time"`
+	LinkTarget string `json:"link_target,omitempty"`
+}
+
+type cleanLiveTempsObservation struct {
+	Action Action         `json:"action"`
+	Cutoff string         `json:"cutoff"`
+	Temps  []liveTempNode `json:"temps"`
+}
+
+func evaluateCleanLiveTemps(root string, now time.Time) (evaluation, error) {
+	m, err := manifest.Load(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		return evaluation{}, fmt.Errorf("%w: load manifest: %v", ErrNotRepairable, err)
+	}
+	dirSet := make(map[string]struct{})
+	for _, entry := range m.Entries {
+		if entry.Path == "" || !filepath.IsAbs(entry.Path) {
+			continue
+		}
+		dirSet[filepath.Dir(filepath.Clean(entry.Path))] = struct{}{}
+	}
+	dirs := make([]string, 0, len(dirSet))
+	for dir := range dirSet {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+
+	cutoff := now.Add(-liveTempMinAge)
+	observed := make([]liveTempNode, 0)
+	paths := make([]string, 0)
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return evaluation{}, fmt.Errorf("%w: enumerate live directory: %v", ErrNotRepairable, err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasPrefix(name, liveTransactionTempPrefix) {
+				continue
+			}
+			full := filepath.Join(dir, name)
+			info, err := os.Lstat(full)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return evaluation{}, fmt.Errorf("%w: inspect live temporary: %v", ErrNotRepairable, err)
+			}
+			symlink := info.Mode()&os.ModeSymlink != 0
+			if !symlink && !info.Mode().IsRegular() {
+				continue
+			}
+			if !info.ModTime().Before(cutoff) {
+				continue
+			}
+			node := liveTempNode{
+				Dir:     dir,
+				Name:    name,
+				Mode:    uint32(info.Mode().Perm()),
+				ModTime: info.ModTime().UTC().Format(time.RFC3339Nano),
+			}
+			if symlink {
+				node.Kind = "symlink"
+				target, err := os.Readlink(full)
+				if err != nil {
+					return evaluation{}, fmt.Errorf("%w: read live temporary link: %v", ErrNotRepairable, err)
+				}
+				node.LinkTarget = target
+			} else {
+				node.Kind = "regular"
+				node.Size = info.Size()
+			}
+			observed = append(observed, node)
+			paths = append(paths, full)
+		}
+	}
+	if len(observed) == 0 {
+		return evaluation{}, fmt.Errorf("%w: no orphaned live transaction temporaries older than %s exist", ErrNotRepairable, liveTempMinAge)
+	}
+	fp, err := fingerprint(cleanLiveTempsObservation{
+		Action: ActionCleanLiveTemps,
+		Cutoff: cutoff.UTC().Format(time.RFC3339Nano),
+		Temps:  observed,
+	})
+	if err != nil {
+		return evaluation{}, err
+	}
+	return evaluation{
+		fingerprint:   fp,
+		preconditions: []Precondition{{Code: "orphan_live_transaction_temps_present", Satisfied: true}},
+		liveTemps:     paths,
+	}, nil
+}
+
+func applyCleanLiveTemps(paths []string) error {
+	for _, path := range paths {
+		if !strings.HasPrefix(filepath.Base(path), liveTransactionTempPrefix) {
+			return fmt.Errorf("%w: refuse to remove non-temporary path %q", ErrStateChanged, path)
+		}
+		if err := durablefs.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove live transaction temporary %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 func existingDataRoot(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("data root is required")
@@ -429,7 +633,7 @@ func validatePlan(plan Plan) error {
 	if plan.SchemaVersion != PlanSchemaVersion {
 		return fmt.Errorf("%w: unsupported schema_version %d", ErrInvalidPlan, plan.SchemaVersion)
 	}
-	if plan.Action != ActionRecoverTransaction && plan.Action != ActionRestoreManifestBackup {
+	if !isSupportedAction(plan.Action) {
 		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
 	}
 	if !validSHA256(plan.DataRootIdentity) || !validSHA256(plan.StateFingerprint) {

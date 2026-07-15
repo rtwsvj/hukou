@@ -301,6 +301,32 @@ func TestStagingManifestTempAndPendingTransaction(t *testing.T) {
 	}
 }
 
+func TestQuarantinedTransactionEntryIsWarned(t *testing.T) {
+	root, _ := validAdoptState(t)
+	// A quarantined entry can be a stray file, not only a directory; doctor must
+	// classify it as a warning rather than an invalid-entry error.
+	quarantined := filepath.Join(root, "transactions", "quarantined-mystery-1234")
+	if err := os.MkdirAll(filepath.Dir(quarantined), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(quarantined, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report := doctor.Scan(doctor.Options{DataRoot: root})
+	if !hasCode(report, "TRANSACTION_QUARANTINED_PRESENT") {
+		t.Fatalf("missing TRANSACTION_QUARANTINED_PRESENT: %+v", report.Findings)
+	}
+	if hasCode(report, "TRANSACTION_ENTRY_INVALID") {
+		t.Fatalf("quarantined entry misclassified as invalid: %+v", report.Findings)
+	}
+	for _, finding := range report.Findings {
+		if finding.Code == "TRANSACTION_QUARANTINED_PRESENT" && finding.Severity != doctor.SeverityWarning {
+			t.Fatalf("quarantine finding severity = %s, want warning", finding.Severity)
+		}
+	}
+}
+
 func TestReportRenderingIsDeterministic(t *testing.T) {
 	root, _ := validAdoptState(t)
 	first := doctor.Scan(doctor.Options{DataRoot: root, Deep: true})

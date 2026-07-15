@@ -26,61 +26,143 @@ var (
 	syncMatchedParent = durablefs.SyncParent
 )
 
+// QuarantineRecord names one previously unknown transaction-root entry and the
+// quarantined-* entry it was atomically renamed to.
+type QuarantineRecord struct {
+	Original    string
+	Quarantined string
+}
+
+// RecoverSummary reports the observable side effects of a recovery pass so that
+// callers can surface quarantined entries. An empty summary means recovery had
+// nothing to isolate.
+type RecoverSummary struct {
+	Quarantined []QuarantineRecord
+}
+
 // Recover resolves the one globally serialized pending transaction and cleans
 // abandoned building/completed journals. Callers must hold hukou's mutation
 // lock. PREPARED transactions roll back; transactions with a valid durable
 // COMMIT marker roll forward.
-func Recover(dataRoot string) error {
+//
+// Unknown entries no longer wedge recovery: each is atomically renamed into the
+// quarantine namespace (its data is preserved for diagnosis, never deleted) and
+// recorded in the returned summary before recovery continues on the known
+// journals. Already-quarantined entries are left untouched, so a recovery that
+// is interrupted and retried converges on the same result.
+func Recover(dataRoot string) (RecoverSummary, error) {
+	var summary RecoverSummary
 	root, err := filepath.Abs(dataRoot)
 	if err != nil {
-		return err
+		return summary, err
 	}
 	txRoot := filepath.Join(root, transactionsDirName)
 	if err := ensureTransactionRoot(root, txRoot); err != nil {
-		return err
+		return summary, err
 	}
 	status, err := Inspect(root)
 	if err != nil {
-		return err
+		return summary, err
 	}
-	if len(status.Unknown) != 0 {
-		return fmt.Errorf("unknown entries in transaction root: %s", strings.Join(status.Unknown, ", "))
+	for _, name := range status.Unknown {
+		record, err := quarantineEntry(txRoot, name)
+		if err != nil {
+			return summary, fmt.Errorf("quarantine unknown transaction entry %s: %w", name, err)
+		}
+		summary.Quarantined = append(summary.Quarantined, record)
 	}
 	if len(status.Pending) > 1 {
-		return fmt.Errorf("multiple pending transactions violate the global journal invariant: %s", strings.Join(status.Pending, ", "))
+		return summary, fmt.Errorf("multiple pending transactions violate the global journal invariant: %s", strings.Join(status.Pending, ", "))
 	}
 
 	for _, name := range status.Building {
 		if err := removeJournalDirectory(txRoot, filepath.Join(txRoot, name)); err != nil {
-			return fmt.Errorf("clean abandoned building journal %s: %w", name, err)
+			return summary, fmt.Errorf("clean abandoned building journal %s: %w", name, err)
 		}
 	}
 	for _, name := range status.Completed {
 		if err := removeJournalDirectory(txRoot, filepath.Join(txRoot, name)); err != nil {
-			return fmt.Errorf("clean completed journal %s: %w", name, err)
+			return summary, fmt.Errorf("clean completed journal %s: %w", name, err)
 		}
 	}
 	if len(status.Pending) == 0 {
-		return nil
+		return summary, nil
 	}
 
 	pendingName := status.Pending[0]
 	pendingDir := filepath.Join(txRoot, pendingName)
 	if err := requireRealDirectory(pendingDir); err != nil {
-		return err
+		return summary, err
 	}
 	intent, err := decodeIntent(filepath.Join(pendingDir, intentFileName))
 	if err != nil {
-		return fmt.Errorf("load pending transaction %s: %w", pendingName, err)
+		return summary, fmt.Errorf("load pending transaction %s: %w", pendingName, err)
 	}
 	if pendingName != pendingPrefix+intent.ID {
-		return fmt.Errorf("pending transaction directory/id mismatch: dir=%s id=%s", pendingName, intent.ID)
+		return summary, fmt.Errorf("pending transaction directory/id mismatch: dir=%s id=%s", pendingName, intent.ID)
 	}
 	committed, err := hasValidCommit(pendingDir, intent.ID)
 	if err != nil {
-		return fmt.Errorf("inspect transaction commit decision: %w", err)
+		return summary, fmt.Errorf("inspect transaction commit decision: %w", err)
 	}
-	return recoverLoaded(txRoot, pendingDir, intent, committed)
+	return summary, recoverLoaded(txRoot, pendingDir, intent, committed)
+}
+
+// quarantineEntry atomically renames one unknown transaction-root entry into the
+// quarantine namespace. The entry's bytes are preserved verbatim; only its name
+// changes, so the original data remains available for later diagnosis or an
+// explicit purge-quarantine repair.
+func quarantineEntry(txRoot, name string) (QuarantineRecord, error) {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return QuarantineRecord{}, fmt.Errorf("refuse to quarantine entry with a path separator: %q", name)
+	}
+	source := filepath.Join(txRoot, name)
+	if filepath.Dir(source) != txRoot {
+		return QuarantineRecord{}, fmt.Errorf("entry escapes transaction root: %q", name)
+	}
+	if _, err := os.Lstat(source); err != nil {
+		return QuarantineRecord{}, err
+	}
+	suffix, err := randomID()
+	if err != nil {
+		return QuarantineRecord{}, err
+	}
+	quarantinedName := quarantinedPrefix + name + "-" + suffix
+	if err := durablefs.Rename(source, filepath.Join(txRoot, quarantinedName)); err != nil {
+		return QuarantineRecord{}, err
+	}
+	return QuarantineRecord{Original: name, Quarantined: quarantinedName}, nil
+}
+
+// PurgeQuarantined removes every quarantined-* entry under the data root's
+// transaction directory and returns the names it removed. Callers must hold the
+// mutation lock. It never touches building/pending/completed journals and is
+// idempotent when no quarantined entries remain.
+func PurgeQuarantined(dataRoot string) ([]string, error) {
+	root, err := filepath.Abs(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	txRoot := filepath.Join(root, transactionsDirName)
+	status, err := Inspect(root)
+	if err != nil {
+		return nil, err
+	}
+	removed := make([]string, 0, len(status.Quarantined))
+	for _, name := range status.Quarantined {
+		if !strings.HasPrefix(name, quarantinedPrefix) {
+			continue
+		}
+		dir := filepath.Join(txRoot, name)
+		if filepath.Dir(dir) != txRoot {
+			return removed, fmt.Errorf("quarantine path escapes transaction root: %q", name)
+		}
+		if err := durablefs.RemoveAll(dir); err != nil {
+			return removed, fmt.Errorf("remove quarantined entry %s: %w", name, err)
+		}
+		removed = append(removed, name)
+	}
+	return removed, nil
 }
 
 func recoverLoaded(txRoot, dir string, intent Intent, committed bool) error {

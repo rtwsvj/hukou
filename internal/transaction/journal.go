@@ -25,6 +25,7 @@ const (
 	buildingPrefix       = ".building-"
 	pendingPrefix        = "pending-"
 	completedPrefix      = "completed-"
+	quarantinedPrefix    = "quarantined-"
 	intentFileName       = "intent.json"
 	commitFileName       = "COMMIT"
 	maxIntentBytes       = 1 << 20
@@ -126,13 +127,16 @@ type Transaction struct {
 
 // Status is a read-only inventory of transaction directories.
 type Status struct {
-	Building  []string
-	Pending   []string
-	Completed []string
-	Unknown   []string
+	Building    []string
+	Pending     []string
+	Completed   []string
+	Unknown     []string
+	Quarantined []string
 }
 
 // NeedsRecovery reports whether state-changing recovery or cleanup is needed.
+// Quarantined entries are deliberately excluded: they are already isolated
+// diagnostic evidence and must never block a mutation or a dry-run check.
 func (s Status) NeedsRecovery() bool {
 	return len(s.Building)+len(s.Pending)+len(s.Completed)+len(s.Unknown) > 0
 }
@@ -186,6 +190,8 @@ func Inspect(dataRoot string) (Status, error) {
 		switch {
 		case strings.HasPrefix(name, buildingPrefix):
 			status.Building = append(status.Building, name)
+		case strings.HasPrefix(name, quarantinedPrefix):
+			status.Quarantined = append(status.Quarantined, name)
 		case strings.HasPrefix(name, pendingPrefix):
 			status.Pending = append(status.Pending, name)
 		case strings.HasPrefix(name, completedPrefix):
@@ -198,6 +204,7 @@ func Inspect(dataRoot string) (Status, error) {
 	sort.Strings(status.Pending)
 	sort.Strings(status.Completed)
 	sort.Strings(status.Unknown)
+	sort.Strings(status.Quarantined)
 	return status, nil
 }
 

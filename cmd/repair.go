@@ -36,7 +36,7 @@ var repairApplyCmd = &cobra.Command{
 }
 
 func init() {
-	repairPlanCmd.Flags().StringVar(&repairPlanAction, "action", "", "repair action: recover-transaction or restore-manifest-backup")
+	repairPlanCmd.Flags().StringVar(&repairPlanAction, "action", "", "repair action: recover-transaction, restore-manifest-backup, purge-quarantine, or clean-live-temps")
 	repairPlanCmd.Flags().StringVar(&repairPlanOutput, "output", "", "write the repair plan to this file")
 	repairApplyCmd.Flags().StringVar(&repairApplyPlan, "plan", "", "path to a previously generated repair plan")
 	repairCmd.AddCommand(repairPlanCmd, repairApplyCmd)
