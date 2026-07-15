@@ -63,4 +63,15 @@
 
 ## 6. 固定提交验收输出
 
-（本节由固定提交上的重跑结果补齐，见补提交。）
+- 固定提交（subject）：`7b3df12378773c19dafb516e1a73eecd05e98346`（`feat(card-d): archive attestation verification + tag-guard + doc closeout`）
+- 重跑时工作树 clean（`git status --short` 为空）；环境：macOS/arm64，go1.26.5
+
+| 门禁 | 命令 | 退出状态 | 关键输出 |
+|---|---|---|---|
+| 全量验证 | `make verify` | 0 | fmt-check/mod-verify/vet/test/race/coverage/build/license-check/install-test/release-test 全绿；coverage total 72.9%（与 V0.3 基线一致，未下降）；末行 `release version validation tests passed` |
+| 安装器测试 | `bash scripts/install_test.sh` | 0 | 末行 `install script tests passed`；stderr 中 6 行 `skipping attestation verification and relying on transport trust only` 为默认 mock 未认证/missing-gh 用例的预期提示 |
+| shell 静态检查 | `shellcheck scripts/*.sh` | 0 | 零输出、零告警 |
+| workflow 校验 | `python3` + PyYAML（actionlint 未安装，兜底） | 0 | release.yml YAML 合法；needs 图 `tag-guard→verify→package→attest/publish` 全部解析；祖先校验步骤确认已移出 package |
+| 网络 e2e 默认关闭 | `go test -tags network_e2e -run Network -count=1 ./cmd/` | 0 | 编译通过；无 `HUKOU_NETWORK_E2E` 时 `--- SKIP: TestNetworkE2E_LatestRelease`（默认零网络得证） |
+
+本文件的行号引用均对应固定提交 `7b3df12` 的文件内容（本补提交只改 CARD-D-DONE.md，不影响其余文件行号）。
