@@ -75,7 +75,7 @@ func WriteJSON(w io.Writer, r Report) error {
 }
 
 // WriteTable writes a human-readable table plus a summary footer line:
-// 总数 / 来源数 / unknown 数 / shadowed 数.
+// total / source count / unknown count / shadowed count.
 // Per-file error details are omitted (count only via skipped=N).
 func WriteTable(w io.Writer, r Report) error {
 	Summarize(&r)

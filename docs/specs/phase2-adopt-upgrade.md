@@ -1,6 +1,10 @@
 # Phase 2 规格：adopt / upgrade / rollback / doctor
 
-状态：主体与 H2 崩溃恢复/只读诊断基础已随 `v0.2.0` 实现并验证；自动 repair、激活历史/可配置保留策略与公共 fixture smoke 后置。最终通过以当前 commit 的 verification report 为准。
+状态：主体与 H2 崩溃恢复/只读诊断基础已随 `v0.2.0` 实现并验证。本文件保留
+v0.2 历史契约；V0.3 私有分支已实现窄版 repair、激活历史与可配置保留，但完整
+RC 验收 pending，公共 fixture smoke 仍后置。当前行为变化见
+[`v0.3-private-rc.md`](v0.3-private-rc.md)，最终通过以对应 commit 的 verification
+report 为准。
 
 ## 目标
 

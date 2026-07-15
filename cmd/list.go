@@ -12,8 +12,8 @@ import (
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "列出已收编工具",
-	Long:  "以表格形式输出户口清单：名称、当前 tag、repo、路径、store 版本数。",
+	Short: "List adopted tools",
+	Long:  "List each adopted tool, its active tag, repository, path, and retained-version count.",
 	Args:  cobra.NoArgs,
 	RunE:  runList,
 }
@@ -35,7 +35,7 @@ func doList(stdout io.Writer) error {
 		return fail(err)
 	}
 	if len(m.Entries) == 0 {
-		fmt.Fprintln(stdout, "还没有收编任何工具。使用 `hukou adopt <name|path>` 开始。")
+		fmt.Fprintln(stdout, "No tools have been adopted. Start with `hukou adopt <name|path>`.")
 		return nil
 	}
 
@@ -46,6 +46,9 @@ func doList(stdout io.Writer) error {
 	sort.Slice(m.Entries, func(i, j int) bool { return m.Entries[i].Name < m.Entries[j].Name })
 
 	for _, e := range m.Entries {
+		if _, err := s.Original(e.Name); err != nil {
+			return fail(fmt.Errorf("inspect original backup for %s: %w", e.Name, err))
+		}
 		versions, err := s.Versions(e.Name)
 		if err != nil {
 			return fail(fmt.Errorf("inspect store versions for %s: %w", e.Name, err))

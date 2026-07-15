@@ -52,7 +52,7 @@ type Env struct {
 	ApplicationsDirs []string // /Applications, ~/Applications
 	ProjectsDir      string   // ~/Projects
 
-	HukouManifest string // hukou 自身户口清单(manifest.json)路径
+	HukouManifest string // Path to hukou's own manifest.json.
 }
 
 type CurlInstallerRoot struct {

@@ -6,6 +6,7 @@ umask 022
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+. ./scripts/semver.sh
 
 if [[ "${ALLOW_DIRTY:-0}" != "1" ]] && [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   echo "refusing to package a dirty worktree (set ALLOW_DIRTY=1 only for local experiments)" >&2
@@ -16,8 +17,8 @@ version="${VERSION:-${1:-}}"
 if [[ -z "$version" ]]; then
   version="$(git describe --tags --exact-match 2>/dev/null || true)"
 fi
-if [[ ! "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "VERSION must be a stable SemVer tag such as v0.1.0 (got: ${version:-empty})" >&2
+if ! hukou_is_strict_semver "$version"; then
+  echo "VERSION must be strict SemVer 2.0.0 without build metadata, such as v0.3.0 or v0.3.0-rc.1 (got: ${version:-empty})" >&2
   exit 1
 fi
 
@@ -63,9 +64,17 @@ for target in "${targets[@]}"; do
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -buildvcs=false -ldflags "$ldflags" -o "$stage/hukou" ./
   cp README.md "$stage/README.md"
+  cp README.zh-CN.md "$stage/README.zh-CN.md"
+  cp LICENSE "$stage/LICENSE"
+  cp THIRD_PARTY_NOTICES.md "$stage/THIRD_PARTY_NOTICES.md"
   cp LICENSES/*.txt "$stage/LICENSES/"
   chmod 0755 "$stage" "$stage/LICENSES" "$stage/hukou"
-  chmod 0644 "$stage/README.md" "$stage"/LICENSES/*.txt
+  chmod 0644 \
+    "$stage/README.md" \
+    "$stage/README.zh-CN.md" \
+    "$stage/LICENSE" \
+    "$stage/THIRD_PARTY_NOTICES.md" \
+    "$stage"/LICENSES/*.txt
 
   "$tar_cmd" \
     --sort=name \

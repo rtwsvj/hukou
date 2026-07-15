@@ -54,7 +54,7 @@ func acquireMutationLock() (*state.Lock, error) {
 func releaseMutationLock(lock *state.Lock, stderr io.Writer) {
 	if err := lock.Release(); err != nil {
 		if stderr != nil {
-			fmt.Fprintf(stderr, "警告: 释放 hukou 状态锁失败: %v\n", err)
+			fmt.Fprintf(stderr, "warning: failed to release the hukou state lock: %v\n", err)
 		}
 	}
 }

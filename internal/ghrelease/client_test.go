@@ -1,6 +1,7 @@
 package ghrelease
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +53,7 @@ func TestByTag(t *testing.T) {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"tag_name":"v2.0.0","assets":[]}`)
+		io.WriteString(w, `{"tag_name":"v2.0.0","draft":false,"prerelease":true,"assets":[]}`)
 	}))
 	defer server.Close()
 
@@ -61,6 +63,74 @@ func TestByTag(t *testing.T) {
 	}
 	if release.TagName != "v2.0.0" {
 		t.Fatalf("TagName=%q", release.TagName)
+	}
+	if release.Draft || !release.Prerelease {
+		t.Fatalf("release metadata=%+v", release)
+	}
+}
+
+func TestListUsesBoundedGeneratedPagination(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/repos/owner/repo/releases" {
+			t.Fatalf("path=%s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Fatalf("per_page=%q", got)
+		}
+		if got := r.URL.Query().Get("page"); got != strconv.Itoa(calls) {
+			t.Fatalf("page=%q calls=%d", got, calls)
+		}
+		// List must ignore an untrusted Link target and construct page 2 itself.
+		w.Header().Set("Link", `<https://evil.example.test/releases?page=2>; rel="next"`)
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			batch := make([]Release, releasesPerPage)
+			for i := range batch {
+				batch[i] = Release{TagName: "v1.0.0"}
+			}
+			if err := json.NewEncoder(w).Encode(batch); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if err := json.NewEncoder(w).Encode([]Release{{TagName: "v2.0.0-beta.1", Draft: true, Prerelease: true}}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	releases, err := testClient(server).List("owner", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(releases) != releasesPerPage+1 {
+		t.Fatalf("calls=%d releases=%d", calls, len(releases))
+	}
+	last := releases[len(releases)-1]
+	if !last.Draft || !last.Prerelease || last.TagName != "v2.0.0-beta.1" {
+		t.Fatalf("last release=%+v", last)
+	}
+}
+
+func TestListFailsClosedAtPaginationLimit(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		batch := make([]Release, releasesPerPage)
+		if err := json.NewEncoder(w).Encode(batch); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	_, err := testClient(server).List("owner", "repo")
+	if err == nil || !strings.Contains(err.Error(), "safe pagination limit") {
+		t.Fatalf("error=%v", err)
+	}
+	if calls != maxReleasePages {
+		t.Fatalf("calls=%d want=%d", calls, maxReleasePages)
 	}
 }
 

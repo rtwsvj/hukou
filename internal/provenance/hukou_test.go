@@ -14,6 +14,12 @@ import (
 
 func newLoadedHukouDetector(t *testing.T, entry manifest.Entry) *HukouDetector {
 	t.Helper()
+	if entry.AdoptedAt == "" {
+		entry.AdoptedAt = "2026-07-14T00:00:00Z"
+	}
+	if entry.UpdatedAt == "" {
+		entry.UpdatedAt = entry.AdoptedAt
+	}
 	mpath := filepath.Join(t.TempDir(), "manifest.json")
 	m := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{entry}}
 	if err := m.Save(mpath); err != nil {

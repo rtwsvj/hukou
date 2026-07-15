@@ -4,11 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"sort"
-	"time"
 
+	"github.com/rtwsvj/hukou/internal/activation"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/store"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
@@ -19,15 +16,17 @@ var rollbackTo string
 
 var rollbackCmd = &cobra.Command{
 	Use:   "rollback <name>",
-	Short: "回滚到上一版本或指定版本",
-	Long: `rollback 原子替换活跃文件为 store 中保存的旧版本。
-不带 --to 时自动选择上一个版本（按修改时间），包含 original 备份。`,
+	Short: "Roll back to the logical parent activation or a named ancestor",
+	Long: `rollback atomically replaces the live file with a retained version.
+Without --to it follows activation history to the logical parent. --to selects
+an exact retained ancestor; --to original explicitly restores the immutable
+adoption-time backup.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRollback,
 }
 
 func init() {
-	rollbackCmd.Flags().StringVar(&rollbackTo, "to", "", "目标版本标签（或 original）")
+	rollbackCmd.Flags().StringVar(&rollbackTo, "to", "", "target ancestor tag, or original")
 	rootCmd.AddCommand(rollbackCmd)
 }
 
@@ -56,32 +55,44 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 	}
 	e := m.Get(name)
 	if e == nil {
-		return fail(fmt.Errorf("未找到 %s", name))
+		return fail(fmt.Errorf("adopted tool %q not found", name))
 	}
 
 	currentSHA, err := store.SHA256File(e.Path)
 	if err != nil {
-		return fail(fmt.Errorf("无法读取当前文件: %w", err))
+		return fail(fmt.Errorf("read current file: %w", err))
 	}
 	if currentSHA != e.SHA256 {
-		return fail(fmt.Errorf("当前文件 sha256 与 manifest 不一致"))
+		return fail(fmt.Errorf("current file SHA-256 does not match the manifest"))
 	}
 
 	s := newStore()
 	target := to
+	targetActivationID := ""
+	restoreOriginal := false
 	if target == "" {
-		target, err = previousVersion(s, name, e.Tag)
-		if err != nil {
-			return fail(err)
+		previous, previousErr := activation.Previous(*e)
+		if previousErr != nil {
+			return fail(previousErr)
 		}
+		target = previous.Tag
+		targetActivationID = previous.ID
+	} else if target == "original" {
+		restoreOriginal = true
+	} else if target != e.Tag {
+		ancestor, ancestorErr := activation.FindAncestorByTag(*e, target)
+		if ancestorErr != nil {
+			return fail(ancestorErr)
+		}
+		targetActivationID = ancestor.ID
 	}
 
 	if target == e.Tag {
-		fmt.Fprintf(stdout, "%s 当前已是 %s\n", name, target)
+		fmt.Fprintf(stdout, "%s is already at %s\n", name, target)
 		return nil
 	}
 
-	oldEntry := *e
+	oldEntry := manifest.PrepareEntry(*e)
 	targetSource, err := s.ActivationSource(name, target)
 	if err != nil {
 		return fail(fmt.Errorf("resolve rollback source %s: %w", target, err))
@@ -90,10 +101,23 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 	if err != nil {
 		return fail(fmt.Errorf("sha256 rollback source: %w", err))
 	}
-	newEntry := oldEntry
-	newEntry.Tag = target
-	newEntry.SHA256 = newSHA
-	newEntry.UpdatedAt = rfc3339Now()
+	newEntry := manifest.PrepareEntry(oldEntry)
+	eventID, err := activation.NewID()
+	if err != nil {
+		return fail(fmt.Errorf("prepare rollback activation: %w", err))
+	}
+	activatedAt := rfc3339Now()
+	if restoreOriginal {
+		err = activation.RecordRestoreOriginal(&newEntry, eventID, newSHA, activatedAt)
+	} else {
+		err = activation.RecordRollback(&newEntry, eventID, targetActivationID, activatedAt)
+		if err == nil && newEntry.SHA256 != newSHA {
+			err = fmt.Errorf("rollback source SHA-256 does not match activation history: got %s want %s", newSHA, newEntry.SHA256)
+		}
+	}
+	if err != nil {
+		return fail(fmt.Errorf("prepare rollback activation: %w", err))
+	}
 	newEntry.AssetName = ""
 	newEntry.AssetSHA256 = ""
 	newEntry.ChecksumAsset = ""
@@ -112,7 +136,7 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 		return fail(fmt.Errorf("prepare rollback transaction: %w", err))
 	}
 	if err := validateTransactionStateSHA(tx, "live", oldEntry.SHA256, false); err != nil {
-		return fail(abortStateTransaction(tx, fmt.Errorf("当前文件在创建事务日志时被外部修改；拒绝覆盖: %w", err)))
+		return fail(abortStateTransaction(tx, fmt.Errorf("current file changed while preparing the transaction; refusing overwrite: %w", err)))
 	}
 	if err := validateTransactionStateSHA(tx, "live", newSHA, true); err != nil {
 		return fail(abortStateTransaction(tx, err))
@@ -129,7 +153,7 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 		}
 	}
 	if err := tx.Apply("live"); err != nil {
-		return fail(abortStateTransaction(tx, fmt.Errorf("当前文件在事务应用前被外部修改或无法激活；拒绝覆盖: activate %s: %w", target, err)))
+		return fail(abortStateTransaction(tx, fmt.Errorf("current file changed before activation or the target could not be activated; refusing overwrite: activate %s: %w", target, err)))
 	}
 	if err := tx.Verify("manifest", false); err != nil {
 		return fail(abortStateTransaction(tx, fmt.Errorf("manifest changed during rollback; refusing overwrite: %w", err)))
@@ -148,47 +172,9 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 		}
 		return fail(errors.Join(fmt.Errorf("commit rollback transaction: %w", err), refreshErr))
 	}
-	finalizeStateTransaction(tx, stderr, name, "回滚")
+	finalizeStateTransaction(tx, stderr, name, "rollback")
 
-	fmt.Fprintf(stdout, "已回滚 %s → %s\n", name, target)
+	fmt.Fprintf(stdout, "Rolled back %s to %s\n", name, target)
 	_ = stderr // reserved for future diagnostics
 	return nil
-}
-
-func previousVersion(s *store.Store, name, current string) (string, error) {
-	versions, err := s.Versions(name)
-	if err != nil {
-		return "", err
-	}
-
-	type version struct {
-		tag   string
-		mtime time.Time
-	}
-	var list []version
-	for _, tag := range versions {
-		if tag == current {
-			continue
-		}
-		info, err := os.Stat(filepath.Join(s.Root, name, tag))
-		if err != nil {
-			continue
-		}
-		list = append(list, version{tag: tag, mtime: info.ModTime()})
-	}
-
-	origPath := filepath.Join(s.Root, name, "original", name)
-	if info, err := os.Stat(origPath); err == nil {
-		if current != "original" {
-			list = append(list, version{tag: "original", mtime: info.ModTime()})
-		}
-	}
-
-	if len(list) == 0 {
-		return "", fmt.Errorf("没有可回滚的版本")
-	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].mtime.After(list[j].mtime)
-	})
-	return list[0].tag, nil
 }

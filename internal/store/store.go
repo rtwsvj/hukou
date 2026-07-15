@@ -3,13 +3,13 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
 )
@@ -383,36 +383,24 @@ func (s *Store) Versions(name string) ([]string, error) {
 	if err := validateNameTag("name", name); err != nil {
 		return nil, err
 	}
-	nameDir, err := s.storeDir(false, name)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, err
-	}
-	entries, err := os.ReadDir(nameDir)
+	installed, err := s.installedVersions(name)
 	if err != nil {
 		return nil, err
 	}
-
-	var tags []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if strings.EqualFold(e.Name(), "original") {
-			if e.Name() != "original" {
-				return nil, fmt.Errorf("reserved original directory has non-canonical spelling %q", e.Name())
-			}
-			continue
-		}
-		if _, err := s.storeDir(false, name, e.Name()); err != nil {
-			return nil, err
-		}
-		tags = append(tags, e.Name())
+	tags := make([]string, 0, len(installed))
+	for tag := range installed {
+		tags = append(tags, tag)
 	}
 	sort.Strings(tags)
 	return tags, nil
+}
+
+// Original returns the immutable backup reference for name after validating
+// that the original namespace contains exactly one regular artifact. Commands
+// that start from a manifest entry use this to distinguish a legitimately
+// empty version list from a missing or malformed tool store.
+func (s *Store) Original(name string) (VersionRef, error) {
+	return s.inspectVersion(name, "original")
 }
 
 // Activate copies the immutable store binary into a temporary regular file in
@@ -506,10 +494,217 @@ func (s *Store) AdoptOriginal(name, binPath string) error {
 	return atomicCopyFileNoReplace(s.durability(), binPath, dstPath, tmpDir)
 }
 
-// Prune removes old versions of name, keeping the most recent keep versions by
-// directory modification time. The original backup directory is never removed.
-// protectedTag, when non-empty, is verified against protectedSHA before any
-// deletion and is never removed.
+// VersionRef binds a store tag to its immutable content digest.
+type VersionRef struct {
+	Tag    string
+	SHA256 string
+}
+
+// PruneRequest describes the state that must remain available after pruning.
+// Ancestors must be ordered nearest-first along the logical activation lineage.
+type PruneRequest struct {
+	Name            string
+	Current         VersionRef
+	PinnedTag       string
+	Ancestors       []VersionRef
+	RetainAncestors int
+}
+
+// PrunePlan is a fully-bound, deterministic deletion plan. Delete entries carry
+// their observed SHA-256 so ApplyPrunePlan can reject stale or replaced state
+// before removing the first directory.
+type PrunePlan struct {
+	Name      string
+	Current   VersionRef
+	Protected []VersionRef
+	Delete    []VersionRef
+}
+
+// PlanPrune protects the current version, an installed exact pin, and the first
+// RetainAncestors logical ancestors. It never consults directory timestamps.
+// Every protected artifact is verified before a deletion plan is returned.
+func (s *Store) PlanPrune(request PruneRequest) (PrunePlan, error) {
+	if err := validateNameTag("name", request.Name); err != nil {
+		return PrunePlan{}, err
+	}
+	if request.RetainAncestors < 0 {
+		return PrunePlan{}, errors.New("negative retained ancestor count")
+	}
+	if request.Current.Tag == "" || request.Current.SHA256 == "" {
+		return PrunePlan{}, errors.New("current version requires a tag and SHA-256")
+	}
+	if err := validateActivationTag(request.Current.Tag); err != nil {
+		return PrunePlan{}, fmt.Errorf("current version: %w", err)
+	}
+	if request.PinnedTag != "" {
+		if err := validateNameTag("tag", request.PinnedTag); err != nil {
+			return PrunePlan{}, fmt.Errorf("pinned version: %w", err)
+		}
+	}
+
+	installed, err := s.installedVersions(request.Name)
+	if err != nil {
+		return PrunePlan{}, err
+	}
+	original, err := s.inspectVersion(request.Name, "original")
+	if err != nil {
+		return PrunePlan{}, fmt.Errorf("verify immutable original backup: %w", err)
+	}
+	protected := make(map[string]VersionRef)
+	addProtected := func(ref VersionRef, role string) error {
+		if ref.Tag == "" || ref.SHA256 == "" {
+			return fmt.Errorf("%s requires a tag and SHA-256", role)
+		}
+		if err := validateActivationTag(ref.Tag); err != nil {
+			return fmt.Errorf("%s: %w", role, err)
+		}
+		ref.SHA256 = strings.ToLower(ref.SHA256)
+		if existing, ok := protected[ref.Tag]; ok && existing.SHA256 != ref.SHA256 {
+			return fmt.Errorf("%s conflicts with protected tag %q SHA-256", role, ref.Tag)
+		}
+		protected[ref.Tag] = ref
+		return nil
+	}
+	if err := addProtected(request.Current, "current version"); err != nil {
+		return PrunePlan{}, err
+	}
+	if err := addProtected(original, "immutable original backup"); err != nil {
+		return PrunePlan{}, err
+	}
+	ancestorCount := min(request.RetainAncestors, len(request.Ancestors))
+	for i := 0; i < ancestorCount; i++ {
+		if err := addProtected(request.Ancestors[i], fmt.Sprintf("activation ancestor %d", i+1)); err != nil {
+			return PrunePlan{}, err
+		}
+	}
+	if request.PinnedTag != "" {
+		if pinned, ok := installed[request.PinnedTag]; ok {
+			if err := addProtected(pinned, "pinned version"); err != nil {
+				return PrunePlan{}, err
+			}
+		}
+	}
+
+	protectedRefs := make([]VersionRef, 0, len(protected))
+	for _, ref := range protected {
+		observed, err := s.inspectVersion(request.Name, ref.Tag)
+		if err != nil {
+			return PrunePlan{}, fmt.Errorf("verify protected version %s: %w", ref.Tag, err)
+		}
+		if observed.SHA256 != ref.SHA256 {
+			return PrunePlan{}, fmt.Errorf("verify protected version %s: SHA-256 mismatch: got %s, want %s", ref.Tag, observed.SHA256, ref.SHA256)
+		}
+		protectedRefs = append(protectedRefs, ref)
+	}
+	sort.Slice(protectedRefs, func(i, j int) bool { return protectedRefs[i].Tag < protectedRefs[j].Tag })
+
+	deleteRefs := make([]VersionRef, 0, len(installed))
+	for tag, ref := range installed {
+		if _, keep := protected[tag]; keep {
+			continue
+		}
+		deleteRefs = append(deleteRefs, ref)
+	}
+	sort.Slice(deleteRefs, func(i, j int) bool { return deleteRefs[i].Tag < deleteRefs[j].Tag })
+	return PrunePlan{
+		Name:      request.Name,
+		Current:   VersionRef{Tag: request.Current.Tag, SHA256: strings.ToLower(request.Current.SHA256)},
+		Protected: protectedRefs,
+		Delete:    deleteRefs,
+	}, nil
+}
+
+// ApplyPrunePlan revalidates every protected and deletion artifact before the
+// first removal. New unlisted versions are left untouched; changed, missing,
+// aliased, or malformed listed versions make the whole plan fail closed.
+func (s *Store) ApplyPrunePlan(plan PrunePlan) error {
+	if err := validateNameTag("name", plan.Name); err != nil {
+		return err
+	}
+	if plan.Current.Tag == "" || plan.Current.SHA256 == "" {
+		return errors.New("prune plan has no bound current version")
+	}
+	protected := make(map[string]string, len(plan.Protected))
+	currentProtected := false
+	for _, ref := range plan.Protected {
+		if err := validateBoundRef(ref); err != nil {
+			return fmt.Errorf("invalid protected version: %w", err)
+		}
+		sha := strings.ToLower(ref.SHA256)
+		if existing, ok := protected[ref.Tag]; ok && existing != sha {
+			return fmt.Errorf("protected tag %q has conflicting SHA-256 values", ref.Tag)
+		}
+		protected[ref.Tag] = sha
+		if ref.Tag == plan.Current.Tag && sha == strings.ToLower(plan.Current.SHA256) {
+			currentProtected = true
+		}
+	}
+	if !currentProtected {
+		return errors.New("prune plan does not protect its current version")
+	}
+
+	deleteTags := make(map[string]struct{}, len(plan.Delete))
+	for _, ref := range plan.Delete {
+		if err := validateBoundRef(ref); err != nil {
+			return fmt.Errorf("invalid deletion version: %w", err)
+		}
+		if _, keep := protected[ref.Tag]; keep {
+			return fmt.Errorf("version %q is both protected and scheduled for deletion", ref.Tag)
+		}
+		if _, duplicate := deleteTags[ref.Tag]; duplicate {
+			return fmt.Errorf("duplicate deletion tag %q", ref.Tag)
+		}
+		deleteTags[ref.Tag] = struct{}{}
+	}
+
+	// Complete preflight: no removal occurs until every binding has been
+	// re-read and verified.
+	for tag, wantSHA := range protected {
+		observed, err := s.inspectVersion(plan.Name, tag)
+		if err != nil {
+			return fmt.Errorf("revalidate protected version %s: %w", tag, err)
+		}
+		if observed.SHA256 != wantSHA {
+			return fmt.Errorf("revalidate protected version %s: SHA-256 mismatch: got %s, want %s", tag, observed.SHA256, wantSHA)
+		}
+	}
+	for _, ref := range plan.Delete {
+		observed, err := s.inspectVersion(plan.Name, ref.Tag)
+		if err != nil {
+			return fmt.Errorf("revalidate deletion version %s: %w", ref.Tag, err)
+		}
+		if observed.SHA256 != strings.ToLower(ref.SHA256) {
+			return fmt.Errorf("revalidate deletion version %s: SHA-256 mismatch: got %s, want %s", ref.Tag, observed.SHA256, ref.SHA256)
+		}
+	}
+
+	for _, ref := range plan.Delete {
+		versionDir, err := s.storeDir(false, plan.Name, ref.Tag)
+		if err != nil {
+			return err
+		}
+		if err := s.durability().RemoveAll(versionDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PruneHistory plans and applies a history-aware prune. The caller must hold
+// the same state lock used for activation transactions until this method
+// returns.
+func (s *Store) PruneHistory(request PruneRequest) error {
+	plan, err := s.PlanPrune(request)
+	if err != nil {
+		return err
+	}
+	return s.ApplyPrunePlan(plan)
+}
+
+// Prune is retained for v0.2 callers. It is deterministic and no longer uses
+// mtime, but it cannot infer activation lineage; new code must use
+// PruneHistory. The lexicographically greatest keep tags are retained in
+// addition to the explicitly protected version.
 func (s *Store) Prune(name string, keep int, protectedTag, protectedSHA string) error {
 	if err := validateNameTag("name", name); err != nil {
 		return err
@@ -531,93 +726,170 @@ func (s *Store) Prune(name string, keep int, protectedTag, protectedSHA string) 
 		keep = 0
 	}
 
-	nameDir, err := s.storeDir(false, name)
+	installed, err := s.installedVersions(name)
 	if err != nil {
-		if os.IsNotExist(err) {
+		return err
+	}
+	tags := make([]string, 0, len(installed))
+	for tag := range installed {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	protected := make(map[string]struct{})
+	if protectedTag != "" {
+		protected[protectedTag] = struct{}{}
+	}
+	for i := max(0, len(tags)-keep); i < len(tags); i++ {
+		protected[tags[i]] = struct{}{}
+	}
+	plan := PrunePlan{
+		Name:      name,
+		Current:   VersionRef{Tag: protectedTag, SHA256: strings.ToLower(protectedSHA)},
+		Protected: make([]VersionRef, 0, len(protected)),
+	}
+	for tag := range protected {
+		ref := installed[tag]
+		plan.Protected = append(plan.Protected, ref)
+	}
+	for tag, ref := range installed {
+		if _, keep := protected[tag]; !keep {
+			plan.Delete = append(plan.Delete, ref)
+		}
+	}
+	if protectedTag == "" {
+		// The compatibility API permits an empty protection set. Bind a retained
+		// tag as the synthetic current when possible; with keep=0 there is no
+		// protected state and the compatibility removal is applied directly.
+		if len(plan.Protected) == 0 {
+			for _, ref := range plan.Delete {
+				observed, inspectErr := s.inspectVersion(name, ref.Tag)
+				if inspectErr != nil || observed.SHA256 != ref.SHA256 {
+					if inspectErr != nil {
+						return inspectErr
+					}
+					return fmt.Errorf("version %s changed while pruning", ref.Tag)
+				}
+			}
+			for _, ref := range plan.Delete {
+				versionDir, dirErr := s.storeDir(false, name, ref.Tag)
+				if dirErr != nil {
+					return dirErr
+				}
+				if removeErr := s.durability().RemoveAll(versionDir); removeErr != nil {
+					return removeErr
+				}
+			}
 			return nil
 		}
-		return err
+		plan.Current = plan.Protected[0]
 	}
-	entries, err := os.ReadDir(nameDir)
+	sort.Slice(plan.Protected, func(i, j int) bool { return plan.Protected[i].Tag < plan.Protected[j].Tag })
+	sort.Slice(plan.Delete, func(i, j int) bool { return plan.Delete[i].Tag < plan.Delete[j].Tag })
+	return s.ApplyPrunePlan(plan)
+}
+
+func (s *Store) verifyVersionSHA(name, tag, wantSHA string) error {
+	ref, err := s.inspectVersion(name, tag)
 	if err != nil {
 		return err
 	}
-
-	type version struct {
-		tag   string
-		mtime time.Time
-	}
-	var versions []version
-
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if strings.EqualFold(e.Name(), "original") {
-			if e.Name() != "original" {
-				return fmt.Errorf("reserved original directory has non-canonical spelling %q", e.Name())
-			}
-			continue
-		}
-		if _, err := s.storeDir(false, name, e.Name()); err != nil {
-			return err
-		}
-		info, err := e.Info()
-		if err != nil {
-			return err
-		}
-		versions = append(versions, version{tag: e.Name(), mtime: info.ModTime()})
-	}
-
-	sort.Slice(versions, func(i, j int) bool {
-		return versions[i].mtime.After(versions[j].mtime)
-	})
-
-	for i := keep; i < len(versions); i++ {
-		if versions[i].tag == protectedTag {
-			continue
-		}
-		versionDir, err := s.storeDir(false, name, versions[i].tag)
-		if err != nil {
-			return err
-		}
-		if err := s.durability().RemoveAll(versionDir); err != nil {
-			return err
-		}
+	if ref.SHA256 != strings.ToLower(wantSHA) {
+		return fmt.Errorf("version %s/%s SHA-256 mismatch: got %s, want %s", name, tag, ref.SHA256, wantSHA)
 	}
 	return nil
 }
 
-func (s *Store) verifyVersionSHA(name, tag, wantSHA string) error {
+func validateBoundRef(ref VersionRef) error {
+	if ref.Tag == "" || ref.SHA256 == "" {
+		return errors.New("version reference requires a tag and SHA-256")
+	}
+	if err := validateActivationTag(ref.Tag); err != nil {
+		return err
+	}
+	if len(ref.SHA256) != sha256.Size*2 {
+		return fmt.Errorf("version %q has invalid SHA-256", ref.Tag)
+	}
+	if _, err := hex.DecodeString(ref.SHA256); err != nil {
+		return fmt.Errorf("version %q has invalid SHA-256: %w", ref.Tag, err)
+	}
+	return nil
+}
+
+func (s *Store) installedVersions(name string) (map[string]VersionRef, error) {
+	nameDir, err := s.storeDir(false, name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]VersionRef{}, nil
+		}
+		return nil, err
+	}
+	entries, err := os.ReadDir(nameDir)
+	if err != nil {
+		return nil, err
+	}
+	versions := make(map[string]VersionRef)
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), "original") {
+			if entry.Name() != "original" {
+				return nil, fmt.Errorf("reserved original directory has non-canonical spelling %q", entry.Name())
+			}
+			if !entry.IsDir() {
+				return nil, fmt.Errorf("original store path is not a directory")
+			}
+			if _, err := s.storeDir(false, name, "original"); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if !entry.IsDir() {
+			return nil, fmt.Errorf("unexpected non-directory in tool store: %s", entry.Name())
+		}
+		if err := validateNameTag("tag", entry.Name()); err != nil {
+			return nil, err
+		}
+		ref, err := s.inspectVersion(name, entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		versions[ref.Tag] = ref
+	}
+	return versions, nil
+}
+
+func (s *Store) inspectVersion(name, tag string) (VersionRef, error) {
+	if err := validateNameTag("name", name); err != nil {
+		return VersionRef{}, err
+	}
+	if err := validateActivationTag(tag); err != nil {
+		return VersionRef{}, err
+	}
 	dir, err := s.storeDir(false, name, tag)
 	if err != nil {
-		return err
+		return VersionRef{}, err
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return VersionRef{}, err
 	}
-	var binary string
-	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
-		}
-		if binary != "" {
-			return fmt.Errorf("version %s/%s contains multiple binaries", name, tag)
-		}
-		binary = filepath.Join(dir, entry.Name())
+	if len(entries) != 1 {
+		return VersionRef{}, fmt.Errorf("version %s/%s must contain exactly one binary", name, tag)
 	}
-	if binary == "" {
-		return fmt.Errorf("no binary found in version %s/%s", name, tag)
-	}
-	gotSHA, err := SHA256File(binary)
+	path := filepath.Join(dir, entries[0].Name())
+	info, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return VersionRef{}, err
 	}
-	if gotSHA != wantSHA {
-		return fmt.Errorf("version %s/%s SHA-256 mismatch: got %s, want %s", name, tag, gotSHA, wantSHA)
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return VersionRef{}, fmt.Errorf("version %s/%s contains a non-regular binary", name, tag)
 	}
-	return nil
+	if _, err := s.ensureUnderRoot(path); err != nil {
+		return VersionRef{}, err
+	}
+	digest, err := SHA256File(path)
+	if err != nil {
+		return VersionRef{}, err
+	}
+	return VersionRef{Tag: tag, SHA256: digest}, nil
 }
 
 // atomicCopyFile copies srcPath into a complete temporary regular file beside

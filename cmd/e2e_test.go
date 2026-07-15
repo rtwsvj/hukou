@@ -17,11 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rtwsvj/hukou/internal/activation"
 	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/store"
 	"github.com/rtwsvj/hukou/internal/verify"
+	"github.com/rtwsvj/hukou/internal/versionpolicy"
 )
 
 func TestE2E_AdoptLocalAndRepo(t *testing.T) {
@@ -73,7 +75,7 @@ func TestE2E_AdoptLocalAndRepo(t *testing.T) {
 	if err := doUpgrade(&out, &out, []string{"fakebin"}, false, true, "", client); err != nil {
 		t.Fatalf("upgrade dry-run: %v\n%s", err, out.String())
 	}
-	want := fmt.Sprintf("将升级 fakebin: v1.0.0 → v2.0.0, 选中资产 %s", assetName)
+	want := fmt.Sprintf("Would upgrade fakebin: v1.0.0 -> v2.0.0 using asset %s", assetName)
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("dry-run output mismatch:\n%s", out.String())
 	}
@@ -87,7 +89,7 @@ func TestE2E_AdoptLocalAndRepo(t *testing.T) {
 	if err := doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", client); err != nil {
 		t.Fatalf("upgrade: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "已升级 fakebin: v1.0.0 → v2.0.0") {
+	if !strings.Contains(out.String(), "Upgraded fakebin: v1.0.0 -> v2.0.0") {
 		t.Fatalf("upgrade output mismatch:\n%s", out.String())
 	}
 
@@ -111,7 +113,7 @@ func TestE2E_AdoptLocalAndRepo(t *testing.T) {
 	if err := doRollback(&out, &out, "fakebin", ""); err != nil {
 		t.Fatalf("rollback: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "已回滚 fakebin → v1.0.0") {
+	if !strings.Contains(out.String(), "Rolled back fakebin to v1.0.0") {
 		t.Fatalf("rollback output mismatch:\n%s", out.String())
 	}
 	got, err = os.ReadFile(binPath)
@@ -157,7 +159,7 @@ func TestE2E_AdoptLocalSkipsUpgrade(t *testing.T) {
 	if err := doUpgrade(&out, &out, []string{"localbin"}, false, false, "", client); err != nil {
 		t.Fatalf("upgrade local: %v", err)
 	}
-	if !strings.Contains(out.String(), "跳过 localbin: local 条目") {
+	if !strings.Contains(out.String(), "Skipped localbin: local entry") {
 		t.Fatalf("local skip output mismatch:\n%s", out.String())
 	}
 }
@@ -196,8 +198,8 @@ func TestE2E_AssetDownload404(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/owner/repo/releases/latest", "/repos/owner/repo/releases":
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": "v2.0.0",
 				"assets": []map[string]any{
 					{
@@ -427,8 +429,8 @@ func TestE2E_ActivateFailureKeepsInstall(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/owner/repo/releases/latest", "/repos/owner/repo/releases":
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": "v2.0.0",
 				"assets": []map[string]any{{
 					"name":                 assetName,
@@ -543,8 +545,8 @@ func TestE2E_UpgradeDetectsExternalChangeBeforeActivation(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/owner/repo/releases/latest", "/repos/owner/repo/releases":
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": "v2.0.0",
 				"assets": []map[string]any{{
 					"name":                 assetName,
@@ -566,7 +568,7 @@ func TestE2E_UpgradeDetectsExternalChangeBeforeActivation(t *testing.T) {
 	defer server.Close()
 
 	err := doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", testGHClient(server))
-	if err == nil || !strings.Contains(err.Error(), "被外部修改") {
+	if err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("expected external-change rejection, err=%v output=%s", err, out.String())
 	}
 	got, readErr := os.ReadFile(binPath)
@@ -605,8 +607,8 @@ func TestE2E_AllPartialFailureNonZero(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/owner/good/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/owner/good/releases/latest", "/repos/owner/good/releases":
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": "v2.0.0",
 				"assets": []map[string]any{{
 					"name":                 assetNameGood,
@@ -614,7 +616,7 @@ func TestE2E_AllPartialFailureNonZero(t *testing.T) {
 					"size":                 len(assetDataGood),
 				}},
 			})
-		case "/repos/owner/bad/releases/latest":
+		case "/repos/owner/bad/releases/latest", "/repos/owner/bad/releases":
 			http.Error(w, "boom", http.StatusInternalServerError)
 		case "/assets/" + assetNameGood:
 			_, _ = w.Write(assetDataGood)
@@ -632,7 +634,7 @@ func TestE2E_AllPartialFailureNonZero(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("err=%v", err)
 	}
-	if !strings.Contains(stderr.String(), "升级失败") {
+	if !strings.Contains(stderr.String(), "upgrade(s) failed") {
 		t.Fatalf("stderr missing summary:\n%s", stderr.String())
 	}
 }
@@ -818,6 +820,123 @@ func TestE2E_RollbackThenUpgradePruneKeepsActive(t *testing.T) {
 	}
 }
 
+func TestE2E_RepeatedRollbackFollowsActivationLineageNotMtime(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("HUKOU_DATA_DIR", dataDir)
+
+	binPath := writeExecutable(t, t.TempDir(), "lineage-tool", "v1-body\n")
+	var output bytes.Buffer
+	if err := doAdopt(&output, &output, binPath, "owner/lineage-tool", false, "v1.0.0", false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, version := range []struct {
+		tag  string
+		body string
+	}{
+		{tag: "v2.0.0", body: "v2-body\n"},
+		{tag: "v3.0.0", body: "v3-body\n"},
+	} {
+		assetName := platformAssetName("lineage-tool")
+		assetData := makeTarGz(t, "lineage-tool", []byte(version.body))
+		server := fakeGitHubServer(t, assetName, assetData, "", version.tag)
+		err := doUpgrade(&output, &output, []string{"lineage-tool"}, false, false, "", testGHClient(server))
+		server.Close()
+		if err != nil {
+			t.Fatalf("upgrade %s: %v\n%s", version.tag, err, output.String())
+		}
+	}
+
+	// Deliberately make filesystem time disagree with logical history. Rollback
+	// must still walk v3 -> v2 -> v1 by activation parent IDs.
+	toolStore := filepath.Join(dataDir, "store", "lineage-tool")
+	mtimes := map[string]time.Time{
+		"v1.0.0": time.Date(2030, 1, 3, 0, 0, 0, 0, time.UTC),
+		"v2.0.0": time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		"v3.0.0": time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+	for tag, changedAt := range mtimes {
+		path := filepath.Join(toolStore, tag)
+		if err := os.Chtimes(path, changedAt, changedAt); err != nil {
+			t.Fatalf("change %s mtime: %v", tag, err)
+		}
+	}
+
+	for _, want := range []struct {
+		tag  string
+		body string
+	}{
+		{tag: "v2.0.0", body: "v2-body\n"},
+		{tag: "v1.0.0", body: "v1-body\n"},
+	} {
+		output.Reset()
+		if err := doRollback(&output, &output, "lineage-tool", ""); err != nil {
+			t.Fatalf("rollback to %s: %v\n%s", want.tag, err, output.String())
+		}
+		if got, err := os.ReadFile(binPath); err != nil || string(got) != want.body {
+			t.Fatalf("live after rollback to %s = %q, err=%v", want.tag, got, err)
+		}
+		m, err := manifest.Load(filepath.Join(dataDir, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := m.Get("lineage-tool")
+		if entry == nil || entry.Tag != want.tag {
+			t.Fatalf("manifest after rollback = %+v, want %s", entry, want.tag)
+		}
+	}
+
+	m, err := manifest.Load(filepath.Join(dataDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := activation.Previous(*m.Get("lineage-tool")); !errors.Is(err, activation.ErrNoPreviousActivation) {
+		t.Fatalf("rollback cursor did not terminate at the root: %v", err)
+	}
+}
+
+func TestE2E_SymlinkAdoptUpgradeAndImplicitRollback(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("HUKOU_DATA_DIR", dataDir)
+
+	target := writeExecutable(t, t.TempDir(), "real-tool", "v1-target\n")
+	live := filepath.Join(t.TempDir(), "symlink-tool")
+	if err := os.Symlink(target, live); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := doAdopt(&output, &output, live, "owner/symlink-tool", false, "v1.0.0", false); err != nil {
+		t.Fatalf("adopt symlink: %v\n%s", err, output.String())
+	}
+
+	assetName := platformAssetName("symlink-tool")
+	assetData := makeTarGz(t, "symlink-tool", []byte("v2-target\n"))
+	server := fakeGitHubServer(t, assetName, assetData, "", "v2.0.0")
+	err := doUpgrade(&output, &output, []string{"symlink-tool"}, false, false, "", testGHClient(server))
+	server.Close()
+	if err != nil {
+		t.Fatalf("upgrade symlink entry: %v\n%s", err, output.String())
+	}
+	if info, err := os.Lstat(live); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("upgraded live path is not regular: info=%v err=%v", info, err)
+	}
+
+	output.Reset()
+	if err := doRollback(&output, &output, "symlink-tool", ""); err != nil {
+		t.Fatalf("implicit rollback: %v\n%s", err, output.String())
+	}
+	if got, err := os.ReadFile(live); err != nil || string(got) != "v1-target\n" {
+		t.Fatalf("rolled back live bytes = %q, err=%v", got, err)
+	}
+	m, err := manifest.Load(filepath.Join(dataDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := m.Get("symlink-tool"); entry == nil || entry.Tag != "v1.0.0" {
+		t.Fatalf("manifest after symlink rollback: %+v", entry)
+	}
+}
+
 func TestE2E_RollbackSaveFailureRestoresLiveInstall(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("HUKOU_DATA_DIR", dataDir)
@@ -887,7 +1006,7 @@ func TestE2E_RollbackRejectsPostSnapshotExternalChange(t *testing.T) {
 		}
 		return snapshot, nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "被外部修改") {
+	if err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("expected post-snapshot drift rejection, err=%v output=%s", err, out.String())
 	}
 	if saveCalled {
@@ -923,8 +1042,8 @@ func TestE2E_DownloadOversizeAborted(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/owner/repo/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
+		case "/repos/owner/repo/releases/latest", "/repos/owner/repo/releases":
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": "v2.0.0",
 				"assets": []map[string]any{{
 					"name":                 assetName,
@@ -960,7 +1079,15 @@ func TestE2E_DryRunDoesNotWriteState(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &manifest.Manifest{SchemaVersion: 1}
-	m.Put(manifest.Entry{Name: "fakebin", Path: binPath, Repo: "owner/repo", Tag: "v1.0.0", SHA256: sha})
+	m.Put(manifest.Entry{
+		Name:      "fakebin",
+		Path:      binPath,
+		Repo:      "owner/repo",
+		Tag:       "v1.0.0",
+		SHA256:    sha,
+		AdoptedAt: "2026-07-14T00:00:00Z",
+		UpdatedAt: "2026-07-14T00:00:00Z",
+	})
 	manifestFile := filepath.Join(dataDir, "manifest.json")
 	if err := m.Save(manifestFile); err != nil {
 		t.Fatal(err)
@@ -1002,6 +1129,72 @@ func TestE2E_DryRunDoesNotWriteState(t *testing.T) {
 		if _, err := os.Lstat(p); !os.IsNotExist(err) {
 			t.Fatalf("dry-run created %s (err=%v)", p, err)
 		}
+	}
+}
+
+func TestE2E_SemverShorthandCurrentNeverDownloadsOrMutates(t *testing.T) {
+	for _, current := range []string{"v1", "v1.2"} {
+		t.Run(current, func(t *testing.T) {
+			dataDir := t.TempDir()
+			t.Setenv("HUKOU_DATA_DIR", dataDir)
+			binPath := writeExecutable(t, t.TempDir(), "fakebin", "current-body\n")
+			var output bytes.Buffer
+			if err := doAdopt(&output, &output, binPath, "owner/repo", false, current, false); err != nil {
+				t.Fatal(err)
+			}
+
+			manifestPath := filepath.Join(dataDir, "manifest.json")
+			beforeManifest, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeLive, err := os.ReadFile(binPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			assetName := platformAssetName("fakebin")
+			assetData := makeTarGz(t, "fakebin", []byte("replacement-body\n"))
+			metadataCalls, assetCalls := 0, 0
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases":
+					metadataCalls++
+					writeFakeReleaseMetadata(t, w, r, map[string]any{
+						"tag_name": "v2.0.0",
+						"assets": []map[string]any{{
+							"name":                 assetName,
+							"browser_download_url": server.URL + "/assets/" + assetName,
+							"size":                 len(assetData),
+						}},
+					})
+				case "/assets/" + assetName:
+					assetCalls++
+					_, _ = w.Write(assetData)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			output.Reset()
+			err = doUpgrade(&output, &output, []string{"fakebin"}, false, false, "", testGHClient(server))
+			if !errors.Is(err, versionpolicy.ErrCurrentNotSemver) {
+				t.Fatalf("error=%v\n%s", err, output.String())
+			}
+			if metadataCalls != 1 || assetCalls != 0 {
+				t.Fatalf("metadata calls=%d asset downloads=%d", metadataCalls, assetCalls)
+			}
+			afterManifest, manifestErr := os.ReadFile(manifestPath)
+			afterLive, liveErr := os.ReadFile(binPath)
+			if manifestErr != nil || liveErr != nil {
+				t.Fatalf("read after rejection: manifest=%v live=%v", manifestErr, liveErr)
+			}
+			if !bytes.Equal(afterManifest, beforeManifest) || !bytes.Equal(afterLive, beforeLive) {
+				t.Fatal("shorthand baseline rejection changed manifest or live binary")
+			}
+		})
 	}
 }
 
@@ -1166,8 +1359,8 @@ func fakeGitHubServer(t *testing.T, assetName string, assetData []byte, checksum
 	}
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Accept any /repos/*/releases/latest
-		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+		// Accept legacy latest lookup and the V0.3 bounded release-list lookup.
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") || strings.HasSuffix(r.URL.Path, "/releases") {
 			assets := []map[string]any{
 				{
 					"name":                 assetName,
@@ -1182,8 +1375,7 @@ func fakeGitHubServer(t *testing.T, assetName string, assetData []byte, checksum
 					"size":                 len(checksum),
 				})
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": tag,
 				"assets":   assets,
 			})
@@ -1205,8 +1397,8 @@ func fakeGitHubServerWithChecksumAsset(t *testing.T, assetName string, assetData
 	t.Helper()
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
-			_ = json.NewEncoder(w).Encode(map[string]any{
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") || strings.HasSuffix(r.URL.Path, "/releases") {
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": tag,
 				"assets": []map[string]any{
 					{"name": assetName, "browser_download_url": server.URL + "/assets/" + assetName, "size": len(assetData)},
@@ -1225,6 +1417,18 @@ func fakeGitHubServerWithChecksumAsset(t *testing.T, assetName string, assetData
 		}
 	}))
 	return server
+}
+
+func writeFakeReleaseMetadata(t *testing.T, w http.ResponseWriter, r *http.Request, release any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	value := release
+	if strings.HasSuffix(r.URL.Path, "/releases") {
+		value = []any{release}
+	}
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encode release metadata: %v", err)
+	}
 }
 
 func testGHClient(server *httptest.Server) *ghrelease.Client {

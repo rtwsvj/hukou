@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/rtwsvj/hukou/internal/activation"
 	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/provenance"
@@ -72,8 +72,9 @@ func TestMutationLockRollsCommittedJournalForwardBeforeLoadingState(t *testing.T
 	}
 	afterSHA := sha256Bytes([]byte("after\n"))
 	afterEntry := *m.Get("committed-tool")
-	afterEntry.Tag = "v2.0.0"
-	afterEntry.SHA256 = afterSHA
+	if err := activation.RecordUpgrade(&afterEntry, "act-committed-upgrade", "v2.0.0", afterSHA, "2026-07-14T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
 	m.Put(afterEntry)
 	afterManifest, err := encodeManifest(m)
 	if err != nil {
@@ -189,9 +190,9 @@ func TestUpgradeAllStopsBeforeNextNetworkRequestWhenTransactionRemainsPending(t 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/owner/alpha/releases/latest":
+		case "/repos/owner/alpha/releases/latest", "/repos/owner/alpha/releases":
 			alphaLatestCalls.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
 				"tag_name": "v2.0.0",
 				"assets": []map[string]any{{
 					"name":                 alphaAssetName,
@@ -199,7 +200,7 @@ func TestUpgradeAllStopsBeforeNextNetworkRequestWhenTransactionRemainsPending(t 
 					"size":                 len(alphaAsset),
 				}},
 			})
-		case "/repos/owner/beta/releases/latest":
+		case "/repos/owner/beta/releases/latest", "/repos/owner/beta/releases":
 			betaLatestCalls.Add(1)
 			http.Error(w, "beta must not be queried while state is pending", http.StatusInternalServerError)
 		case "/assets/" + alphaAssetName:

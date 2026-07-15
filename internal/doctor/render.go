@@ -34,7 +34,7 @@ func WriteText(w io.Writer, report Report) error {
 		return err
 	}
 	if len(report.Findings) == 0 {
-		_, err := fmt.Fprintln(w, "未发现问题。")
+		_, err := fmt.Fprintln(w, "No problems found.")
 		return err
 	}
 	for _, finding := range report.Findings {

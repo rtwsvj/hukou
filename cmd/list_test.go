@@ -63,3 +63,53 @@ func TestListFailsClosedWhenTransactionIsPending(t *testing.T) {
 		t.Fatalf("expected pending transaction error, got %v output=%q", err, out.String())
 	}
 }
+
+func TestListFailsClosedWhenManifestStoreIsMissingOrOriginalIsEmpty(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, dataDir string)
+	}{
+		{name: "missing tool store"},
+		{
+			name: "empty original",
+			setup: func(t *testing.T, dataDir string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(dataDir, "store", "tool", "original"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			t.Setenv("HUKOU_DATA_DIR", dataDir)
+			livePath := filepath.Join(t.TempDir(), "tool")
+			if err := os.WriteFile(livePath, []byte("tool\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			m := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{{
+				Name:      "tool",
+				Path:      livePath,
+				Tag:       "local",
+				SHA256:    strings.Repeat("a", 64),
+				AdoptedAt: "2026-07-14T00:00:00Z",
+				UpdatedAt: "2026-07-14T00:00:00Z",
+			}}}
+			if err := os.MkdirAll(dataDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Save(filepath.Join(dataDir, "manifest.json")); err != nil {
+				t.Fatal(err)
+			}
+			if test.setup != nil {
+				test.setup(t, dataDir)
+			}
+
+			var out bytes.Buffer
+			err := doList(&out)
+			if err == nil || !strings.Contains(err.Error(), "inspect original backup") {
+				t.Fatalf("expected original-backup error, got %v output=%q", err, out.String())
+			}
+		})
+	}
+}

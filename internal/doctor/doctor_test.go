@@ -4,14 +4,27 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/rtwsvj/hukou/internal/doctor"
 	"github.com/rtwsvj/hukou/internal/manifest"
 )
+
+func writeRawManifest(t *testing.T, path string, value *manifest.Manifest) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestMissingDataRootIsHealthyAndCreatesNothing(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "does-not-exist")
@@ -93,14 +106,112 @@ func TestValidBackupIsReportedForCorruptManifest(t *testing.T) {
 	}
 }
 
+func TestDoctorUsesTheSameStrictManifestDecoderAsCommands(t *testing.T) {
+	t.Run("main unknown field is untrusted", func(t *testing.T) {
+		root, _ := validAdoptState(t)
+		path := filepath.Join(root, "manifest.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document map[string]any
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		document["future_field"] = true
+		data, err = json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		report := doctor.Scan(doctor.Options{DataRoot: root})
+		if !hasCode(report, "MANIFEST_SEMANTIC_INVALID") || report.Healthy() {
+			t.Fatalf("unknown field was treated as trusted: %+v", report.Findings)
+		}
+	})
+
+	t.Run("backup unknown field is not a recovery candidate", func(t *testing.T) {
+		root, _ := validAdoptState(t)
+		mainPath := filepath.Join(root, "manifest.json")
+		data, err := os.ReadFile(mainPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document map[string]any
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		document["future_field"] = true
+		data, err = json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mainPath+".bak", data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mainPath, []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		report := doctor.Scan(doctor.Options{DataRoot: root})
+		if !hasCode(report, "MANIFEST_BACKUP_SEMANTIC_INVALID") || hasCode(report, "MANIFEST_BACKUP_AVAILABLE") {
+			t.Fatalf("unknown-field backup was treated as usable: %+v", report.Findings)
+		}
+	})
+}
+
+func TestDoctorRejectsSchemaSpecificManifestViolationsWithoutWriting(t *testing.T) {
+	tests := map[string]string{
+		"v2 missing retention and entries": `{"schema_version":2}`,
+		"v2 missing retention":             `{"schema_version":2,"entries":[]}`,
+		"v2 missing entries":               `{"schema_version":2,"retention":{"rollback_depth":0}}`,
+		"v1 carrying v2 retention":         `{"schema_version":1,"retention":{"rollback_depth":2},"entries":[]}`,
+	}
+	for name, raw := range tests {
+		t.Run("live/"+name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "manifest.json"), []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotDoctorTree(t, root)
+			report := doctor.Scan(doctor.Options{DataRoot: root})
+			if !hasCode(report, "MANIFEST_SEMANTIC_INVALID") || report.Healthy() {
+				t.Fatalf("invalid live manifest was trusted: %+v", report.Findings)
+			}
+			if after := snapshotDoctorTree(t, root); !reflect.DeepEqual(before, after) {
+				t.Fatalf("doctor changed business state\nbefore=%+v\nafter=%+v", before, after)
+			}
+		})
+
+		t.Run("backup/"+name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "manifest.json"), []byte("{broken"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "manifest.json.bak"), []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotDoctorTree(t, root)
+			report := doctor.Scan(doctor.Options{DataRoot: root})
+			if !hasCode(report, "MANIFEST_BACKUP_SEMANTIC_INVALID") || hasCode(report, "MANIFEST_BACKUP_AVAILABLE") {
+				t.Fatalf("invalid backup was treated as usable: %+v", report.Findings)
+			}
+			if after := snapshotDoctorTree(t, root); !reflect.DeepEqual(before, after) {
+				t.Fatalf("doctor changed business state\nbefore=%+v\nafter=%+v", before, after)
+			}
+		})
+	}
+}
+
 func TestManifestDuplicatesAndLiveDrift(t *testing.T) {
 	root := t.TempDir()
 	live := writeExecutable(t, filepath.Join(t.TempDir(), "tool"), "changed")
 	entry := fixtureEntry("tool", live, hashString("expected"), "v1")
 	m := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{entry, entry}}
-	if err := m.Save(filepath.Join(root, "manifest.json")); err != nil {
-		t.Fatal(err)
-	}
+	writeRawManifest(t, filepath.Join(root, "manifest.json"), m)
 	writeExecutable(t, filepath.Join(root, "store", "tool", "original", "tool"), "expected")
 
 	report := doctor.Scan(doctor.Options{DataRoot: root})
@@ -116,9 +227,7 @@ func TestSemanticallyInvalidManifestDoesNotClassifyOrphans(t *testing.T) {
 	live := writeExecutable(t, filepath.Join(t.TempDir(), "tool"), "body")
 	entry := fixtureEntry("tool", live, "not-a-sha", "v1")
 	m := &manifest.Manifest{SchemaVersion: 1, Entries: []manifest.Entry{entry}}
-	if err := m.Save(filepath.Join(root, "manifest.json")); err != nil {
-		t.Fatal(err)
-	}
+	writeRawManifest(t, filepath.Join(root, "manifest.json"), m)
 	writeExecutable(t, filepath.Join(root, "store", "tool", "original", "tool"), "body")
 	writeExecutable(t, filepath.Join(root, "store", "unbound", "original", "unbound"), "body")
 
@@ -349,4 +458,41 @@ func hasCode(report doctor.Report, code string) bool {
 		}
 	}
 	return false
+}
+
+type doctorSnapshotEntry struct {
+	Mode    os.FileMode
+	Content string
+	Link    string
+}
+
+func snapshotDoctorTree(t *testing.T, root string) map[string]doctorSnapshotEntry {
+	t.Helper()
+	result := make(map[string]doctorSnapshotEntry)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		entry := doctorSnapshotEntry{Mode: info.Mode()}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			entry.Link, err = os.Readlink(path)
+		case info.Mode().IsRegular():
+			var data []byte
+			data, err = os.ReadFile(path)
+			entry.Content = string(data)
+		}
+		if err == nil {
+			result[relative] = entry
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

@@ -1,0 +1,39 @@
+name: Documentation report
+description: Report incorrect, missing, unclear, or out-of-date documentation.
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page or file
+      placeholder: "README.md, docs/05-cli-reference.md, or a URL"
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: What is wrong or missing?
+      description: Quote only the smallest relevant excerpt.
+    validations:
+      required: true
+  - type: textarea
+    id: correction
+    attributes:
+      label: Suggested correction
+      description: Explain the accurate behavior or wording, if known.
+  - type: input
+    id: version
+    attributes:
+      label: Relevant hukou version
+      placeholder: "v0.2.0 or current main"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I checked the current default branch and searched existing reports.
+          required: true
+        - label: This report contains no credentials or private machine data.
+          required: true

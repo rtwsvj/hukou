@@ -39,22 +39,71 @@
 
 ## H2：运维与崩溃恢复
 
-状态：**恢复与只读诊断基础已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布；repair/历史策略与网络 smoke 尚未完成**。
+状态：**恢复与只读诊断基础已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布；repair/历史策略已进入未发布的 V0.3 分支，公共网络 smoke 尚未完成**。
 
 - [x] adopt/upgrade/rollback 单全局 WAL：PREPARED 回滚、COMMITTED 前滚、unknown drift 失败关闭
 - [x] manifest、store、live、事务 payload 的文件与父目录持久化
 - [x] 上一份可解析且 schema 受支持的 `manifest.json.bak`
 - [x] 默认零写、零网络的 `doctor` 文本/JSON审计与 orphan/unclassifiable 区分
 - [x] macOS + 原生 Linux 全量/race、崩溃/持久化压力、四平台可重复资产与远端下载复核
-- [ ] 显式枚举、state fingerprint 绑定的安全 repair 动作
-- [ ] 激活历史与可配置版本保留策略
+- [x] 显式枚举、state fingerprint 绑定的两类窄 repair 动作（V0.3 subject 已实现并完成内部 local/private RC 验收；尚未发布）
+- [x] 激活历史与可配置版本保留策略（V0.3 subject 已实现 manifest v2 并完成内部 local/private RC 验收；尚未发布）
 - [ ] 真实公共 fixture repo 的定时 smoke
 
-## 后续产品能力
+## V0.3：Trust-first 私有 Release Candidate
+
+状态：**subject commit `1fa45a0` 已完成 local/private RC readiness 验收并进入
+[draft PR #6](https://github.com/rtwsvj/hukou/pull/6)；GitHub-hosted CI 因 billing 在
+0 steps 前 infrastructure-blocked。未合并、未打 tag、未发布、仓库仍 private**。
+
+- [x] `explain`、`adopt --dry-run --json`、共享 inventory
+- [x] `outdated` 与 upgrade dry-run/真实升级共享 policy-aware checker
+- [x] `policy show/set`：SemVer/GitHub-latest、channel、exact pin、rollback depth
+- [x] manifest schema v2、v0/v1 deterministic migration、strict validation
+- [x] activation lineage、parent-based rollback、history-aware prune plan
+- [x] fingerprint-bound `repair plan/apply` 两类动作
+- [x] offline redacted `support bundle`
+- [x] 英文默认 CLI、双语 README、Apache-2.0、notices、community health 文件
+- [x] checksum 安装器、license/install/shell gates、SBOM 与 public-only attest/CodeQL 配置
+- [x] Topgrade custom command 集成文档；`upgrade --all` 继续只管 hukou entries
+- [x] uncached 全仓 ordinary/race/coverage/vet/build 最终绿灯并固化 commit
+- [x] macOS/Linux、四目标 build、双构建可重复性与 release snapshot/SBOM 内容验收
+- [x] Codex 团队内部 `pinhaoma-review` claims-vs-evidence 复核（当时记录 P0/P1/P2 = 0；无单独 raw report）
+- [ ] 第三方外部安全/可靠性审计；交接包已建立，重点 hypotheses 尚待确认或排除
+- [x] 推送私有分支并创建 draft private PR；hosted gate 的 billing 阻断已记录为 external gate
+
+最终固定提交证据：
+
+- 安全关键路径定向 audit：321 tests / 6 packages。
+- direct uncached 全仓 ordinary/race：各 641 tests / 21 packages，零失败。
+- `GOPROXY=https://goproxy.cn,direct make release-verify`：exit 0，coverage 72.9%，
+  govuln `No vulnerabilities found`；默认 `proxy.golang.org` IPv6 timeout 另行保留。
+- installer link(2)/rename(2)、重复 member、symlink/竞争与 strict shell SemVer；
+  manifest schema-specific/legacy-smuggling、activation safe-tag/tag-SHA、list original
+  完整性等定向矩阵：pass。
+- actionlint/Ruby YAML、68 Markdown/89 relative targets、production 汉字 sweep、
+  official Action tag pin 对账、secret scan 与 `git diff --check`：pass。
+- non-root Linux/arm64（UID 65534、source/module cache read-only、`GOPROXY=off`）
+  全仓 ordinary/race 与 GNU tar 1.34 installer/release tests：pass。
+- 四目标双构建逐字节一致，4/4 checksums、archive 内容/mode、buildinfo、installer
+  smoke：pass。Syft 1.46.0 SBOM 为 SPDX 2.3、21 packages/4 files。
+- Draft PR #6 的 CI run `29352308455` 五个 job 均 `steps=[]`，billing annotation
+  明确为账户基础设施阻断；CodeQL private skip 不记 pass。
+
+这些结果只记录 V0.3 内部 local/private RC readiness。交接阶段已发现下载/归档
+资源预算、WAL intent trust anchor、private→public attestation 时序、toolchain 差异等
+高优先级审计 hypotheses；在外部审计确认或排除前，不得把原内部 P0/P1/P2 记录解释
+为外部 clean bill。合并、tag、Release、public visibility 与公开配套仓库仍需独立
+Go/No-Go。
+
+## V0.3 之后
 
 - 版本快照、changelog diff、风险提示。
-- topgrade custom command。
 - mise/Brewfile 导出。
 - 非 Go 二进制自动 repo 匹配。
 - tar.xz 支持决策。
 - Windows 设计与测试。
+- 公共 fixture repo、定时真实网络 smoke、Homebrew Tap 与公开 beta Go/No-Go。
+- 若未来需要跨管理器控制平面，另立 ADR；V0.3 只让 Topgrade 负责外层编排。
+- Defense-in-depth backlog：duplicate JSON key rejection、GitHub API body cap、
+  installer 总解压体积/member 数预算、`openat`/目录 fd 路径锚定。

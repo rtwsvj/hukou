@@ -132,7 +132,7 @@ func scanManifest(report *Report, path string) manifestAudit {
 		report.add(SeverityError, "MANIFEST_JSON_INVALID", "manifest", "", path, "cannot decode manifest: %v", err)
 		return result
 	}
-	if m.SchemaVersion < 0 || m.SchemaVersion > 1 {
+	if m.SchemaVersion < 0 || m.SchemaVersion > manifest.CurrentSchemaVersion {
 		report.add(SeverityError, "MANIFEST_SCHEMA_UNSUPPORTED", "manifest", "", path, "schema_version %d is unsupported", m.SchemaVersion)
 		return result
 	}
@@ -141,10 +141,16 @@ func scanManifest(report *Report, path string) manifestAudit {
 	}
 
 	result.parsed = true
-	result.entries = append([]manifest.Entry(nil), m.Entries...)
+	strict, strictErr := manifest.Decode(raw)
+	if strictErr != nil {
+		report.add(SeverityError, "MANIFEST_SEMANTIC_INVALID", "manifest", "", path, "%v", strictErr)
+		result.entries = append([]manifest.Entry(nil), m.Entries...)
+	} else {
+		result.entries = append([]manifest.Entry(nil), strict.Entries...)
+	}
 	beforeErrors := findingCount(*report, SeverityError)
 	validateManifestEntries(report, result.entries, result.byName)
-	result.trusted = findingCount(*report, SeverityError) == beforeErrors
+	result.trusted = strictErr == nil && findingCount(*report, SeverityError) == beforeErrors
 	return result
 }
 
@@ -173,13 +179,18 @@ func scanManifestBackup(report *Report, path string, mainTrusted bool) {
 		report.incomplete("MANIFEST_BACKUP_READ_FAILED", "manifest_backup", "", path, "cannot read manifest backup: %v", err)
 		return
 	}
-	var backup manifest.Manifest
-	if err := json.Unmarshal(raw, &backup); err != nil {
+	var backupHeader manifest.Manifest
+	if err := json.Unmarshal(raw, &backupHeader); err != nil {
 		report.add(SeverityWarning, "MANIFEST_BACKUP_JSON_INVALID", "manifest_backup", "", path, "backup is not a usable recovery candidate: %v", err)
 		return
 	}
-	if backup.SchemaVersion < 0 || backup.SchemaVersion > 1 {
-		report.add(SeverityWarning, "MANIFEST_BACKUP_SCHEMA_UNSUPPORTED", "manifest_backup", "", path, "backup schema_version %d is unsupported", backup.SchemaVersion)
+	if backupHeader.SchemaVersion < 0 || backupHeader.SchemaVersion > manifest.CurrentSchemaVersion {
+		report.add(SeverityWarning, "MANIFEST_BACKUP_SCHEMA_UNSUPPORTED", "manifest_backup", "", path, "backup schema_version %d is unsupported", backupHeader.SchemaVersion)
+		return
+	}
+	backup, err := manifest.Decode(raw)
+	if err != nil {
+		report.add(SeverityWarning, "MANIFEST_BACKUP_SEMANTIC_INVALID", "manifest_backup", "", path, "backup is not a usable recovery candidate: %v", err)
 		return
 	}
 	temporary := newReport(Options{DataRoot: report.DataRoot})
