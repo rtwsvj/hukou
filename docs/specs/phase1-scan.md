@@ -114,7 +114,7 @@ Tier 2(时间允许尽量做,同样标准):opam(~/.opam)、ghcup/stack(~/.ghcup�
 
 ## 已知限制
 
-1. **TOCTOU**：`Walk` 中 `Stat` 与后续 `Open`/`DetectKind` 之间存在时间窗；扫描过程中文件被替换、删除或改权限时，结果可能与最终打开时不一致（记入 `FileErrors` 或 `Kind=Other`），不做重试或锁。
+1. **TOCTOU**：`Walk` 中 `Stat` 与后续 `Open`/`DetectKind` 之间存在时间窗；扫描过程中文件被替换、删除或改权限时，结果可能与最终打开时不一致（记入 `FileErrors` 或 `Kind=Other`），不做重试或锁。事务残留检查（`transaction.CheckReadable`）存在同款窗口——三重验证与调用方后续读取之间、以及验证三步（名字/Lstat/COMMIT）彼此之间均无原子性——已记录接受，不加读锁（2026-07-15 裁决，见 `docs/09-decision-log.md`）：读路径是同用户诊断视图而非安全边界，hukou 探测器对每个命中条目独立做 sha256 复核，归属结论不依赖该检查的时点正确性；写路径（`Begin`）保持全类别 fail-closed 且持 mutation lock。
 2. **npm `.bin` 包装脚本无法反查包名**：全局 `node_modules/.bin` 下的 shim 若无法解析到真实包目录，只能回退为二进制名，不能可靠还原 npm 包名。
 3. **nvm / 自定义 npm prefix 未覆盖**：仅识别 `npm_config_prefix` / `NPM_CONFIG_PREFIX` 与 brew 前缀下的全局布局；nvm 版本目录、用户手改 prefix 等未枚举。
 4. **PATH 空段刻意不按 POSIX 当作 CWD**：POSIX 将 `PATH` 中空段视为当前目录；hukou 跳过空段并写入 `Report.Warnings`（与 shell 语义不一致，属有意选择）。

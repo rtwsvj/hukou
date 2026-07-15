@@ -187,6 +187,27 @@ func CheckClean(dataRoot string) error {
 //   - unknown entries and any malformed name (wrong id shape, uppercase hex,
 //     symlinked directory, missing or mismatched COMMIT): corrupted or
 //     adversarial state that no read path may reason about.
+//
+// TOCTOU acceptance (recorded product decision, 2026-07-15; see
+// docs/09-decision-log.md): this check is deliberately not atomic, at two
+// layers. First, there is no atomicity between the completed-journal
+// verification and the caller's subsequent reads — residue may appear, vanish,
+// or change class after this function returns. Second, the three verification
+// steps for one completed entry (name shape, Lstat topology, COMMIT contents)
+// are individual snapshots, and a concurrent writer could swap the directory
+// between any two of them. Both windows are accepted instead of closed with a
+// read lock, because:
+//
+//   - the read path is a same-user diagnostic view, not a security boundary;
+//     a writer who can race this check can already write the transaction root
+//     and therefore owns the state outright.
+//   - the hukou detector independently re-verifies every matched entry by
+//     sha256 against the manifest (HukouDetector.Match), so attribution
+//     conclusions never depend on this check being correct at the instant of
+//     use — a stale observation here can at worst mis-phrase an advisory.
+//   - the write path (Begin) stays fail-closed on EVERY residue class and
+//     runs under the hukou mutation lock, so no mutation is ever based on an
+//     observation made by this read-path check.
 func CheckReadable(dataRoot string) (notes []string, err error) {
 	status, err := Inspect(dataRoot)
 	if err != nil {
