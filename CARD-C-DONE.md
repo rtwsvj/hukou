@@ -131,6 +131,39 @@ section below, from multi-round runs on the reviewed commit.
 
 ## Verification on the fixed commit
 
-Recorded by the follow-up docs commit after running, on the code commit:
-`go test -count=1 ./...` && `go test -count=1 -race ./...` && `make verify`
-plus multi-round benchmarks (`-count=5`).
+All gates and benchmarks below were executed on code commit
+`47398ba1135063b970ca61649e36262f5b8e28cb`
+("perf(card-c): digest threading + eager manifest index") with a clean
+working tree, on darwin/arm64 (Apple M-series, `-10`).
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| `go test -count=1 ./...` | PASS — 19/19 packages `ok`, exit 0 |
+| `go test -count=1 -race ./...` | PASS — 19/19 packages `ok`, exit 0 (includes `TestGetIsSafeForConcurrentReaders`) |
+| `make verify` (fmt-check, mod-verify, vet, test, race, coverage, build, license-check, install-test, release-test) | PASS — exit 0; coverage total 73.1% of statements; "license and provenance checks passed", "install script tests passed", "release version validation tests passed" |
+
+### Manifest batch Get — 100 entries, one Get per entry (`-count=5`, `-benchmem`)
+
+    BenchmarkManifestBatchGetLinear-10      21816 / 22414 / 22582 / 21739 / 21528 ns/op   0 allocs/op
+    BenchmarkManifestBatchGetColdIndex-10    2431 /  2413 /  2428 /  2564 /  2488 ns/op   3544 B/op  4 allocs/op
+    BenchmarkManifestBatchGetHotIndex-10    846.6 / 845.5 / 968.6 / 913.6 / 855.1 ns/op   0 allocs/op
+
+- Linear (pre-index O(n²) batch): median ≈ 21.8 µs.
+- Cold index (eager build + batch): median ≈ 2.43 µs — ~9× faster than linear
+  even when paying the full index build every batch; the 4 allocs/op are the
+  map construction that Load/Decode/Clone amortize once per document.
+- Hot index (steady state): median ≈ 0.86 µs, zero allocations — ~25× faster
+  than the linear baseline for the 100-tool batch, and the gap grows with n
+  (the removed cost is quadratic).
+
+### Store + activate segment — whole-file SHA-256 passes (`-count=5`, ~4.5 MiB artifact)
+
+    BenchmarkStoreVersionActivateRedundant-10   37.0–39.6 ms/op (median 38.1)   2.000 SHA256File/op  (x5 rounds)
+    BenchmarkStoreVersionActivateDeduped-10     34.0–39.2 ms/op (median 37.4)   1.000 SHA256File/op  (x5 rounds)
+
+The deterministic claim is the measured `SHA256File/op` counter: exactly
+**2 → 1** whole-file passes over the new store artifact in every round
+(excluding the necessary copy edge-hash). Wall time is I/O-dominated and
+noisier; the hash-pass count is the regression-proof metric.
