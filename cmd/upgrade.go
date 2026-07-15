@@ -202,19 +202,23 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		return err
 	}
 
+	// Hash the downloaded asset exactly once. The same digest both records the
+	// asset SHA-256 in the manifest and drives the publisher-checksum comparison
+	// below, so the cross-boundary verification reuses it rather than re-reading
+	// the whole asset a second time.
+	assetSHA, err := store.SHA256File(finalAssetPath)
+	if err != nil {
+		return fmt.Errorf("sha256 downloaded asset: %w", err)
+	}
+
 	checksumVerified := false
 	if checksumAsset != "" {
-		if err := verify.VerifyAsset(finalAssetPath, chosen, checksums); err != nil {
+		if err := verify.VerifyAssetDigest(assetSHA, chosen, checksums); err != nil {
 			return fmt.Errorf("verify checksum from %s: %w", checksumAsset, err)
 		}
 		checksumVerified = true
 	} else {
 		fmt.Fprintf(stderr, "Warning: %s release has no checksum asset; hukou will record the downloaded asset SHA-256 but cannot verify a publisher-provided digest\n", e.Name)
-	}
-
-	assetSHA, err := store.SHA256File(finalAssetPath)
-	if err != nil {
-		return fmt.Errorf("sha256 downloaded asset: %w", err)
 	}
 
 	extractDir, err := os.MkdirTemp(tmpDir, "extract-")
@@ -244,7 +248,8 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		}
 	}
 
-	if err := s.Put(e.Name, release.TagName, extractedPath); err != nil {
+	newVersionSHA, err := s.PutWithDigest(e.Name, release.TagName, extractedPath)
+	if err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
 
@@ -307,10 +312,14 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	if err != nil {
 		return fmt.Errorf("resolve activation source: %w", err)
 	}
-	targetSHA, err := store.SHA256File(targetSource)
-	if err != nil {
-		return fmt.Errorf("sha256 activation source: %w", err)
-	}
+	// The store just copied the extracted binary into targetSource and returned
+	// its content digest, cross-checked against a fresh read of the source. That
+	// digest is exactly the store artifact's SHA-256, so reuse it instead of
+	// hashing the immutable store file again. The transaction journal still
+	// captures targetSource independently below (captureRegular), and
+	// validateTransactionStateSHA re-checks that capture against targetSHA, so the
+	// activation remains fully verified.
+	targetSHA := newVersionSHA
 	newEntry := manifest.PrepareEntry(oldEntry)
 	eventID, err := activation.NewID()
 	if err != nil {

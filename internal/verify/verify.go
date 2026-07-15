@@ -151,6 +151,13 @@ func validSHA256Hex(digest string) bool {
 // VerifyAsset checks assetPath against the checksum entry for assetName in the
 // checksum map. It returns ErrNoChecksum if assetName is not present, or an
 // error describing the mismatch if the digest does not match.
+//
+// Error priority is part of the contract and matches the original
+// implementation exactly: a missing checksum entry (ErrNoChecksum) and an
+// invalid published digest are both reported before the asset file is opened,
+// so a file-read problem can never mask the map-level answer. Only after both
+// map-level checks pass is the asset hashed, and only then can a read error or
+// a content mismatch be returned.
 func VerifyAsset(assetPath, assetName string, checksums map[string]string) error {
 	want, ok := checksums[assetName]
 	if !ok {
@@ -163,8 +170,26 @@ func VerifyAsset(assetPath, assetName string, checksums map[string]string) error
 	if err != nil {
 		return err
 	}
-	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("checksum mismatch for %s: got %s, want %s", assetName, got, want)
+	return VerifyAssetDigest(got, assetName, checksums)
+}
+
+// VerifyAssetDigest performs the publisher-checksum comparison against a
+// digest the caller has already computed for the asset. It exists so a caller
+// that must also record the asset SHA-256 can hash the asset once and reuse the
+// result here, instead of re-reading the whole file inside VerifyAsset. The
+// fail-closed semantics match VerifyAsset's map-level contract: an absent entry
+// returns ErrNoChecksum, an unparsable published digest is an error, and any
+// mismatch is an error.
+func VerifyAssetDigest(assetDigest, assetName string, checksums map[string]string) error {
+	want, ok := checksums[assetName]
+	if !ok {
+		return ErrNoChecksum
+	}
+	if !validSHA256Hex(want) {
+		return fmt.Errorf("invalid SHA-256 digest for %s: %q", assetName, want)
+	}
+	if !strings.EqualFold(assetDigest, want) {
+		return fmt.Errorf("checksum mismatch for %s: got %s, want %s", assetName, assetDigest, want)
 	}
 	return nil
 }
