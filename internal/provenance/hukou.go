@@ -16,20 +16,39 @@ import (
 // binary's provenance is authoritative regardless of where the file lives.
 type HukouDetector struct {
 	byPath map[string]manifest.Entry
+	notes  []string
 }
 
 func NewHukouDetector() *HukouDetector { return &HukouDetector{} }
 
 func (d *HukouDetector) Name() string { return "hukou" }
 
+// Notes returns non-fatal advisories collected during Load (e.g. verified
+// stale completed journal residue). The Runner surfaces them on its dedicated
+// notes channel while keeping this detector in the chain; they never enter the
+// warnings channel that security gates key on.
+func (d *HukouDetector) Notes() []string { return d.notes }
+
 func (d *HukouDetector) Load(env Env) error {
 	d.byPath = map[string]manifest.Entry{}
+	d.notes = nil
 	if env.HukouManifest == "" {
 		return nil
 	}
-	if err := statejournal.CheckClean(filepath.Dir(env.HukouManifest)); err != nil {
+	// The read path tolerates exactly one journal residue class: a VERIFIED
+	// completed-* journal (exact completed-<32-hex> name, real directory,
+	// COMMIT marker matching the id). Such a transaction is committed and
+	// converged, so adopted binaries stay consistent with the manifest and the
+	// detector keeps attributing; the residue is only recorded as an advisory
+	// note. Pending-*, building-* (potentially another process's active Begin
+	// — see CheckReadable's race rationale), unknown, and malformed entries
+	// all keep failing closed: Load errors, the runner drops the detector, and
+	// registered binaries degrade to later detectors with a warning.
+	notes, err := statejournal.CheckReadable(filepath.Dir(env.HukouManifest))
+	if err != nil {
 		return fmt.Errorf("hukou state may be inconsistent: %w", err)
 	}
+	d.notes = notes
 	m, err := manifest.Load(env.HukouManifest)
 	if err != nil {
 		// A broken manifest must not fail the scan; the chain reports it

@@ -65,7 +65,7 @@ Tier 1(必须实现,各配 fixture 单测):
 
 | 来源 | 判定依据 |
 |---|---|
-| hukou | manifest 中登记的 Path/RealPath，作为链首权威来源；manifest 损坏只产生 warning，不中止 scan |
+| hukou | manifest 中登记的 Path/RealPath，作为链首权威来源；manifest 损坏只产生 warning，不中止 scan。事务残留：读路径仅放行**已验证的 `completed-*`**——名字精确为 `completed-<32位小写hex>`、Lstat 为真实目录（非软链）、目录内 COMMIT 标记与 ID 一致（即已提交且已收敛，只差删目录）；此时探测器照常归属，仅产出非致命 note（`stale journal residue; run a mutating command or repair to clean`），经 runner 的独立 notes 通道上报（不混入 warnings）。其余一律 fail-closed 降级（探测器从链中摘除→登记二进制回落 system/unknown 并写 warning）：`pending-*`（已发布未收敛，受保护路径可能在途）；`building-*`（可能是另一进程活跃 Begin 的可见窗口——单点检查覆盖不了整个读取周期，与遗弃残留不可区分，存在活跃写入者竞态）；unknown 及一切畸形名字（错误 ID 形状、大写 hex、软链目录、COMMIT 缺失或不匹配） |
 | brew | RealPath 落在 `$(brew --prefix)/Cellar/<formula>/<ver>/`(prefix 经 Env 注入,默认 /opt/homebrew 与 /usr/local 双查);从路径提取 formula+版本 |
 | macports | RealPath 前缀 /opt/local |
 | cargo | `~/.cargo/.crates2.json` 解析(包名/版本/来源 URL);兜底 `~/.cargo/bin` 路径前缀 |
@@ -102,7 +102,7 @@ Tier 2(时间允许尽量做,同样标准):opam(~/.opam)、ghcup/stack(~/.ghcup�
 2. 每个 Tier 1 探测器至少一个 fixture 单测(testdata/ 下伪目录结构;go 探测器用 testdata 里预编译的最小 Go 二进制或对 hukou 自身二进制做集成测试)
 3. `hukou scan` 在真实机器整 PATH 扫描 <5s;`--json` 输出可被 `python3 -m json.tool` 解析
 4. 无第三方依赖新增(cobra 之外);`internal/provenance/gobin.go` 保持 vendor 原样接线,不改其核心逻辑
-5. 表格输出末尾有汇总行:总数 / 来源数 / unknown 数 / shadowed 数
+5. 表格输出末尾有汇总行:总数 / 来源数 / unknown 数 / shadowed 数;汇总行（及可选 by source 明细）之后先逐行渲染 `Report.Warnings`（前缀 `warning:`，探测器降级等），再逐行渲染 `Report.Notes`（前缀 `note:`，加载成功探测器的非致命提示），与 `explain` 表风格一致，渲染循环的首个写错误向上返回;两通道各有独立 JSON 字段（`warnings`/`notes`），安全闸门只消费 warnings
 
 完成记录中的历史 green 不证明当前 HEAD；每次发布前仍须执行 `docs/07-testing-and-verification.md` 的全量门禁。
 

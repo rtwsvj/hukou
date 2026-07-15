@@ -22,7 +22,10 @@ func collectInventory(env provenance.Env, extraDirs []string) (output.Report, er
 	}
 
 	runner := provenance.DefaultRunner()
-	if loadWarnings := runner.Load(env); len(loadWarnings) > 0 {
+	// Warnings (detector degradation) and notes (non-fatal advisories from
+	// still-loaded detectors) stay in separate report channels.
+	loadWarnings, loadNotes := runner.Load(env)
+	if len(loadWarnings) > 0 {
 		result.Warnings = append(result.Warnings, loadWarnings...)
 	}
 
@@ -47,6 +50,7 @@ func collectInventory(env provenance.Env, extraDirs []string) (output.Report, er
 		ScanErrors:  result.Errors,
 		FileErrors:  result.FileErrors,
 		Warnings:    result.Warnings,
+		Notes:       loadNotes,
 		TotalWalked: len(result.Binaries),
 	}, nil
 }

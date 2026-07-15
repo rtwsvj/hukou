@@ -133,6 +133,8 @@ type Status struct {
 }
 
 // NeedsRecovery reports whether state-changing recovery or cleanup is needed.
+// Write paths (Begin) gate on this: any residue at all blocks a new mutation
+// so recovery runs first under the state lock.
 func (s Status) NeedsRecovery() bool {
 	return len(s.Building)+len(s.Pending)+len(s.Completed)+len(s.Unknown) > 0
 }
@@ -147,7 +149,10 @@ func (e *PendingError) Error() string {
 		len(e.Status.Building), len(e.Status.Pending), len(e.Status.Completed), len(e.Status.Unknown))
 }
 
-// CheckClean performs a strictly read-only pending-transaction check.
+// CheckClean performs a strictly read-only, fail-closed transaction check.
+// Any journal residue (building/pending/completed/unknown) is treated as an
+// error. Use it where a caller must refuse to proceed until the journal is
+// fully clean.
 func CheckClean(dataRoot string) error {
 	status, err := Inspect(dataRoot)
 	if err != nil {
@@ -157,6 +162,88 @@ func CheckClean(dataRoot string) error {
 		return &PendingError{Status: status}
 	}
 	return nil
+}
+
+// CheckReadable performs a narrower, read-path transaction check than
+// CheckClean. It is strictly read-only and never creates or modifies any path.
+//
+// Exactly one residue class is tolerated: a VERIFIED completed-* journal,
+// meaning all of (a) the entry name is exactly completed-<32-lowercase-hex-id>,
+// (b) Lstat reports a real directory (not a symlink), and (c) the directory
+// contains a valid COMMIT marker whose contents match the id. Such a journal
+// is committed and already converged; only its directory deletion remains, so
+// live state and the manifest are consistent. Verified completed residue is
+// reported as a non-fatal note the caller may surface as an advisory.
+//
+// Everything else fails closed with a *PendingError, exactly like CheckClean:
+//
+//   - pending-*: a published transaction may have live state mid-flight.
+//   - building-*: this check observes the journal at a single point in time
+//     and cannot cover the caller's whole read cycle. A .building-* entry may
+//     be the visible window of another process's ACTIVE Begin, which can
+//     publish (rename to pending-*) and start applying mutations while the
+//     caller is still reading, so an apparently abandoned building journal is
+//     indistinguishable from a live writer and must stay fail-closed.
+//   - unknown entries and any malformed name (wrong id shape, uppercase hex,
+//     symlinked directory, missing or mismatched COMMIT): corrupted or
+//     adversarial state that no read path may reason about.
+func CheckReadable(dataRoot string) (notes []string, err error) {
+	status, err := Inspect(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	if len(status.Building)+len(status.Pending)+len(status.Unknown) > 0 {
+		return nil, &PendingError{Status: status}
+	}
+	if len(status.Completed) == 0 {
+		return nil, nil
+	}
+	txRoot, err := transactionRoot(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range status.Completed {
+		if !isVerifiedCompletedJournal(txRoot, name) {
+			return nil, &PendingError{Status: status}
+		}
+	}
+	return []string{fmt.Sprintf(
+		"stale journal residue; run a mutating command or repair to clean (completed=%d)",
+		len(status.Completed))}, nil
+}
+
+// isVerifiedCompletedJournal reports whether name under txRoot is a genuine
+// committed-and-converged journal whose only unfinished work is directory
+// deletion: an exact completed-<32-lowercase-hex> name, a real directory, and
+// a valid COMMIT marker matching the id. Any uncertainty, including I/O
+// errors, counts as unverified so read paths stay fail-closed.
+func isVerifiedCompletedJournal(txRoot, name string) bool {
+	id := strings.TrimPrefix(name, completedPrefix)
+	if !isJournalID(id) {
+		return false
+	}
+	dir := filepath.Join(txRoot, name)
+	info, err := os.Lstat(dir)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false
+	}
+	committed, err := hasValidCommit(dir, id)
+	return err == nil && committed
+}
+
+// isJournalID reports whether s has the exact shape of a journal id as
+// produced by randomID: 32 lowercase hexadecimal characters.
+func isJournalID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Inspect inventories journal directories without creating or modifying any

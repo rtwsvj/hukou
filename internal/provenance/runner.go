@@ -57,21 +57,43 @@ func DefaultRunner() *Runner {
 	)
 }
 
-// Load calls Load(env) on every detector. A detector that returns error is
-// skipped (removed from the chain) and recorded as a warning; remaining
-// detectors continue. Never aborts the whole scan.
+// noteReporter is an optional Detector capability. After a successful Load, a
+// detector implementing it may expose non-fatal advisory notes that the Runner
+// surfaces without dropping the detector from the chain.
+type noteReporter interface {
+	Notes() []string
+}
+
+// Load calls Load(env) on every detector and returns two DELIBERATELY separate
+// channels:
+//
+//   - warnings: a detector's Load returned an error; the detector is skipped
+//     (removed from the chain) and its attributions are unavailable. Security
+//     gates that refuse to proceed on degraded provenance key on this slice.
+//   - notes: a detector loaded successfully but reported non-fatal advisories
+//     via noteReporter (e.g. verified stale journal residue). The detector
+//     stays in the chain and keeps attributing. Notes must never be folded
+//     into warnings: gates keying on warnings would otherwise let any
+//     detector's routine advisory veto unrelated operations such as adopt.
+//
+// Never aborts the whole scan.
 // Runner is not safe for concurrent use during Load or between Load and Match.
-func (r *Runner) Load(env Env) (warnings []string) {
+func (r *Runner) Load(env Env) (warnings, notes []string) {
 	loaded := make([]Detector, 0, len(r.detectors))
 	for _, d := range r.detectors {
 		if err := d.Load(env); err != nil {
 			warnings = append(warnings, fmt.Sprintf("detector %s load failed: %v", d.Name(), err))
 			continue
 		}
+		if nr, ok := d.(noteReporter); ok {
+			for _, note := range nr.Notes() {
+				notes = append(notes, fmt.Sprintf("detector %s: %s", d.Name(), note))
+			}
+		}
 		loaded = append(loaded, d)
 	}
 	r.detectors = loaded
-	return warnings
+	return warnings, notes
 }
 
 // Match runs the chain until a detector returns non-nil Attribution.

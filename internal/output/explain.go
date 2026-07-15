@@ -40,12 +40,16 @@ func NewExplainMatch(row Row) ExplainMatch {
 }
 
 // ExplainReport is the stable machine-readable model emitted by explain.
+// Notes is an additive optional field (schema_version stays 1): non-fatal
+// advisories from detectors that loaded successfully, kept apart from
+// Warnings, which signal detector degradation.
 type ExplainReport struct {
 	SchemaVersion int            `json:"schema_version"`
 	Query         string         `json:"query"`
 	Active        *ExplainMatch  `json:"active,omitempty"`
 	Matches       []ExplainMatch `json:"matches"`
 	Warnings      []string       `json:"warnings,omitempty"`
+	Notes         []string       `json:"notes,omitempty"`
 }
 
 func WriteExplainJSON(w io.Writer, report ExplainReport) error {
@@ -84,7 +88,14 @@ func WriteExplainTable(w io.Writer, report ExplainReport) error {
 		return err
 	}
 	for _, warning := range report.Warnings {
-		fmt.Fprintf(w, "warning: %s\n", sanitizeField(warning))
+		if _, err := fmt.Fprintf(w, "warning: %s\n", sanitizeField(warning)); err != nil {
+			return err
+		}
+	}
+	for _, note := range report.Notes {
+		if _, err := fmt.Fprintf(w, "note: %s\n", sanitizeField(note)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

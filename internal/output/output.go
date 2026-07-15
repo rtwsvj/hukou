@@ -22,12 +22,16 @@ type Row struct {
 
 // Report is the full scan output (table or JSON).
 type Report struct {
-	Rows        []Row            `json:"rows"`
-	Skipped     int              `json:"skipped"`
-	ScanErrors  []string         `json:"scan_errors,omitempty"`
-	FileErrors  []scan.FileError `json:"file_errors,omitempty"` // per-file path+reason (JSON only)
-	Warnings    []string         `json:"warnings,omitempty"`
-	TotalWalked int              `json:"total_walked"` // binaries before source filters
+	Rows       []Row            `json:"rows"`
+	Skipped    int              `json:"skipped"`
+	ScanErrors []string         `json:"scan_errors,omitempty"`
+	FileErrors []scan.FileError `json:"file_errors,omitempty"` // per-file path+reason (JSON only)
+	Warnings   []string         `json:"warnings,omitempty"`
+	// Notes are non-fatal advisories from detectors that loaded successfully
+	// (e.g. verified stale journal residue). They are kept apart from Warnings
+	// so gates keying on warnings are never tripped by routine advisories.
+	Notes       []string `json:"notes,omitempty"`
+	TotalWalked int      `json:"total_walked"` // binaries before source filters
 	// Summary is filled by Summarize / Write* helpers.
 	Summary Summary `json:"summary"`
 }
@@ -129,6 +133,23 @@ func WriteTable(w io.Writer, r Report) error {
 			parts = append(parts, fmt.Sprintf("%s=%d", n, r.Summary.Sources[n]))
 		}
 		fmt.Fprintf(w, "by source: %s\n", strings.Join(parts, " "))
+	}
+
+	// Non-fatal warnings and notes, one per line, after the summary. Warnings
+	// surface detector degradations (e.g. hukou removed from the chain due to
+	// pending transaction residue) that would otherwise be visible only in
+	// --json; notes carry advisories from detectors that still loaded. Style
+	// matches the explain table (see WriteExplainTable). Write errors are
+	// propagated: the first failure aborts rendering.
+	for _, warning := range r.Warnings {
+		if _, err := fmt.Fprintf(w, "warning: %s\n", sanitizeField(warning)); err != nil {
+			return err
+		}
+	}
+	for _, note := range r.Notes {
+		if _, err := fmt.Fprintf(w, "note: %s\n", sanitizeField(note)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
