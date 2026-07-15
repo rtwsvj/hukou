@@ -872,6 +872,8 @@ func requireRegularOrMissing(path string) error {
 }
 
 // Get returns the entry with the given name, or nil if not found.
+// Get is a pure linear scan and performs no writes, so concurrent read-only
+// lookups are safe.
 func (m *Manifest) Get(name string) *Entry {
 	idx := slices.IndexFunc(m.Entries, func(e Entry) bool {
 		return e.Name == name
