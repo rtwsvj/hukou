@@ -22,5 +22,6 @@
 - 2026-07-14：为公开准备加入 Apache-2.0 根许可证和第三方 notices；仓库保持 private，许可证落盘不等于公开或发布。
 - 2026-07-14：V0.3 先解释/预览再修改；跨管理器升级不进入 hukou，Topgrade 只负责串联各自独立的 manager。
 - 2026-07-14：manifest 提升到 v2，rollback/retention 只依据显式 lineage；repair 只开放 fingerprint 绑定的两个 action。
+- 2026-07-15：读路径事务残留检查（`transaction.CheckReadable`，卡 A）的两层 TOCTOU——①三重验证与调用方后续读取之间无原子性；②验证三步（名字/Lstat/COMMIT）彼此间可被并发替换——裁决为**记录接受**，不加读锁（Fable 裁决，Codex 复审引用）。理由：读路径是同用户诊断视图，不是安全边界，能与该检查竞态的写入者本就可写事务根、直接掌控状态；hukou 探测器对每个命中条目独立做 sha256 复核，归属结论不依赖该检查的时点正确性；写路径（`Begin`）保持全类别 fail-closed 且持 mutation lock。
 
 决策发生变化时，应新增 ADR 或把旧 ADR 标成 Superseded，不静默改写历史理由。

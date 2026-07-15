@@ -44,13 +44,14 @@ func buildExplainReport(query string, env provenance.Env) (output.ExplainReport,
 		Matches:       make([]output.ExplainMatch, 0),
 	}
 	if isPathQuery(query) {
-		row, warnings, err := explainPath(query, env)
+		row, warnings, notes, err := explainPath(query, env)
 		if err != nil {
 			return report, err
 		}
 		report.Matches = append(report.Matches, output.NewExplainMatch(row))
 		report.Active = &report.Matches[0]
 		report.Warnings = warnings
+		report.Notes = notes
 		return report, nil
 	}
 
@@ -74,6 +75,7 @@ func buildExplainReport(query string, env provenance.Env) (output.ExplainReport,
 	}
 	report.Warnings = append(report.Warnings, inventory.Warnings...)
 	report.Warnings = append(report.Warnings, inventory.ScanErrors...)
+	report.Notes = append(report.Notes, inventory.Notes...)
 	return report, nil
 }
 
@@ -81,20 +83,20 @@ func isPathQuery(query string) bool {
 	return filepath.IsAbs(query) || strings.ContainsAny(query, `/\\`)
 }
 
-func explainPath(query string, env provenance.Env) (output.Row, []string, error) {
+func explainPath(query string, env provenance.Env) (output.Row, []string, []string, error) {
 	path, err := filepath.Abs(query)
 	if err != nil {
-		return output.Row{}, nil, err
+		return output.Row{}, nil, nil, err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return output.Row{}, nil, fmt.Errorf("stat %s: %w", path, err)
+		return output.Row{}, nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return output.Row{}, nil, fmt.Errorf("%s is not a regular file", path)
+		return output.Row{}, nil, nil, fmt.Errorf("%s is not a regular file", path)
 	}
 	if !scan.IsExecutable(info.Mode()) {
-		return output.Row{}, nil, fmt.Errorf("%s is not executable", path)
+		return output.Row{}, nil, nil, fmt.Errorf("%s is not executable", path)
 	}
 	kind, kindErr := scan.DetectKind(path)
 	evidence := ""
@@ -114,7 +116,7 @@ func explainPath(query string, env provenance.Env) (output.Row, []string, error)
 		Evidence: evidence,
 	}
 	runner := provenance.DefaultRunner()
-	warnings := runner.Load(env)
+	warnings, notes := runner.Load(env)
 	if evalErr != nil {
 		warnings = append(warnings, "eval symlinks: "+evalErr.Error())
 	}
@@ -126,5 +128,5 @@ func explainPath(query string, env provenance.Env) (output.Row, []string, error)
 			Evidence:   "no detector matched",
 		}
 	}
-	return output.Row{Binary: binary, Attribution: *attribution}, warnings, nil
+	return output.Row{Binary: binary, Attribution: *attribution}, warnings, notes, nil
 }

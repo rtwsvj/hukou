@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -53,6 +54,9 @@ func sampleReport() Report {
 		Warnings: []string{
 			"empty PATH segment skipped (deliberate: not treated as current directory, unlike POSIX)",
 		},
+		Notes: []string{
+			"detector hukou: stale journal residue; run a mutating command or repair to clean (completed=1)",
+		},
 	}
 }
 
@@ -79,6 +83,114 @@ func TestWriteTable_summary(t *testing.T) {
 		t.Fatalf("table must not dump file error paths:\n%s", out)
 	}
 }
+
+// Card A: WriteTable renders Report.Warnings and Report.Notes after the
+// summary so degraded detectors (warnings) and non-fatal advisories (notes)
+// are visible in the default table, not only in --json. The two channels keep
+// distinct prefixes.
+func TestWriteTable_rendersWarningsAndNotes(t *testing.T) {
+	r := sampleReport()
+	r.Warnings = []string{
+		"detector hukou load failed: hukou state may be inconsistent",
+		"empty PATH segment skipped",
+	}
+	r.Notes = []string{
+		"detector hukou: stale journal residue; run a mutating command or repair to clean (completed=1)",
+	}
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, w := range r.Warnings {
+		if !strings.Contains(out, "warning: "+w) {
+			t.Fatalf("missing rendered warning %q in:\n%s", w, out)
+		}
+	}
+	for _, n := range r.Notes {
+		if !strings.Contains(out, "note: "+n) {
+			t.Fatalf("missing rendered note %q in:\n%s", n, out)
+		}
+	}
+	// Layout: summary line first, then warnings, then notes (explain-aligned).
+	if strings.Index(out, "summary:") > strings.Index(out, "warning:") {
+		t.Fatalf("warnings must render after the summary line:\n%s", out)
+	}
+	if strings.Index(out, "warning:") > strings.Index(out, "note:") {
+		t.Fatalf("notes must render after warnings:\n%s", out)
+	}
+	// A note must never be rendered with the warning prefix.
+	if strings.Contains(out, "warning: detector hukou: stale journal residue") {
+		t.Fatalf("note leaked into the warning prefix:\n%s", out)
+	}
+}
+
+// Card A: warning and note text is sanitized like other free-text columns so
+// control chars / ANSI cannot corrupt the terminal.
+func TestWriteTable_sanitizesWarningsAndNotes(t *testing.T) {
+	r := Report{
+		Warnings: []string{"bad\x1b[31mwarning\twith\ncontrol"},
+		Notes:    []string{"bad\x1b[31mnote\twith\ncontrol"},
+	}
+	var buf bytes.Buffer
+	if err := WriteTable(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("ANSI escape leaked into output:\n%q", out)
+	}
+	// Only non-printable runes (ESC, tab, newline) become '?'; the printable
+	// "[31m" tail survives, matching sanitizeField's contract.
+	if !strings.Contains(out, "warning: bad?[31mwarning?with?control") {
+		t.Fatalf("warning not sanitized as expected:\n%q", out)
+	}
+	if !strings.Contains(out, "note: bad?[31mnote?with?control") {
+		t.Fatalf("note not sanitized as expected:\n%q", out)
+	}
+}
+
+// Card A rework: the render loops must not swallow writer failures; the first
+// write error is returned to the caller.
+func TestWriteTable_propagatesWriteErrors(t *testing.T) {
+	r := Report{
+		Warnings: []string{"w1"},
+		Notes:    []string{"n1"},
+	}
+	// Grow the limit until the failure lands inside the warning/note loops.
+	full := false
+	for limit := 1; limit < 1<<16; limit *= 2 {
+		w := &limitedWriter{limit: limit}
+		err := WriteTable(w, r)
+		if err == nil {
+			if !strings.Contains(w.buf.String(), "note: n1") {
+				t.Fatalf("nil error but note missing at limit=%d:\n%s", limit, w.buf.String())
+			}
+			full = true
+			break
+		}
+		if !strings.Contains(err.Error(), "writer full") {
+			t.Fatalf("unexpected error at limit=%d: %v", limit, err)
+		}
+	}
+	if !full {
+		t.Fatal("WriteTable never succeeded even with a large writer")
+	}
+}
+
+type limitedWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.buf.Len()+len(p) > w.limit {
+		return 0, errTestWriterFull
+	}
+	return w.buf.Write(p)
+}
+
+var errTestWriterFull = errors.New("writer full")
 
 func TestWriteJSON_roundtrip(t *testing.T) {
 	var buf bytes.Buffer
@@ -113,6 +225,10 @@ func TestWriteJSON_roundtrip(t *testing.T) {
 	}
 	if len(decoded.Warnings) != 1 {
 		t.Fatalf("warnings=%v", decoded.Warnings)
+	}
+	// Card A rework: notes travel on their own JSON field, apart from warnings.
+	if len(decoded.Notes) != 1 || !strings.Contains(decoded.Notes[0], "stale journal residue") {
+		t.Fatalf("notes=%v", decoded.Notes)
 	}
 }
 

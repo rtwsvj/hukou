@@ -55,7 +55,7 @@ func TestUnknownDetector(t *testing.T) {
 
 func TestRunner_chain(t *testing.T) {
 	r := DefaultRunner()
-	_ = r.Load(DefaultEnv())
+	_, _ = r.Load(DefaultEnv())
 	// system first
 	a := r.Match(scan.Binary{Name: "ls", Path: "/bin/ls", RealPath: "/bin/ls"})
 	if a == nil || a.Source != "system" {
@@ -127,7 +127,7 @@ func TestRunner_LoadSkipsFailedDetector(t *testing.T) {
 		&failingDetector{name: "bad"},
 		NewUnknownDetector(),
 	)
-	warns := r.Load(Env{})
+	warns, _ := r.Load(Env{})
 	if len(warns) != 1 || !strings.Contains(warns[0], "bad") || !strings.Contains(warns[0], "load boom") {
 		t.Fatalf("warnings=%v", warns)
 	}

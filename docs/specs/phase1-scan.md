@@ -65,7 +65,7 @@ Tier 1(必须实现,各配 fixture 单测):
 
 | 来源 | 判定依据 |
 |---|---|
-| hukou | manifest 中登记的 Path/RealPath，作为链首权威来源；manifest 损坏只产生 warning，不中止 scan |
+| hukou | manifest 中登记的 Path/RealPath，作为链首权威来源；manifest 损坏只产生 warning，不中止 scan。事务残留：读路径仅放行**已验证的 `completed-*`**——名字精确为 `completed-<32位小写hex>`、Lstat 为真实目录（非软链）、目录内 COMMIT 标记与 ID 一致（即已提交且已收敛，只差删目录）；此时探测器照常归属，仅产出非致命 note（`stale journal residue; run a mutating command or repair to clean`），经 runner 的独立 notes 通道上报（不混入 warnings）。其余一律 fail-closed 降级（探测器从链中摘除→登记二进制回落 system/unknown 并写 warning）：`pending-*`（已发布未收敛，受保护路径可能在途）；`building-*`（可能是另一进程活跃 Begin 的可见窗口——单点检查覆盖不了整个读取周期，与遗弃残留不可区分，存在活跃写入者竞态）；unknown 及一切畸形名字（错误 ID 形状、大写 hex、软链目录、COMMIT 缺失或不匹配） |
 | brew | RealPath 落在 `$(brew --prefix)/Cellar/<formula>/<ver>/`(prefix 经 Env 注入,默认 /opt/homebrew 与 /usr/local 双查);从路径提取 formula+版本 |
 | macports | RealPath 前缀 /opt/local |
 | cargo | `~/.cargo/.crates2.json` 解析(包名/版本/来源 URL);兜底 `~/.cargo/bin` 路径前缀 |
@@ -102,7 +102,7 @@ Tier 2(时间允许尽量做,同样标准):opam(~/.opam)、ghcup/stack(~/.ghcup�
 2. 每个 Tier 1 探测器至少一个 fixture 单测(testdata/ 下伪目录结构;go 探测器用 testdata 里预编译的最小 Go 二进制或对 hukou 自身二进制做集成测试)
 3. `hukou scan` 在真实机器整 PATH 扫描 <5s;`--json` 输出可被 `python3 -m json.tool` 解析
 4. 无第三方依赖新增(cobra 之外);`internal/provenance/gobin.go` 保持 vendor 原样接线,不改其核心逻辑
-5. 表格输出末尾有汇总行:总数 / 来源数 / unknown 数 / shadowed 数
+5. 表格输出末尾有汇总行:总数 / 来源数 / unknown 数 / shadowed 数;汇总行（及可选 by source 明细）之后先逐行渲染 `Report.Warnings`（前缀 `warning:`，探测器降级等），再逐行渲染 `Report.Notes`（前缀 `note:`，加载成功探测器的非致命提示），与 `explain` 表风格一致，渲染循环的首个写错误向上返回;两通道各有独立 JSON 字段（`warnings`/`notes`），安全闸门只消费 warnings
 
 完成记录中的历史 green 不证明当前 HEAD；每次发布前仍须执行 `docs/07-testing-and-verification.md` 的全量门禁。
 
@@ -114,7 +114,7 @@ Tier 2(时间允许尽量做,同样标准):opam(~/.opam)、ghcup/stack(~/.ghcup�
 
 ## 已知限制
 
-1. **TOCTOU**：`Walk` 中 `Stat` 与后续 `Open`/`DetectKind` 之间存在时间窗；扫描过程中文件被替换、删除或改权限时，结果可能与最终打开时不一致（记入 `FileErrors` 或 `Kind=Other`），不做重试或锁。
+1. **TOCTOU**：`Walk` 中 `Stat` 与后续 `Open`/`DetectKind` 之间存在时间窗；扫描过程中文件被替换、删除或改权限时，结果可能与最终打开时不一致（记入 `FileErrors` 或 `Kind=Other`），不做重试或锁。事务残留检查（`transaction.CheckReadable`）存在同款窗口——三重验证与调用方后续读取之间、以及验证三步（名字/Lstat/COMMIT）彼此之间均无原子性——已记录接受，不加读锁（2026-07-15 裁决，见 `docs/09-decision-log.md`）：读路径是同用户诊断视图而非安全边界，hukou 探测器对每个命中条目独立做 sha256 复核，归属结论不依赖该检查的时点正确性；写路径（`Begin`）保持全类别 fail-closed 且持 mutation lock。
 2. **npm `.bin` 包装脚本无法反查包名**：全局 `node_modules/.bin` 下的 shim 若无法解析到真实包目录，只能回退为二进制名，不能可靠还原 npm 包名。
 3. **nvm / 自定义 npm prefix 未覆盖**：仅识别 `npm_config_prefix` / `NPM_CONFIG_PREFIX` 与 brew 前缀下的全局布局；nvm 版本目录、用户手改 prefix 等未枚举。
 4. **PATH 空段刻意不按 POSIX 当作 CWD**：POSIX 将 `PATH` 中空段视为当前目录；hukou 跳过空段并写入 `Report.Warnings`（与 shell 语义不一致，属有意选择）。
