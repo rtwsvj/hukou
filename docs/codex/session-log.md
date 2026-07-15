@@ -184,3 +184,9 @@
 - Snapshot Run `29268603489` 与 tag Run `29268975174`：同一计费原因在 0 step 前失败。
 - Fallback: 临时启动原本停止的 Colima，用两个全新 `golang:1.26.5-bookworm` 容器分别运行正式 `scripts/release.sh`；四个归档逐字节相同，4/4 checksum 与双平台 buildinfo smoke 通过；Colima 已恢复停止。
 - Release: `https://github.com/rtwsvj/hukou/releases/tag/v0.1.0`，非 draft/prerelease，四个 tar.gz + `checksums.txt`；远端重新下载与本地产物逐字节一致。
+
+### 2026-07-15 六路评审与 v0.3 RC 并入 main(Fable 主持)
+
+- 评审阵容:4×Opus(事务恢复/声称核验/发布工程/命令契约)+ Kimi 盲区 + ocr 双模型;Fable 终审独立复跑 641/21 全绿。
+- Verdict: pass;报告 `verification-reports/2026-07-15-fable-six-lane-refactor-review.md`。
+- RC 分支并入 main(1d37840)。遗留项立卡 A-D,Eric 批准四卡并行(Opus 执行 + Codex 核验)。
