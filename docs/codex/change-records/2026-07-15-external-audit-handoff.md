@@ -7,9 +7,11 @@
 - Branch: `codex/hukou-v0.3-private-rc`
 - Base Documentation Commit: `2cd0467098700b899b8b87ee627eb2b75412f397`
 - Code Subject: `1fa45a0d8473446e3208490f037aef924abea181`
+- Audit Package Content Commit: `b60e890a6a5b9bbb9ad8f18bd96c8fbdf7b6139e`
 - Related Execution: `../execution-reports/2026-07-15-external-audit-handoff.md`
 - Status: implemented
-- Verification Status: pending immutable handoff commit and final document checks
+- Verification Status: pass for handoff documentation content；external product audit pending
+- Related Verification: `../verification-reports/2026-07-15-external-audit-handoff.md`
 - Mutation Boundary: documentation only
 
 ## 用户请求
@@ -66,6 +68,7 @@
 | Git status/log/diff/show | pass | 固定 base、subject、original docs、diff 和 branch 状态 |
 | GitHub repo/PR/run/release/tag read-only queries | pass | private；PR #6 open/draft/unmerged；v0.2.0 latest；无 v0.3 tag |
 | Markdown relative-link scan | pass：77 Markdown / 115 relative targets / 0 missing | 包含未提交 audit package 与本 change record |
+| Final Markdown relative-link scan | pass：78 Markdown / 115 relative targets / 0 missing | 包含新增 verification report |
 | `gitleaks detect --no-git --source docs/audit --redact --no-banner` | pass | 41.06 KB；no leaks found |
 | Tier D / isolated smoke fenced Bash `bash -n` | pass | 两段示例语法有效；没有执行构建或 smoke |
 | `git diff --check` | pass | 无 whitespace error |
@@ -89,7 +92,11 @@
 
 ## 未完成事项
 
-- 创建 immutable handoff content commit。
-- 对该 commit 做最终 Markdown/link/secret/diff/status 核验并保存 verification report。
 - 推送分支，在 PR #6 中发布给外部审计员的入口和最终 handoff SHA。
 - 外部审计本身尚未开始；任何 finding 状态均不得预填为 pass。
+
+## Verification closeout
+
+- Immutable handoff content commit: `b60e890a6a5b9bbb9ad8f18bd96c8fbdf7b6139e`。
+- Final document checks: pass；详见 related verification report。
+- 本 pass 只验证交接包完整性、可发现性、边界和复现说明，不验证 V0.3 业务代码。

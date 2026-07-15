@@ -10,7 +10,8 @@ V0.3 private release-candidate scope, its evidence, and its known gaps.
 | Base | `bd4faa32d9b5b604b1b224f97fe891ed670f3742` | Current `main` before V0.3 |
 | Code subject | `1fa45a0d8473446e3208490f037aef924abea181` | V0.3 implementation and SBOM workflow fix |
 | Original evidence-docs commit | `2cd0467098700b899b8b87ee627eb2b75412f397` | Evidence recorded after the fixed code run, before this audit package |
-| Audit-package commit | Capture the current PR head after fetching | Contains `AUDIT.md` and `docs/audit/`; record its full SHA in the review |
+| Audit-package content baseline | `b60e890a6a5b9bbb9ad8f18bd96c8fbdf7b6139e` | First immutable commit containing this complete handoff package |
+| Review-time documentation head | Capture the current PR head after fetching | Record later documentation/verification-only commits separately |
 | Review branch | `codex/hukou-v0.3-private-rc` | Moving branch; do not use it as an immutable subject |
 | Draft pull request | [#6](https://github.com/rtwsvj/hukou/pull/6) | Private, open, draft, and unmerged at handoff time |
 

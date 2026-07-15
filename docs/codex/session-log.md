@@ -5,6 +5,7 @@
 - Branch: `codex/hukou-v0.3-private-rc`
 - Code Subject: `1fa45a0d8473446e3208490f037aef924abea181`
 - Original Evidence Docs: `2cd0467098700b899b8b87ee627eb2b75412f397`
+- Audit Package Content: `b60e890a6a5b9bbb9ad8f18bd96c8fbdf7b6139e`
 - Draft PR: `https://github.com/rtwsvj/hukou/pull/6`
 - Execution Report: `execution-reports/2026-07-15-external-audit-handoff.md`
 - Change Record: `change-records/2026-07-15-external-audit-handoff.md`

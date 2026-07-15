@@ -14,7 +14,8 @@ gaps.
 | Base | `bd4faa32d9b5b604b1b224f97fe891ed670f3742` |
 | Code subject | `1fa45a0d8473446e3208490f037aef924abea181` |
 | Original evidence-docs commit | `2cd0467098700b899b8b87ee627eb2b75412f397` |
-| Audit-package commit | Capture `origin/codex/hukou-v0.3-private-rc` after fetching and record its full SHA |
+| Audit-package content baseline | `b60e890a6a5b9bbb9ad8f18bd96c8fbdf7b6139e` |
+| Review-time documentation head | Capture `origin/codex/hukou-v0.3-private-rc` after fetching and record its full SHA |
 | Branch | `codex/hukou-v0.3-private-rc` |
 | Draft PR | <https://github.com/rtwsvj/hukou/pull/6> |
 | Official release | `v0.2.0` |
