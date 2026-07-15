@@ -87,9 +87,12 @@ die() {
 # (the per-platform archives), so the archive itself -- not checksums.txt --
 # is the attested subject. This is an out-of-band trust anchor beyond
 # transport TLS: it binds the archive to this repository's release workflow
-# rather than to whatever the transport served. Verification is pinned with
-# --signer-workflow because --repo alone would accept an attestation produced
-# by any workflow in the repository.
+# rather than to whatever the transport served. The signer identity is
+# enforced with an anchored --cert-identity-regex over the certificate
+# SubjectAlternativeName: --repo alone would accept an attestation produced by
+# any workflow in the repository, and gh's --signer-workflow only applies an
+# unescaped, unanchored prefix regex to the SAN, so neither pins the identity
+# precisely.
 #
 # When the gh CLI is missing or unauthenticated the installer falls back to
 # transport trust only (HTTPS plus the SHA-256 comparison against a
@@ -117,9 +120,14 @@ verify_attestation() {
     return 0
   fi
 
+  # Anchor the certificate identity to this repository's release workflow
+  # running for a release tag ref. Regex metacharacters in a mirror-supplied
+  # HUKOU_REPO are escaped so the identity stays a literal match.
+  attestation_repo_pattern=$(printf '%s' "$REPO" | sed 's/[][\.*^$+?{}|()]/\\&/g')
+  attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*$'
   gh attestation verify "$attestation_subject" \
     --repo "$REPO" \
-    --signer-workflow "${REPO}/.github/workflows/release.yml" >/dev/null 2>&1 \
+    --cert-identity-regex "$attestation_identity_regex" >/dev/null 2>&1 \
     || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
   printf 'Verified build-provenance attestation for %s (%s)\n' "${attestation_subject##*/}" "$REPO"
 }

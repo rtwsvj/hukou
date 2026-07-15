@@ -28,7 +28,8 @@ esac
 #
 # The mock validates the real invocation shape: the subcommand must be
 # `attestation verify`, the subject must be an existing release archive, and
-# --repo/--signer-workflow must carry the expected values. Any unknown
+# --repo/--cert-identity-regex must carry the expected values (the identity
+# regex must be the anchored release-workflow SAN pattern). Any unknown
 # subcommand or argument mismatch fails, so a passing install also proves the
 # installer called gh correctly. The raw argument line is appended to
 # GH_MOCK_LOG when set, letting tests assert the exact invocation.
@@ -45,7 +46,7 @@ if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
     printf '%s\n' "$*" >>"$GH_MOCK_LOG"
   fi
   shift 2
-  subject= repo= signer=
+  subject= repo= identity_regex=
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --repo)
@@ -53,9 +54,9 @@ if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
         repo=$2
         shift 2
         ;;
-      --signer-workflow)
-        [ "$#" -ge 2 ] || { printf 'gh-mock: --signer-workflow requires a value\n' >&2; exit 1; }
-        signer=$2
+      --cert-identity-regex)
+        [ "$#" -ge 2 ] || { printf 'gh-mock: --cert-identity-regex requires a value\n' >&2; exit 1; }
+        identity_regex=$2
         shift 2
         ;;
       -*)
@@ -79,8 +80,12 @@ if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
     printf 'gh-mock: unexpected --repo: %s\n' "$repo" >&2
     exit 1
   fi
-  if [ "$signer" != "${GH_MOCK_EXPECT_SIGNER:-rtwsvj/hukou/.github/workflows/release.yml}" ]; then
-    printf 'gh-mock: unexpected --signer-workflow: %s\n' "$signer" >&2
+  expected_identity_regex='^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*$'
+  if [ -n "${GH_MOCK_EXPECT_IDENTITY_REGEX:-}" ]; then
+    expected_identity_regex=$GH_MOCK_EXPECT_IDENTITY_REGEX
+  fi
+  if [ "$identity_regex" != "$expected_identity_regex" ]; then
+    printf 'gh-mock: unexpected --cert-identity-regex: %s\n' "$identity_regex" >&2
     exit 1
   fi
   [ "${GH_MOCK_VERIFY:-fail}" = pass ] && exit 0
@@ -424,7 +429,7 @@ REAL_TAR=$(command -v tar)
 
 # Pass: authenticated gh with a valid attestation installs normally, and the
 # recorded invocation must verify the archive subject (not checksums.txt) with
-# the pinned --repo and --signer-workflow values.
+# the pinned --repo and anchored --cert-identity-regex values.
 ATTEST_PASS_PREFIX=${TMP}/attest-pass-prefix
 ATTEST_PASS_LOG=${TMP}/attest-pass-gh.log
 GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$ATTEST_PASS_LOG" \
@@ -433,7 +438,7 @@ GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$ATTEST_PASS_LOG" \
 [ "$("${ATTEST_PASS_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
 [ "$(wc -l <"$ATTEST_PASS_LOG" | tr -d ' ')" = 1 ]
 case "$(cat "$ATTEST_PASS_LOG")" in
-  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --signer-workflow rtwsvj/hukou/.github/workflows/release.yml") ;;
+  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*\$") ;;
   *)
     printf 'unexpected gh attestation invocation: %s\n' "$(cat "$ATTEST_PASS_LOG")" >&2
     exit 1

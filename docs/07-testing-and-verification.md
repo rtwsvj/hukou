@@ -115,7 +115,7 @@ V0.3 还必须覆盖：
   no-replace 与 force `rename(2)`，Linux 无 Perl时覆盖 `ln -T`/`mv -T` fallback，
   并测试 directory、symlink-to-directory 与预检后竞争；dry-run 零写。
 - installer attestation：严格校验实参的 gh mock（subject 必须是已下载的 archive，
-  `--repo`/`--signer-workflow` 值钉死）覆盖 pass/fail/missing 三态与
+  `--repo` 与锚定的 `--cert-identity-regex` 值钉死）覆盖 pass/fail/missing 三态与
   `HUKOU_REQUIRE_ATTESTATION` 矩阵；非法取值 fail loud；tar spy 断言验证失败
   发生在任何解压/安装之前（无 tar 调用、无 prefix、无临时安装文件）。
 - release archive 包含 LICENSE、THIRD_PARTY_NOTICES、双语 README、LICENSES，SBOM 与 checksums 对应固定 commit。
