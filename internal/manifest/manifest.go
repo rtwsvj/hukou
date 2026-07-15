@@ -101,23 +101,6 @@ type Manifest struct {
 	SchemaVersion int             `json:"schema_version"`
 	Retention     RetentionPolicy `json:"retention"`
 	Entries       []Entry         `json:"entries"`
-
-	// index maps an entry Name to its position in Entries (first occurrence
-	// wins, mirroring the linear scan it accelerates). It is an unexported,
-	// never-serialized accelerator with two hard rules:
-	//
-	//  1. Read paths never write it. Get is strictly read-only, so concurrent
-	//     read-only use of a loaded manifest is race-free. The index is built
-	//     eagerly by Load/Decode/Clone and maintained synchronously by the
-	//     mutating methods Put and Remove (whose callers already serialize
-	//     mutations under the state lock).
-	//  2. It is advisory, never authoritative. Every index hit is re-verified
-	//     against Entries before use, and any miss falls back to the original
-	//     linear scan. Code that manipulates the exported Entries slice
-	//     directly (or constructs a Manifest literal, leaving index nil)
-	//     therefore degrades to the exact pre-index behavior instead of ever
-	//     observing a stale or wrong lookup.
-	index map[string]int
 }
 
 // manifestEnvelope keeps schema-specific fields opaque until schema_version
@@ -159,13 +142,11 @@ func Load(path string) (*Manifest, error) {
 	data, _, err := readRegularFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			empty := &Manifest{
+			return &Manifest{
 				SchemaVersion: CurrentSchemaVersion,
 				Retention:     DefaultRetentionPolicy(),
 				Entries:       make([]Entry, 0),
-			}
-			empty.reindex()
-			return empty, nil
+			}, nil
 		}
 		return nil, err
 	}
@@ -195,9 +176,6 @@ func Decode(data []byte) (*Manifest, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
-	// Build the lookup accelerator eagerly on the fully validated document so
-	// later concurrent read-only Gets never have to write manifest state.
-	m.reindex()
 	return m, nil
 }
 
@@ -668,9 +646,6 @@ func (m *Manifest) Clone() *Manifest {
 	for i, entry := range m.Entries {
 		clone.Entries[i] = cloneEntry(entry)
 	}
-	// Build a fresh accelerator against the cloned Entries slice; sharing the
-	// source map would alias positions across two independently mutable slices.
-	clone.reindex()
 	return &clone
 }
 
@@ -896,56 +871,13 @@ func requireRegularOrMissing(path string) error {
 	return nil
 }
 
-// buildIndex constructs the name->position accelerator for entries. It
-// preserves the first-occurrence semantics of the slices.IndexFunc scan it
-// accelerates, so a transiently duplicated name (rejected by Validate, but
-// observable before it runs) resolves to the same entry it did before.
-func buildIndex(entries []Entry) map[string]int {
-	index := make(map[string]int, len(entries))
-	for i := range entries {
-		if _, ok := index[entries[i].Name]; !ok {
-			index[entries[i].Name] = i
-		}
-	}
-	return index
-}
-
-// reindex eagerly rebuilds the accelerator from the current Entries slice.
-// Only construction (Load/Decode/Clone) and the mutating methods (Put/Remove)
-// call it; read paths must stay write-free.
-func (m *Manifest) reindex() {
-	m.index = buildIndex(m.Entries)
-}
-
-// indexedHit returns the verified position of name, or -1 when the index
-// cannot prove a hit. It is strictly read-only: a nil index (manifest literal,
-// lenient json.Unmarshal) simply never hits, and a hit is trusted only after
-// re-checking the referenced entry's Name against the live Entries slice, so
-// external mutation of Entries can never surface a stale position.
-func (m *Manifest) indexedHit(name string) int {
-	idx, ok := m.index[name]
-	if !ok || idx < 0 || idx >= len(m.Entries) || m.Entries[idx].Name != name {
-		return -1
-	}
-	return idx
-}
-
-// locate returns the position of name using the verified index fast path and
-// falling back to the authoritative linear scan on any miss.
-func (m *Manifest) locate(name string) int {
-	if idx := m.indexedHit(name); idx >= 0 {
-		return idx
-	}
-	return slices.IndexFunc(m.Entries, func(e Entry) bool {
+// Get returns the entry with the given name, or nil if not found.
+// Get is a pure linear scan and performs no writes, so concurrent read-only
+// lookups are safe.
+func (m *Manifest) Get(name string) *Entry {
+	idx := slices.IndexFunc(m.Entries, func(e Entry) bool {
 		return e.Name == name
 	})
-}
-
-// Get returns the entry with the given name, or nil if not found.
-// Get never mutates the manifest (including the internal index), so
-// concurrent read-only lookups on a loaded manifest are safe.
-func (m *Manifest) Get(name string) *Entry {
-	idx := m.locate(name)
 	if idx < 0 {
 		return nil
 	}
@@ -954,29 +886,28 @@ func (m *Manifest) Get(name string) *Entry {
 
 // Put inserts or replaces an entry identified by Name.
 // If an entry with the same Name exists it is replaced in place;
-// otherwise the entry is appended. The internal index is rebuilt
-// synchronously so subsequent reads stay lock-free.
+// otherwise the entry is appended.
 func (m *Manifest) Put(entry Entry) {
 	entry = cloneEntry(entry)
-	idx := m.locate(entry.Name)
+	idx := slices.IndexFunc(m.Entries, func(e Entry) bool {
+		return e.Name == entry.Name
+	})
 	if idx >= 0 {
 		m.Entries[idx] = entry
-	} else {
-		m.Entries = append(m.Entries, entry)
+		return
 	}
-	m.reindex()
+	m.Entries = append(m.Entries, entry)
 }
 
 // Remove deletes the entry with the given name.
 // It returns true if an entry was removed, false if it did not exist.
-// Deletion shifts every later position, so the index is rebuilt eagerly;
-// Remove is O(n), not O(1).
 func (m *Manifest) Remove(name string) bool {
-	idx := m.locate(name)
+	idx := slices.IndexFunc(m.Entries, func(e Entry) bool {
+		return e.Name == name
+	})
 	if idx < 0 {
 		return false
 	}
 	m.Entries = slices.Delete(m.Entries, idx, idx+1)
-	m.reindex()
 	return true
 }

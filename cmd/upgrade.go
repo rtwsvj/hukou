@@ -26,6 +26,14 @@ var (
 	upgradeAsset  string
 )
 
+// upgradeTestHookAfterStoreNewVersion, when non-nil, runs immediately after
+// the new release binary has been committed to the immutable store and before
+// any subsequent validation or transaction capture. It exists exclusively so
+// adversarial tests can inject deterministically inside that window (for
+// example, tampering with the just-stored artifact) while driving the real
+// upgrade flow end to end. Production code never sets it.
+var upgradeTestHookAfterStoreNewVersion func(name, tag string)
+
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade [name ...]",
 	Short: "Upgrade adopted tools from GitHub releases",
@@ -99,14 +107,29 @@ func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun boo
 		}
 	}
 
+	// Deduplicate targets by name so a repeated argument cannot make a later
+	// iteration operate on a snapshot this batch already upgraded.
+	// (--all targets come from a validated manifest and are already unique.)
+	seen := make(map[string]struct{}, len(targets))
+	unique := targets[:0]
+	for _, e := range targets {
+		if _, dup := seen[e.Name]; dup {
+			continue
+		}
+		seen[e.Name] = struct{}{}
+		unique = append(unique, e)
+	}
+	targets = unique
+
 	var failures []error
 	for _, e := range targets {
-		// Re-load entry pointer from manifest so concurrent-looking updates
-		// within the loop see the latest state after each successful upgrade.
+		// Each snapshot entry is authoritative for its own upgrade: upgradeOne
+		// mutates only the entry it was given (and that entry's manifest
+		// record), so no earlier iteration can invalidate this copy. Holding
+		// the copy directly avoids one m.Get linear scan per target inside the
+		// batch loop; a failure that leaves unclean transaction state still
+		// stops the batch below.
 		entry := e
-		if live := m.Get(e.Name); live != nil {
-			entry = *live
-		}
 		if err := upgradeOne(stdout, stderr, s, client, m, &entry, dryRun, assetFilter, save); err != nil {
 			fmt.Fprintf(stderr, "Warning: failed to upgrade %s: %v\n", entry.Name, err)
 			failure := fmt.Errorf("%s: %w", entry.Name, err)
@@ -251,6 +274,9 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	newVersionSHA, err := s.PutWithDigest(e.Name, release.TagName, extractedPath)
 	if err != nil {
 		return fmt.Errorf("store: %w", err)
+	}
+	if upgradeTestHookAfterStoreNewVersion != nil {
+		upgradeTestHookAfterStoreNewVersion(e.Name, release.TagName)
 	}
 
 	oldTag := e.Tag

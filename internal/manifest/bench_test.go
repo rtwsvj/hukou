@@ -1,95 +1,57 @@
-package manifest
+package manifest_test
 
 import (
 	"fmt"
-	"slices"
 	"testing"
+
+	"github.com/rtwsvj/hukou/internal/manifest"
 )
 
-// benchManifest builds a manifest with n uniquely named entries. Get only
-// reads Name, so the entries are intentionally minimal. The index starts nil,
-// exactly like a hand-constructed literal; each benchmark below sets the index
-// state it wants to measure.
-func benchManifest(n int) *Manifest {
-	entries := make([]Entry, n)
+// benchManifest builds a manifest with n uniquely named entries. The
+// benchmarks below only exercise Get/Put, so the entries are minimal.
+func benchManifest(n int) *manifest.Manifest {
+	entries := make([]manifest.Entry, n)
 	for i := range entries {
-		entries[i] = Entry{Name: fmt.Sprintf("tool-%04d", i)}
+		entries[i] = manifest.Entry{Name: fmt.Sprintf("tool-%04d", i)}
 	}
-	return &Manifest{
-		SchemaVersion: CurrentSchemaVersion,
+	return &manifest.Manifest{
+		SchemaVersion: manifest.CurrentSchemaVersion,
 		Entries:       entries,
 	}
 }
 
-func benchNames(m *Manifest) []string {
-	names := make([]string, len(m.Entries))
-	for i := range m.Entries {
-		names[i] = m.Entries[i].Name
-	}
-	return names
-}
-
-// linearGet reproduces the pre-index Get: one linear scan per lookup.
-// Iterating every name this way is O(n^2), the batch cost hukou upgrade --all
-// paid per invocation. Keeping it here lets one `go test -bench` run report
-// the O(n^2) baseline next to the indexed results.
-func linearGet(m *Manifest, name string) *Entry {
-	idx := slices.IndexFunc(m.Entries, func(e Entry) bool { return e.Name == name })
-	if idx < 0 {
-		return nil
-	}
-	return &m.Entries[idx]
-}
-
-func batchGet(b *testing.B, m *Manifest, names []string) {
-	b.Helper()
-	for _, name := range names {
-		if m.Get(name) == nil {
-			b.Fatalf("missing %s", name)
-		}
-	}
-}
-
-// BenchmarkManifestBatchGetLinear measures the previous O(n^2) batch behavior:
-// resolving every entry by a fresh linear scan (identical to Get on a manifest
-// whose index has never been built).
-func BenchmarkManifestBatchGetLinear(b *testing.B) {
+// BenchmarkUpgradeBatchManifestOpsInLoopGet measures the manifest-operation
+// cost of the previous `upgrade --all` loop shape over 100 targets: every
+// iteration re-resolved its entry with m.Get (a linear scan) before upgrading,
+// then wrote the result back with m.Put (another linear scan).
+func BenchmarkUpgradeBatchManifestOpsInLoopGet(b *testing.B) {
 	m := benchManifest(100)
-	names := benchNames(m)
+	targets := append([]manifest.Entry(nil), m.Entries...)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		for _, name := range names {
-			if linearGet(m, name) == nil {
-				b.Fatalf("missing %s", name)
+		for _, e := range targets {
+			entry := e
+			if live := m.Get(e.Name); live != nil {
+				entry = *live
 			}
+			m.Put(entry)
 		}
 	}
 }
 
-// BenchmarkManifestBatchGetColdIndex measures the first-use cost: every
-// iteration pays one eager index build (what Load/Decode/Clone do) plus the
-// 100-entry Get batch. This is the cost a command pays on its first batch
-// after loading the manifest.
-func BenchmarkManifestBatchGetColdIndex(b *testing.B) {
+// BenchmarkUpgradeBatchManifestOpsSnapshot measures the current loop shape:
+// the batch iterates a snapshot of Entries taken once up front, holds each
+// entry copy directly (no in-loop Get), and still writes back with m.Put.
+// The remaining Put is a single linear scan per upgraded tool; no constant-
+// time lookup structure is involved.
+func BenchmarkUpgradeBatchManifestOpsSnapshot(b *testing.B) {
 	m := benchManifest(100)
-	names := benchNames(m)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.index = nil
-		m.reindex()
-		batchGet(b, m, names)
-	}
-}
-
-// BenchmarkManifestBatchGetHotIndex measures the steady state: the index was
-// built once (at Load/Decode/Clone or by an earlier mutation) and every Get in
-// the batch is a verified O(1) hit.
-func BenchmarkManifestBatchGetHotIndex(b *testing.B) {
-	m := benchManifest(100)
-	m.reindex()
-	names := benchNames(m)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		batchGet(b, m, names)
+		targets := append([]manifest.Entry(nil), m.Entries...)
+		for _, e := range targets {
+			entry := e
+			m.Put(entry)
+		}
 	}
 }
