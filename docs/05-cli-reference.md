@@ -104,6 +104,7 @@ hukou list
 副作用：无。
 
 pending transaction 或无效 store 拓扑不会被吞成正常版本数；list 会失败关闭并提示先诊断/恢复。
+脚本消费者须注意：事务状态未清（存在未决 transaction）或 store 拓扑异常时 `list` 返回非零退出码而非打印部分清单，因此不能把 `list` 的成功退出之外的情况当作空清单处理。
 
 ## `hukou doctor`
 

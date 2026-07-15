@@ -84,7 +84,13 @@ The branch also contains a checksum-verifying installer whose final directory
 entry uses atomic no-replace/replace primitives and rejects duplicate target
 archive members, licensing/community files, SBOM packaging,
 public-only attestations and CodeQL configuration, and a documented Topgrade
-custom-command integration. The
+custom-command integration. When an authenticated `gh` CLI is available, the
+installer additionally verifies the downloaded archive's GitHub
+build-provenance attestation, pinned to this repository's release workflow via
+`--signer-workflow`; otherwise it prints a warning and falls back to transport
+trust (HTTPS plus the release's checksums.txt). Set
+`HUKOU_REQUIRE_ATTESTATION=1` (or `true`/`yes`) to make that verification
+mandatory instead of best-effort; any other value is rejected. The
 [private RC execution record](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)
 tracks what is verified and what remains pending.
 

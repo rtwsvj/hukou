@@ -20,6 +20,79 @@ case "$(uname -m)" in
   *) printf 'unsupported test architecture\n' >&2; exit 1 ;;
 esac
 
+# Shadow any real gh with a deterministic mock so the installer's attestation
+# step never reaches the network. GH_MOCK_AUTH drives `gh auth status` and
+# GH_MOCK_VERIFY drives the `gh attestation verify` outcome. The defaults keep
+# gh present but unauthenticated, so every pre-existing case takes the
+# transport-trust fallback regardless of whether the host has gh installed.
+#
+# The mock validates the real invocation shape: the subcommand must be
+# `attestation verify`, the subject must be an existing release archive, and
+# --repo/--signer-workflow must carry the expected values. Any unknown
+# subcommand or argument mismatch fails, so a passing install also proves the
+# installer called gh correctly. The raw argument line is appended to
+# GH_MOCK_LOG when set, letting tests assert the exact invocation.
+GH_MOCK_DIR=${TMP}/gh-mock
+mkdir -p "$GH_MOCK_DIR"
+cat >"${GH_MOCK_DIR}/gh" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  [ "${GH_MOCK_AUTH:-no}" = yes ] && exit 0
+  exit 1
+fi
+if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
+  if [ -n "${GH_MOCK_LOG:-}" ]; then
+    printf '%s\n' "$*" >>"$GH_MOCK_LOG"
+  fi
+  shift 2
+  subject= repo= signer=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ "$#" -ge 2 ] || { printf 'gh-mock: --repo requires a value\n' >&2; exit 1; }
+        repo=$2
+        shift 2
+        ;;
+      --signer-workflow)
+        [ "$#" -ge 2 ] || { printf 'gh-mock: --signer-workflow requires a value\n' >&2; exit 1; }
+        signer=$2
+        shift 2
+        ;;
+      -*)
+        printf 'gh-mock: unexpected flag: %s\n' "$1" >&2
+        exit 1
+        ;;
+      *)
+        [ -z "$subject" ] || { printf 'gh-mock: multiple subjects\n' >&2; exit 1; }
+        subject=$1
+        shift
+        ;;
+    esac
+  done
+  [ -n "$subject" ] || { printf 'gh-mock: missing subject\n' >&2; exit 1; }
+  [ -f "$subject" ] || { printf 'gh-mock: subject does not exist: %s\n' "$subject" >&2; exit 1; }
+  case "$subject" in
+    *.tar.gz) ;;
+    *) printf 'gh-mock: subject is not a release archive: %s\n' "$subject" >&2; exit 1 ;;
+  esac
+  if [ "$repo" != "${GH_MOCK_EXPECT_REPO:-rtwsvj/hukou}" ]; then
+    printf 'gh-mock: unexpected --repo: %s\n' "$repo" >&2
+    exit 1
+  fi
+  if [ "$signer" != "${GH_MOCK_EXPECT_SIGNER:-rtwsvj/hukou/.github/workflows/release.yml}" ]; then
+    printf 'gh-mock: unexpected --signer-workflow: %s\n' "$signer" >&2
+    exit 1
+  fi
+  [ "${GH_MOCK_VERIFY:-fail}" = pass ] && exit 0
+  exit 1
+fi
+printf 'gh-mock: unknown subcommand: %s\n' "$*" >&2
+exit 1
+EOF
+chmod 0755 "${GH_MOCK_DIR}/gh"
+PATH="${GH_MOCK_DIR}:${PATH}"
+export PATH
+
 VERSION=v9.9.9
 NUMBER=${VERSION#v}
 NAME=hukou_${NUMBER}_${OS}_${ARCH}
@@ -332,5 +405,145 @@ if HUKOU_RELEASE_BASE_URL="http://127.0.0.1:9/releases" \
   exit 1
 fi
 [ ! -e "${TMP}/http-prefix" ]
+
+# Attestation verification of the downloaded release archive across the three
+# gh states: authenticated+valid (pass), authenticated+invalid (fail), and
+# absent (missing). The good fixture archive and checksums are restored by this
+# point. A tar spy wrapper proves failed verification aborts before any archive
+# inspection or extraction: the spy touches TAR_SPY_MARK before delegating to
+# the real tar, so an absent mark means tar never ran.
+TAR_SPY_DIR=${TMP}/tar-spy
+mkdir -p "$TAR_SPY_DIR"
+cat >"${TAR_SPY_DIR}/tar" <<'EOF'
+#!/bin/sh
+: >"${TAR_SPY_MARK:?}"
+exec "$REAL_TAR" "$@"
+EOF
+chmod 0755 "${TAR_SPY_DIR}/tar"
+REAL_TAR=$(command -v tar)
+
+# Pass: authenticated gh with a valid attestation installs normally, and the
+# recorded invocation must verify the archive subject (not checksums.txt) with
+# the pinned --repo and --signer-workflow values.
+ATTEST_PASS_PREFIX=${TMP}/attest-pass-prefix
+ATTEST_PASS_LOG=${TMP}/attest-pass-gh.log
+GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$ATTEST_PASS_LOG" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_PASS_PREFIX" >/dev/null
+[ "$("${ATTEST_PASS_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+[ "$(wc -l <"$ATTEST_PASS_LOG" | tr -d ' ')" = 1 ]
+case "$(cat "$ATTEST_PASS_LOG")" in
+  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --signer-workflow rtwsvj/hukou/.github/workflows/release.yml") ;;
+  *)
+    printf 'unexpected gh attestation invocation: %s\n' "$(cat "$ATTEST_PASS_LOG")" >&2
+    exit 1
+    ;;
+esac
+
+# Fail: authenticated gh with an invalid attestation aborts even without
+# HUKOU_REQUIRE_ATTESTATION, before any extraction or install step: no tar spy
+# mark, no destination prefix (hence no temporary install files), and the
+# diagnostic names the attestation step.
+ATTEST_FAIL_PREFIX=${TMP}/attest-fail-prefix
+ATTEST_FAIL_ERR=${TMP}/attest-fail.err
+if GH_MOCK_AUTH=yes GH_MOCK_VERIFY=fail \
+  REAL_TAR="$REAL_TAR" TAR_SPY_MARK="${TMP}/attest-fail-tar-mark" PATH="${TAR_SPY_DIR}:${PATH}" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_FAIL_PREFIX" >/dev/null 2>"$ATTEST_FAIL_ERR"; then
+  printf 'installer accepted a failed attestation\n' >&2
+  exit 1
+fi
+grep -q 'attestation verification failed' "$ATTEST_FAIL_ERR"
+[ ! -e "${TMP}/attest-fail-tar-mark" ]
+[ ! -e "$ATTEST_FAIL_PREFIX" ]
+
+# A bad attestation stays fatal when the attestation is required, with the same
+# abort-before-extraction guarantees.
+ATTEST_FAIL_REQUIRED_PREFIX=${TMP}/attest-fail-required-prefix
+if GH_MOCK_AUTH=yes GH_MOCK_VERIFY=fail HUKOU_REQUIRE_ATTESTATION=1 \
+  REAL_TAR="$REAL_TAR" TAR_SPY_MARK="${TMP}/attest-fail-required-tar-mark" PATH="${TAR_SPY_DIR}:${PATH}" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_FAIL_REQUIRED_PREFIX" >/dev/null 2>&1; then
+  printf 'installer accepted a failed attestation under HUKOU_REQUIRE_ATTESTATION=1\n' >&2
+  exit 1
+fi
+[ ! -e "${TMP}/attest-fail-required-tar-mark" ]
+[ ! -e "$ATTEST_FAIL_REQUIRED_PREFIX" ]
+
+# Unauthenticated gh falls back to transport trust by default...
+ATTEST_UNAUTH_PREFIX=${TMP}/attest-unauth-prefix
+GH_MOCK_AUTH=no \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_UNAUTH_PREFIX" >/dev/null
+[ "$("${ATTEST_UNAUTH_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+
+# ...but a required attestation makes an unauthenticated gh fail closed before
+# extraction or install.
+ATTEST_UNAUTH_REQUIRED_PREFIX=${TMP}/attest-unauth-required-prefix
+if GH_MOCK_AUTH=no HUKOU_REQUIRE_ATTESTATION=1 \
+  REAL_TAR="$REAL_TAR" TAR_SPY_MARK="${TMP}/attest-unauth-required-tar-mark" PATH="${TAR_SPY_DIR}:${PATH}" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_UNAUTH_REQUIRED_PREFIX" >/dev/null 2>&1; then
+  printf 'installer ignored a required attestation with an unauthenticated gh\n' >&2
+  exit 1
+fi
+[ ! -e "${TMP}/attest-unauth-required-tar-mark" ]
+[ ! -e "$ATTEST_UNAUTH_REQUIRED_PREFIX" ]
+
+# HUKOU_REQUIRE_ATTESTATION accepts case-insensitive 1/true/yes and 0/false/no;
+# anything else must fail loudly instead of silently degrading to the
+# transport-trust fallback.
+ATTEST_TRUE_PREFIX=${TMP}/attest-true-prefix
+GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass HUKOU_REQUIRE_ATTESTATION=TRUE \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_TRUE_PREFIX" >/dev/null
+[ "$("${ATTEST_TRUE_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+
+ATTEST_NO_PREFIX=${TMP}/attest-no-prefix
+GH_MOCK_AUTH=no HUKOU_REQUIRE_ATTESTATION=no \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_NO_PREFIX" >/dev/null
+[ "$("${ATTEST_NO_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+
+ATTEST_TYPO_PREFIX=${TMP}/attest-typo-prefix
+ATTEST_TYPO_ERR=${TMP}/attest-typo.err
+if GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass HUKOU_REQUIRE_ATTESTATION=requird \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_TYPO_PREFIX" >/dev/null 2>"$ATTEST_TYPO_ERR"; then
+  printf 'installer accepted an invalid HUKOU_REQUIRE_ATTESTATION value\n' >&2
+  exit 1
+fi
+grep -q 'invalid HUKOU_REQUIRE_ATTESTATION value' "$ATTEST_TYPO_ERR"
+[ ! -e "$ATTEST_TYPO_PREFIX" ]
+
+# Missing gh: build a curated PATH that exposes the installer's dependencies
+# (including gzip, which GNU tar -z resolves from PATH) but no gh at all. The
+# default run falls back to transport trust; the required run fails closed.
+CLEAN_BIN=${TMP}/clean-bin
+mkdir -p "$CLEAN_BIN"
+for CLEAN_TOOL in sh env uname curl tar gzip gunzip mktemp awk wc tr grep sed cp mv ln rm mkdir chmod cat printf perl sha256sum shasum readlink find dirname basename; do
+  CLEAN_TOOL_PATH=$(command -v "$CLEAN_TOOL" 2>/dev/null) || continue
+  ln -s "$CLEAN_TOOL_PATH" "${CLEAN_BIN}/${CLEAN_TOOL}" 2>/dev/null || true
+done
+if PATH="$CLEAN_BIN" command -v gh >/dev/null 2>&1; then
+  printf 'curated PATH still exposes gh; missing-gh case cannot run\n' >&2
+  exit 1
+fi
+
+ATTEST_MISSING_PREFIX=${TMP}/attest-missing-prefix
+PATH="$CLEAN_BIN" HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_MISSING_PREFIX" >/dev/null
+[ "$("${ATTEST_MISSING_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+
+ATTEST_MISSING_REQUIRED_PREFIX=${TMP}/attest-missing-required-prefix
+if PATH="${TAR_SPY_DIR}:${CLEAN_BIN}" HUKOU_REQUIRE_ATTESTATION=1 \
+  REAL_TAR="$REAL_TAR" TAR_SPY_MARK="${TMP}/attest-missing-required-tar-mark" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_MISSING_REQUIRED_PREFIX" >/dev/null 2>&1; then
+  printf 'installer ignored a required attestation with a missing gh\n' >&2
+  exit 1
+fi
+[ ! -e "${TMP}/attest-missing-required-tar-mark" ]
+[ ! -e "$ATTEST_MISSING_REQUIRED_PREFIX" ]
 
 printf 'install script tests passed\n'

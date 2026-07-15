@@ -68,12 +68,60 @@ Environment overrides used by tests and mirrors:
   HUKOU_REPO
   HUKOU_RELEASE_BASE_URL (must use HTTPS; file:// requires HUKOU_ALLOW_FILE_URL=1)
   HUKOU_PREFIX
+  HUKOU_REQUIRE_ATTESTATION  1/true/yes: require gh attestation verification of
+                             the downloaded release archive and fail when gh is
+                             unavailable or unauthenticated. Empty/0/false/no:
+                             allow the transport-trust fallback (default). Any
+                             other value is rejected.
 EOF
 }
 
 die() {
   printf 'install.sh: %s\n' "$*" >&2
   exit 1
+}
+
+# Verify GitHub's Sigstore build-provenance attestation for the downloaded
+# release archive before its checksum is compared and before anything is
+# unpacked. The release workflow attests the artifacts listed in checksums.txt
+# (the per-platform archives), so the archive itself -- not checksums.txt --
+# is the attested subject. This is an out-of-band trust anchor beyond
+# transport TLS: it binds the archive to this repository's release workflow
+# rather than to whatever the transport served. Verification is pinned with
+# --signer-workflow because --repo alone would accept an attestation produced
+# by any workflow in the repository.
+#
+# When the gh CLI is missing or unauthenticated the installer falls back to
+# transport trust only (HTTPS plus the SHA-256 comparison against a
+# checksums.txt served from the same origin) with a warning, so pipe-to-sh
+# bootstrap keeps working on minimal hosts. Setting HUKOU_REQUIRE_ATTESTATION
+# to 1/true/yes makes the attestation mandatory: an unavailable or
+# unauthenticated gh then fails closed. A gh that is present and authenticated
+# always fails closed on a bad attestation, regardless of the flag.
+verify_attestation() {
+  attestation_subject=$1
+
+  if ! command -v gh >/dev/null 2>&1; then
+    if [ "$REQUIRE_ATTESTATION" -eq 1 ]; then
+      die "HUKOU_REQUIRE_ATTESTATION is set but the gh CLI is not installed"
+    fi
+    printf 'install.sh: gh CLI not found; skipping attestation verification and relying on transport trust only\n' >&2
+    return 0
+  fi
+
+  if ! gh auth status >/dev/null 2>&1; then
+    if [ "$REQUIRE_ATTESTATION" -eq 1 ]; then
+      die "HUKOU_REQUIRE_ATTESTATION is set but the gh CLI is not authenticated"
+    fi
+    printf 'install.sh: gh CLI not authenticated; skipping attestation verification and relying on transport trust only\n' >&2
+    return 0
+  fi
+
+  gh attestation verify "$attestation_subject" \
+    --repo "$REPO" \
+    --signer-workflow "${REPO}/.github/workflows/release.yml" >/dev/null 2>&1 \
+    || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
+  printf 'Verified build-provenance attestation for %s (%s)\n' "${attestation_subject##*/}" "$REPO"
 }
 
 # Commit a prepared file by operating on the destination directory entry
@@ -174,6 +222,14 @@ done
 
 [ -n "$PREFIX" ] || die "installation prefix must not be empty"
 
+# Parse HUKOU_REQUIRE_ATTESTATION strictly: a typo must fail loudly instead of
+# silently degrading a hardened install to the transport-trust fallback.
+case "$(printf '%s' "${HUKOU_REQUIRE_ATTESTATION:-}" | tr '[:upper:]' '[:lower:]')" in
+  ''|0|false|no) REQUIRE_ATTESTATION=0 ;;
+  1|true|yes) REQUIRE_ATTESTATION=1 ;;
+  *) die "invalid HUKOU_REQUIRE_ATTESTATION value '${HUKOU_REQUIRE_ATTESTATION}'; use 1/true/yes to require attestation or 0/false/no (or unset) to allow the transport-trust fallback" ;;
+esac
+
 case "$RELEASE_BASE_URL" in
   https://*) CURL_PROTOCOLS='=https' ;;
   file://*)
@@ -206,6 +262,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf 'Would resolve hukou release: %s\n' "$VERSION"
   printf 'Would select platform: %s/%s\n' "$OS" "$ARCH"
   printf 'Would verify checksums from: %s/download/<tag>/checksums.txt\n' "$RELEASE_BASE_URL"
+  printf 'Would verify the archive build-provenance attestation when gh is available\n'
   printf 'Would install atomically to: %s\n' "$DEST"
   exit 0
 fi
@@ -245,6 +302,10 @@ curl -fsSL --proto "$CURL_PROTOCOLS" --proto-redir "$CURL_PROTOCOLS" --tlsv1.2 -
   -o "$CHECKSUMS" "${DOWNLOAD_BASE}/checksums.txt" || die "cannot download checksums.txt"
 curl -fsSL --proto "$CURL_PROTOCOLS" --proto-redir "$CURL_PROTOCOLS" --tlsv1.2 --retry 2 --retry-delay 1 \
   -o "$ARCHIVE_PATH" "${DOWNLOAD_BASE}/${ARCHIVE}" || die "cannot download $ARCHIVE"
+
+# The archive is the attested subject; verify it before trusting the SHA-256
+# comparison below and before any tar inspection or extraction runs.
+verify_attestation "$ARCHIVE_PATH"
 
 EXPECTED=$(awk -v name="$ARCHIVE" '$2 == name || $2 == "*" name { print $1 }' "$CHECKSUMS")
 [ -n "$EXPECTED" ] || die "checksums.txt has no exact entry for $ARCHIVE"

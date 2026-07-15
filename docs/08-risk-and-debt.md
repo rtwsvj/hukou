@@ -37,7 +37,7 @@
 | repair plan 时效 | plan 绑定 data-root identity/fingerprint；apply 时任何相关状态差异都会 stale。plan 写进被观察树可能使自身失效 | 建议把 plan 放在 data root 外；不放宽 stale 检查 |
 | repair apply 的 lock 痕迹 | apply 会确认 existing root durability 并创建/使用 `state.lock`，但 fingerprint 失败不得改 live/store/manifest/journal | verification report 明确区分锁文件与业务状态零写 |
 | support 隐私 | 当前只输出匿名序号/计数/枚举；仍需持续用 secret fixture 回归，用户也应在公开提交前人工查看 | 未来字段默认 deny-list 不够，应保持显式 allow-list |
-| 安装器信任根 | checksum 与 archive 来自同一 GitHub Release；能发现传输/意外损坏，不等于独立签名身份 | public 后启用并验证 provenance/attestation；评估签名 |
+| 安装器信任根 | checksum 与 archive 来自同一 GitHub Release；installer 在检测到已认证 gh CLI 时对下载的 archive 做 `gh attestation verify`（`--repo` + `--signer-workflow` 钉 release workflow），`HUKOU_REQUIRE_ATTESTATION=1/true/yes` 可强制、非法取值 fail loud；gh 缺失/未认证默认仍回退仅传输信任 | attestation 仅在仓库 public 后由 attest job 产生，公开前该验证在真实 release 上不可用；公开旗舰版前评估默认强制与签名策略 |
 | 安装目标竞争 | V0.3 subject 已把 dangling symlink 计为 existing；有 Perl时最终目录项使用 `link(2)` atomic no-replace / force `rename(2)`，Linux 无 Perl时回退 `ln -T`/`mv -T`；directory、symlink-to-directory、预检后竞争与 duplicate member tests 已在固定提交通过 | 保持目标目录同文件系统前提；force 仍是显式允许覆盖的独立路径 |
 | plan replay/freshness | fingerprint 只覆盖 action 相关观察；无关变化不使 plan stale，`generated_at` 无过期语义，现场精确回到旧 observation 时旧 plan 可能再次适用 | 外部审计 plan replay；若需要时效语义，增加显式 expiry/nonce 而不是依赖展示时间 |
 | transaction intent 授权 | intent 校验 schema、绝对 clean/unique path 与 before/after payload，但未独立把 operation/role/path 绑定到 manifest 或 allowlist；当前安全依赖 data root 由同一可信身份独占且不以提权方式消费低权限输入 | 明确 data-root ownership/permission threat model；审计低权限可写 root 与 elevated invocation，必要时绑定 role/path |

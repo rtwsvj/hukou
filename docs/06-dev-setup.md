@@ -64,7 +64,11 @@ PATH="$tmp/bin" \
 
 `scripts/install.sh` 支持 Darwin/Linux × amd64/arm64，默认写入
 `$HOME/.local/bin/hukou`，不使用 sudo、不修改 shell rc。它先下载
-`checksums.txt` 与目标 archive，要求唯一精确 SHA-256 条目，再检查 archive root，
+`checksums.txt` 与目标 archive；检测到已认证的 gh CLI 时对**下载的 archive**
+（attestation 的真实 subject，checksums.txt 不是）执行 `gh attestation verify
+--repo rtwsvj/hukou --signer-workflow rtwsvj/hukou/.github/workflows/release.yml`，
+失败即终止（发生在任何 tar 检查/解压之前）；gh 缺失或未认证时打印警告并回退
+仅传输信任。随后要求唯一精确 SHA-256 条目，再检查 archive root，
 只解出 regular executable 并通过同目录临时文件替换目标。
 
 - 生产/mirror URL 必须是 HTTPS；HTTP 永远拒绝。
@@ -73,7 +77,14 @@ PATH="$tmp/bin" \
 - non-force 同时把 dangling symlink 视为“目标已存在”；下载后用目标目录内 hard
   link 做原子 no-replace commit，若竞争者在预检后创建任意节点则失败且不覆盖。
 - `--force` 是用户显式授权替换，使用同目录临时文件后 `mv -f` 激活。
-- `--dry-run` 不联网、不创建 prefix，只打印 version/platform/checksum URL/destination。
+- `--dry-run` 不联网、不创建 prefix，只打印 version/platform/checksum URL/
+  attestation 意图/destination。
+- `HUKOU_REQUIRE_ATTESTATION` 大小写不敏感：`1/true/yes` 强制 attestation（gh
+  缺失/未认证也 fail closed）；空或 `0/false/no` 允许传输信任回退；**其余任何取
+  值直接失败**，拼写错误不允许静默降级。
+- `scripts/install_test.sh` 用严格校验实参的 gh mock（子命令、subject 为存在的
+  archive、`--repo`/`--signer-workflow` 值）与 tar spy 覆盖 pass/fail/missing
+  三态、require 矩阵和"失败必须先于解压/安装"断言。
 - 安装器已进入私有 V0.3 分支，但没有 v0.3 发布端点，不能把脚本存在写成公开安装渠道已上线。
 
 ## 生成物
