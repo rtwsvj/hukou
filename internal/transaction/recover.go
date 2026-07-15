@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
 )
@@ -27,7 +28,7 @@ var (
 )
 
 // QuarantineRecord names one previously unknown transaction-root entry and the
-// quarantined-* entry it was atomically renamed to.
+// quarantined-* container it was moved into.
 type QuarantineRecord struct {
 	Original    string
 	Quarantined string
@@ -40,16 +41,40 @@ type RecoverSummary struct {
 	Quarantined []QuarantineRecord
 }
 
+// Quarantine container layout: quarantined-<16 hex random>/ holding the moved
+// entry under a fixed payload name plus a META file that records the original
+// name. The container name carries no user-controlled bytes, so its length is
+// bounded and collisions are impossible to exploit.
+const (
+	quarantineMetaFileName = "META"
+	quarantinePayloadName  = "payload"
+	quarantineNameAttempts = 64
+)
+
+// quarantineNameSuffix is an unexported seam so tests can force container-name
+// collisions. Production always derives 16 hex characters from crypto/rand.
+var quarantineNameSuffix = func() (string, error) {
+	id, err := randomID()
+	if err != nil {
+		return "", err
+	}
+	return id[:16], nil
+}
+
 // Recover resolves the one globally serialized pending transaction and cleans
 // abandoned building/completed journals. Callers must hold hukou's mutation
 // lock. PREPARED transactions roll back; transactions with a valid durable
 // COMMIT marker roll forward.
 //
-// Unknown entries no longer wedge recovery: each is atomically renamed into the
-// quarantine namespace (its data is preserved for diagnosis, never deleted) and
-// recorded in the returned summary before recovery continues on the known
-// journals. Already-quarantined entries are left untouched, so a recovery that
-// is interrupted and retried converges on the same result.
+// Unknown non-directory entries (stray files, symlinks, and similar junk) no
+// longer wedge recovery: each is moved into a quarantined-* container (its data
+// is preserved for diagnosis, never deleted) and recorded in the returned
+// summary before recovery continues on the known journals. Unknown real
+// directories keep the fail-closed contract: they may be journal layouts from a
+// newer hukou, and demoting one automatically could destroy the only recovery
+// evidence, so Recover reports them and changes nothing else. Quarantined
+// containers are left untouched, so a recovery that is interrupted and retried
+// converges on the same result.
 func Recover(dataRoot string) (RecoverSummary, error) {
 	var summary RecoverSummary
 	root, err := filepath.Abs(dataRoot)
@@ -64,12 +89,26 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 	if err != nil {
 		return summary, err
 	}
+	unknownDirs := make([]string, 0, len(status.Unknown))
 	for _, name := range status.Unknown {
+		info, err := os.Lstat(filepath.Join(txRoot, name))
+		if err != nil {
+			return summary, fmt.Errorf("inspect unknown transaction entry %s: %w", name, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+			unknownDirs = append(unknownDirs, name)
+			continue
+		}
 		record, err := quarantineEntry(txRoot, name)
 		if err != nil {
 			return summary, fmt.Errorf("quarantine unknown transaction entry %s: %w", name, err)
 		}
 		summary.Quarantined = append(summary.Quarantined, record)
+	}
+	if len(unknownDirs) != 0 {
+		// Fail closed before touching any journal: an unknown directory may hold
+		// authoritative recovery evidence written by a newer hukou.
+		return summary, fmt.Errorf("unknown directories in transaction root: %s; they may be journals from a newer hukou, so nothing was recovered or removed - inspect them with `hukou doctor`, then move them out manually or upgrade hukou", strings.Join(unknownDirs, ", "))
 	}
 	if len(status.Pending) > 1 {
 		return summary, fmt.Errorf("multiple pending transactions violate the global journal invariant: %s", strings.Join(status.Pending, ", "))
@@ -108,30 +147,64 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 	return summary, recoverLoaded(txRoot, pendingDir, intent, committed)
 }
 
-// quarantineEntry atomically renames one unknown transaction-root entry into the
-// quarantine namespace. The entry's bytes are preserved verbatim; only its name
-// changes, so the original data remains available for later diagnosis or an
-// explicit purge-quarantine repair.
+// quarantineEntry moves one unknown non-directory transaction-root entry into a
+// fresh quarantined-<16 hex> container. The container is allocated with the
+// exclusive-create mkdir primitive and a colliding random name is retried with
+// a new name, so an existing container is never overwritten. The entry's bytes
+// are preserved verbatim under the fixed payload name and its original name is
+// recorded in the container's META file. On Unix a backslash is an ordinary
+// filename byte, so only names that cannot come from a directory entry are
+// rejected.
 func quarantineEntry(txRoot, name string) (QuarantineRecord, error) {
-	if name == "" || strings.ContainsAny(name, `/\`) {
-		return QuarantineRecord{}, fmt.Errorf("refuse to quarantine entry with a path separator: %q", name)
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '/') {
+		return QuarantineRecord{}, fmt.Errorf("invalid transaction entry name %q", name)
 	}
 	source := filepath.Join(txRoot, name)
-	if filepath.Dir(source) != txRoot {
-		return QuarantineRecord{}, fmt.Errorf("entry escapes transaction root: %q", name)
-	}
-	if _, err := os.Lstat(source); err != nil {
-		return QuarantineRecord{}, err
-	}
-	suffix, err := randomID()
+	info, err := os.Lstat(source)
 	if err != nil {
 		return QuarantineRecord{}, err
 	}
-	quarantinedName := quarantinedPrefix + name + "-" + suffix
-	if err := durablefs.Rename(source, filepath.Join(txRoot, quarantinedName)); err != nil {
+	if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+		return QuarantineRecord{}, fmt.Errorf("refuse to quarantine directory %q", name)
+	}
+	var container, containerName string
+	for attempt := 0; attempt < quarantineNameAttempts; attempt++ {
+		suffix, err := quarantineNameSuffix()
+		if err != nil {
+			return QuarantineRecord{}, err
+		}
+		candidate := quarantinedPrefix + suffix
+		path := filepath.Join(txRoot, candidate)
+		err = os.Mkdir(path, 0o700)
+		if err == nil {
+			container, containerName = path, candidate
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return QuarantineRecord{}, err
+		}
+	}
+	if container == "" {
+		return QuarantineRecord{}, fmt.Errorf("cannot allocate a unique quarantine container under %s", txRoot)
+	}
+	meta := fmt.Sprintf("schema=hukou-quarantine-v1\noriginal_name=%q\nquarantined_at=%s\n",
+		name, time.Now().UTC().Format(time.RFC3339))
+	if err := durablefs.AtomicWriteFile(filepath.Join(container, quarantineMetaFileName), []byte(meta), 0o600); err != nil {
 		return QuarantineRecord{}, err
 	}
-	return QuarantineRecord{Original: name, Quarantined: quarantinedName}, nil
+	// durablefs.Rename only accepts same-parent moves; this move crosses from
+	// the transaction root into the container, so rename first and then reassert
+	// both affected directory entries explicitly.
+	if err := os.Rename(source, filepath.Join(container, quarantinePayloadName)); err != nil {
+		return QuarantineRecord{}, err
+	}
+	if err := durablefs.SyncDir(container); err != nil {
+		return QuarantineRecord{}, err
+	}
+	if err := durablefs.SyncDir(txRoot); err != nil {
+		return QuarantineRecord{}, err
+	}
+	return QuarantineRecord{Original: name, Quarantined: containerName}, nil
 }
 
 // PurgeQuarantined removes every quarantined-* entry under the data root's

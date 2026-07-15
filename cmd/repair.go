@@ -77,8 +77,21 @@ func doRepairApply(stdout io.Writer, root, planPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := repair.Apply(root, plan); err != nil {
+	result, err := repair.Apply(root, plan)
+	if err != nil {
 		return err
+	}
+	for _, record := range result.Quarantined {
+		fmt.Fprintf(stdout, "Quarantined unknown transaction entry %q as transactions/%s\n", record.Original, record.Quarantined)
+	}
+	for _, name := range result.PurgedQuarantine {
+		fmt.Fprintf(stdout, "Purged quarantined entry transactions/%s\n", name)
+	}
+	for _, path := range result.RemovedLiveTemps {
+		fmt.Fprintf(stdout, "Removed orphaned live temporary %s\n", path)
+	}
+	for _, path := range result.SkippedLiveTemps {
+		fmt.Fprintf(stdout, "Skipped live temporary %s: it no longer matches the planned identity\n", path)
 	}
 	_, err = fmt.Fprintf(stdout, "Repair completed: %s\n", plan.Action)
 	return err

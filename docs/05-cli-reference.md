@@ -151,10 +151,10 @@ hukou repair apply --plan <plan.json>
 
 - `plan` 只读 hukou data root，并只写用户明确指定的 `0600` plan 文件；父目录必须已存在。
 - `apply` 持 state lock，重算 data-root identity、state fingerprint 和前置条件；plan stale 时零业务状态写入失败。apply 可能创建/使用 lock 文件，所以这不是“绝对零文件写入”。
-- `recover-transaction` 收敛未决 journal；遇到未知条目会原子隔离到 `quarantined-*`（保留数据）后继续，不再楔死。
+- `recover-transaction` 收敛未决 journal；未知**非目录**条目（垃圾文件/符号链接）会被移入 `quarantined-<16hex>` 容器（原名以 `%q` 记录在容器内 `META`，数据保留为 `payload`）后继续，不再楔死；未知**目录**可能是更新版本的 journal 布局，保持 fail-closed，需人工处置或升级 hukou。apply 输出会列出隔离明细，写命令的自动恢复也会把隔离记录打到 stderr。
 - `restore-manifest-backup` 只接受主文件缺失/无效、backup 语义有效、transaction clean 且所有 live SHA 匹配的状态。
-- `purge-quarantine` 删除全部 `quarantined-*` 隔离条目（指纹绑定的显式确认）；不触碰 building/pending/completed。
-- `clean-live-temps` 删除 manifest 各 live 目录里 `.hukou-txn-*` 前缀、mtime 早于一小时的孤儿临时文件；一小时下限避免误删进行中的恢复暂存。
+- `purge-quarantine` 删除全部 `quarantined-*` 隔离容器（指纹绑定的显式确认）；不触碰 building/pending/completed。
+- `clean-live-temps` 删除 manifest 各 live 目录里 `.hukou-txn-*` 前缀的孤儿临时文件。安全约束：①plan 与 apply 都要求当前无任何 building/pending journal（排除活跃写入者——mtime 阈值不足以证明孤儿）；②manifest 登记的精确 live 路径永久排除；③plan 把每个候选的完整身份（路径/类型/权限/大小/mtime/dev+inode/SHA-256 前 16 位或链接目标）写入 plan 的 `targets` 字段，apply 逐项复核，任一字段不符即跳过该项并在输出中标注；④删除集合在 plan 时刻固化，plan 后新出现的文件不会被删；⑤mtime 早于一小时（以 plan 的 `generated_at` 为参考时刻）仅为辅助过滤。
 - 没有 repair-all、orphan 删除或 manifest merge；隔离本身由 `recover-transaction` 自动完成，删除隔离区须显式走 `purge-quarantine`。
 
 建议把 plan 写在 hukou data root 之外；把 plan 放入被 fingerprint 覆盖的状态树可能会让它在 apply 前自行变 stale。

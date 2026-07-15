@@ -37,7 +37,7 @@ func storeRoot() string    { return filepath.Join(dataRoot(), "store") }
 
 func newStore() *store.Store { return &store.Store{Root: storeRoot()} }
 
-func acquireMutationLock() (*state.Lock, error) {
+func acquireMutationLock(stderr io.Writer) (*state.Lock, error) {
 	if err := durablefs.MkdirAll(dataRoot(), 0o755); err != nil {
 		return nil, err
 	}
@@ -45,10 +45,23 @@ func acquireMutationLock() (*state.Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := statejournal.Recover(dataRoot()); err != nil {
+	summary, err := statejournal.Recover(dataRoot())
+	reportRecoverSummary(stderr, summary)
+	if err != nil {
 		return nil, errors.Join(fmt.Errorf("recover unfinished transaction: %w", err), lock.Release())
 	}
 	return lock, nil
+}
+
+// reportRecoverSummary surfaces recovery side effects on the warning channel so
+// quarantined evidence is never isolated silently.
+func reportRecoverSummary(stderr io.Writer, summary statejournal.RecoverSummary) {
+	if stderr == nil {
+		return
+	}
+	for _, record := range summary.Quarantined {
+		fmt.Fprintf(stderr, "warning: quarantined unknown transaction entry %q as transactions/%s; inspect it with `hukou doctor`, then remove it via `hukou repair plan --action purge-quarantine`\n", record.Original, record.Quarantined)
+	}
 }
 
 func releaseMutationLock(lock *state.Lock, stderr io.Writer) {

@@ -58,7 +58,7 @@ func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun boo
 		return fail(fmt.Errorf("tool names and --all cannot be used together"))
 	}
 	if !dryRun {
-		lock, err := acquireMutationLock()
+		lock, err := acquireMutationLock(stderr)
 		if err != nil {
 			return fail(fmt.Errorf("acquire state lock: %w", err))
 		}
@@ -384,7 +384,7 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		m.Put(oldEntry)
 		return abortStateTransaction(tx, fmt.Errorf("save manifest: %w", err))
 	}
-	if err := commitStateTransaction(tx); err != nil {
+	if err := commitStateTransaction(tx, stderr); err != nil {
 		refreshErr := refreshManifest(m)
 		if current := m.Get(e.Name); current != nil {
 			*e = *current

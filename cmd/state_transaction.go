@@ -74,9 +74,10 @@ func abortStateTransaction(tx *statejournal.Transaction, operationErr error) err
 // commitStateTransaction handles the indeterminate edge where COMMIT creation
 // became visible before a sync error. Recover treats the physical marker as the
 // decision and converges to one complete side before returning the error.
-func commitStateTransaction(tx *statejournal.Transaction) error {
+func commitStateTransaction(tx *statejournal.Transaction, stderr io.Writer) error {
 	if err := tx.Commit(); err != nil {
-		_, recoverErr := statejournal.Recover(dataRoot())
+		summary, recoverErr := statejournal.Recover(dataRoot())
+		reportRecoverSummary(stderr, summary)
 		return errors.Join(err, recoverErr)
 	}
 	return nil
