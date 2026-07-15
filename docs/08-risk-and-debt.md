@@ -34,15 +34,22 @@
 | schema 字段边界 | V0.3 decoder 已按声明 schema 要求 v2 policy/retention/history，并拒绝 v0/v1 携带 v2-only 字段；但 Go JSON 仍接受重复 object key | 后续增加 duplicate-key-aware tokenizer/decoder 与回归；当前 unknown-field 检查不冒充已覆盖 duplicate key |
 | history 增长 | activation event 追加，retention 只删 artifact、不删事件 | 另立 ADR 设计可审计压缩，不在 V0.3 猜测 |
 | explicit original | legacy migration 无法证明 original 的 parent，恢复后 lineage 刻意终止 | 用户需要继续升级时从该状态建立新的 forward event；文档提示默认 rollback 无 ancestor |
-| repair plan 时效 | plan 绑定 data-root identity/fingerprint；任何相关变化都会 stale。plan 写进被观察树可能使自身失效 | 建议把 plan 放在 data root 外；不放宽 stale 检查 |
+| repair plan 时效 | plan 绑定 data-root identity/fingerprint；apply 时任何相关状态差异都会 stale。plan 写进被观察树可能使自身失效 | 建议把 plan 放在 data root 外；不放宽 stale 检查 |
 | repair apply 的 lock 痕迹 | apply 会确认 existing root durability 并创建/使用 `state.lock`，但 fingerprint 失败不得改 live/store/manifest/journal | verification report 明确区分锁文件与业务状态零写 |
 | support 隐私 | 当前只输出匿名序号/计数/枚举；仍需持续用 secret fixture 回归，用户也应在公开提交前人工查看 | 未来字段默认 deny-list 不够，应保持显式 allow-list |
 | 安装器信任根 | checksum 与 archive 来自同一 GitHub Release；能发现传输/意外损坏，不等于独立签名身份 | public 后启用并验证 provenance/attestation；评估签名 |
 | 安装目标竞争 | V0.3 subject 已把 dangling symlink 计为 existing；有 Perl时最终目录项使用 `link(2)` atomic no-replace / force `rename(2)`，Linux 无 Perl时回退 `ln -T`/`mv -T`；directory、symlink-to-directory、预检后竞争与 duplicate member tests 已在固定提交通过 | 保持目标目录同文件系统前提；force 仍是显式允许覆盖的独立路径 |
-| 安装包膨胀 | 当前检查 archive root、目标 member 唯一性和目标文件类型；尚未给总展开字节数与 member 数设置独立预算 | 为压缩炸弹/超多 member 增加 streaming budget，超限时在写目标前失败关闭 |
+| plan replay/freshness | fingerprint 只覆盖 action 相关观察；无关变化不使 plan stale，`generated_at` 无过期语义，现场精确回到旧 observation 时旧 plan 可能再次适用 | 外部审计 plan replay；若需要时效语义，增加显式 expiry/nonce 而不是依赖展示时间 |
+| transaction intent 授权 | intent 校验 schema、绝对 clean/unique path 与 before/after payload，但未独立把 operation/role/path 绑定到 manifest 或 allowlist；当前安全依赖 data root 由同一可信身份独占且不以提权方式消费低权限输入 | 明确 data-root ownership/permission threat model；审计低权限可写 root 与 elevated invocation，必要时绑定 role/path |
+| 下载尺寸 | API size 未知时使用 512 MiB；声明正数时当前以声明值为读取上限，没有独立全局 ceiling | 同时应用全局最大值与磁盘预算；对异常超大 asset size 做 fail-closed 测试 |
+| Go 归档预扫描 | 选中 entry 本身限制 512 MiB，但 tar 第一次选择扫描会遍历完整解压流，未累计总工作量/member 数 | 为 header 数、总展开工作量和候选数增加 streaming budget |
+| shell 安装包膨胀 | 当前检查 archive root、目标 member 唯一性和目标文件类型；尚未给总展开字节数与 member 数设置独立预算 | 为压缩炸弹/超多 member 增加 streaming budget，超限时在写目标前失败关闭 |
+| installer 网络预算 | `curl` 限制 HTTPS 协议并重试，但未设置显式 connect/total timeout、最大文件大小或 redirect host allowlist | 增加 fail-closed 网络预算与重定向主机策略，并覆盖慢连接/超大 body/跨主机 fixture |
+| 无 publisher checksum | 真实 upgrade 在没有 checksum asset 时警告、记录下载后 hash 并继续；这是可审计性而不是 publisher 身份证明 | 公开旗舰版前决定默认 fail closed、显式 opt-in 或签名/attestation 信任策略 |
 | release list 上限 | 最多 10×100 releases，填满上限时失败关闭 | 如确有超大仓库，再引入有边界的完整性证明 |
 | GitHub API body | request 有总超时和有界分页，但 JSON response 尚无独立 body byte cap | 使用有界 reader 并测试超限 response，避免异常服务端造成内存放大 |
-| 路径遍历 TOCTOU | 当前按组件拒绝 symlink/非目录、在写前重检并验证 tag/SHA；非协作 writer 仍可能命中 check 与 syscall 间窗口 | 评估 `openat`/目录 fd anchored traversal；先定义 Darwin/Linux 一致失败语义 |
+| manifest 资源预算 | regular manifest 当前无独立 byte cap，activation history 追加且不压缩 | 对文件字节、entry/event 数设上限；另立 ADR 做可审计 history 压缩 |
+| 路径遍历 TOCTOU | 当前按组件拒绝 symlink/非目录、在写前重检并验证 tag/SHA；store root 自身可作为 deliberate symlink trust anchor；非协作 writer 仍可能命中 check 与 syscall 间窗口 | 评估 `openat`/目录 fd anchored traversal 与 root pinning；先定义 Darwin/Linux 一致失败语义 |
 | explain 只读证据 | V0.3 subject 已增加 name/path 独立目录快照与 `http.DefaultTransport` spy；5 项定向测试与固定提交全仓回归通过 | 保持测试，避免未来 detector 漂移破坏零写/零网络契约 |
 
 ## H2 恢复边界
@@ -76,6 +83,11 @@
   断言 SPDX 内容。验收曾发现扫描压缩包目录只得到 1 package/0 files 的空壳 SBOM，
   修复后为 21 packages/4 files；artifact attestation 仍仅 public repository 执行。
 - 手动 workflow 只生成 snapshot，防止误发布；只有已推送 tag 触发 Release。
+- attestation 只在事件发生时 repository 为 public 才运行；private 状态下先创建
+  Release、之后直接改变 visibility 会使既有未 attested 资产随仓库暴露。公开
+  Go/No-Go 必须审计完整 private tag/Release → public 时序，不能只检查单次 job 条件。
+- `go.mod` 声明 Go 1.26.2，hosted setup-go 会读取该值；现有固定提交验证与历史
+  archive hash 使用 Go 1.26.5，而 hosted job 未启动。两套 toolchain 需要分别复核。
 - 本轮授权禁止创建 `v0.3.0` tag、正式 Release 或改变 repository visibility。
 
 ## 风险关闭规则

@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-14
-- Implementation: present on `codex/hukou-v0.3-private-rc`; full RC verification pending
+- Implementation: fixed subject `1fa45a0` passed the recorded local/private RC gate;
+  external audit and hosted execution remain pending
 
 ## 背景
 

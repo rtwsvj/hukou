@@ -140,7 +140,9 @@ repo/upstream/asset/event ID、环境变量、用户名、HOME、二进制或 WA
 - API 请求才携带 Authorization；下载与重定向按 host 白名单隔离。
 - 429、5xx 与网络错误有限次退避重试；429 尊重有上限的 `Retry-After`。
 - API 和下载都有总超时。
-- 下载和解压默认有 512 MiB 上限。
+- 下载资产在 API size 未知时使用 512 MiB 上限；API 声明正数 size 时当前以该
+  声明值作为精确长度与读取上限，尚无独立全局 ceiling。被选中的单个解压 entry
+  有 512 MiB 上限，但 tar 目标选择的第一次全流扫描尚无总展开工作量/member 数预算。
 
 当前 GitHub API JSON response 尚无独立 body byte cap；增加 cap 是后续
 defense-in-depth。类似地，安装脚本会检查 archive 根和目标 member 唯一性，但总解压

@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-14
-- Implementation: present on `codex/hukou-v0.3-private-rc`; full RC verification pending
+- Implementation: fixed subject `1fa45a0` passed the recorded local/private RC gate;
+  external audit and hosted execution remain pending
 
 ## 背景
 
@@ -33,8 +34,9 @@ schema v1 只记录当前状态。默认 rollback 依赖 store 目录 mtime，�
 - support report 使用匿名 entry 序号、枚举和计数，不复制 path/repo/name/tag、环境
   变量、用户名、二进制或 WAL payload。
 
-这些实现仍需最终全仓、容器、release snapshot 与独立 review 证明；ADR Accepted
-只表示设计决定已采纳，不等于 RC 验收或公开发布。
+这些实现已有固定提交的全仓、容器与 release snapshot 内部验收记录；外部审计和
+GitHub-hosted gate 尚未关闭。ADR Accepted 只表示设计决定已采纳，不等于外部审计
+通过或公开发布。
 
 ## 后果
 

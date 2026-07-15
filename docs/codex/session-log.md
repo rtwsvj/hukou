@@ -1,5 +1,36 @@
 # Codex Session Log
 
+## 2026-07-15 — V0.3 外部审计交接
+
+- Branch: `codex/hukou-v0.3-private-rc`
+- Code Subject: `1fa45a0d8473446e3208490f037aef924abea181`
+- Original Evidence Docs: `2cd0467098700b899b8b87ee627eb2b75412f397`
+- Draft PR: `https://github.com/rtwsvj/hukou/pull/6`
+- Execution Report: `execution-reports/2026-07-15-external-audit-handoff.md`
+- Change Record: `change-records/2026-07-15-external-audit-handoff.md`
+- Verification Report: `verification-reports/2026-07-15-external-audit-handoff.md`
+- Scope: documentation/audit handoff only；no production code, workflow, tag,
+  Release, merge, or visibility change
+
+### 交付与更正
+
+- 新增根 `AUDIT.md` 与 `docs/audit/`，固定 base/code subject/original docs 三类
+  对象，并要求审计员另行记录实际 audit-package commit。
+- 提供分层复现命令、C1-C10 source/test/caveat 映射、攻击面 checklist、artifact/
+  platform/toolchain matrix 和 finding template。
+- 明确 ignored `dist/` 产物不是 portable evidence；SBOM 可复现语义，不保证新生成
+  JSON 字节 hash 相同；原容器完整命令与部分静态检查 raw logs 没有保留。
+- 修正 ADR、roadmap 与 Topgrade 文档中的旧 pending 状态，并把原
+  `pinhaoma-review` 降级为“Codex 团队内部记录、无单独 raw report”，不再描述为
+  外部独立 clean bill。
+- 外部交接审阅新增待第三方确认/定级的高优先级 hypotheses：download global cap、
+  Go/shell archive work/member budget、manifest/API body cap、transaction intent trust
+  anchor、repair plan replay、publisher checksum policy、private→public attestation
+  lifecycle，以及 Go 1.26.2/1.26.5 toolchain 差异。
+- 当前仍是 private draft PR；正式发布仍为 v0.2.0，无 v0.3 tag/Release。原
+  evidence-docs head 的 CI `29353234544` 为五个 `steps=[]` billing failure，CodeQL
+  `29353234543` 为 private skip；审计员必须刷新自己审计时的 PR head。
+
 ## 2026-07-14 — V0.3 private release candidate
 
 - Branch: `codex/hukou-v0.3-private-rc`
@@ -35,8 +66,9 @@
   `dist/release-builds/v0.3.0-rc.1/`。
 - SBOM 验收发现旧 workflow 扫描 `dist/` 仅得到 1 package/0 files；修复后使用 Syft
   1.46.0 扫描四个平台二进制，得到 SPDX 2.3、21 packages/4 files。
-- 独立 `pinhaoma-review` 最终结论 P0/P1/P2 = 0；coverage 73.8%→72.9% 的 -0.9pp
-  作为代码面扩大后的 P3 记录并接受，不隐瞒。
+- Codex 团队内部 `pinhaoma-review` 当时记录 P0/P1/P2 = 0；coverage
+  73.8%→72.9% 的 -0.9pp 作为代码面扩大后的 P3 记录并接受。该 review 无单独
+  raw report，不替代后续外部审计。
 - 分支已推送并创建 draft PR #6。CI run `29352308455` 的五个 job 均 `steps=[]`，
   billing/spending annotation 明确为账户基础设施阻断；CodeQL run `29352310557`
   在 private repository 按设计 skipped。

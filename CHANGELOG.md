@@ -64,10 +64,12 @@ release exists, the PR is not merged, and the repository has not been made publi
   payloads.
 
 The entries above describe the private RC branch, not the v0.2.0 release.
-Local fixed-commit verification, release snapshot/SBOM inspection, and an
-independent claim-vs-evidence review passed. Hosted PR jobs remain blocked
-before execution; merge, tag, Release, and public visibility still require a
-separate Go/No-Go decision.
+Local fixed-commit verification and release snapshot/SBOM inspection passed.
+The claim-vs-evidence review was internal to the Codex execution team and has
+no standalone raw report, so it is not an external clearance. The external
+audit package records open high-priority review leads. Hosted PR jobs remain
+blocked before execution; merge, tag, Release, and public visibility still
+require a separate Go/No-Go decision.
 
 ## [0.2.0] - 2026-07-14
 

@@ -4,6 +4,7 @@
 
 [简体中文](README.zh-CN.md) ·
 [Documentation](docs/README.md) ·
+[V0.3 audit handoff](AUDIT.md) ·
 [Latest release](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) ·
 [Security](SECURITY.md)
 
@@ -282,9 +283,12 @@ ordinary and race runs of 641 tests across 21 packages, the complete local
 `release-verify` target at 72.9% coverage, and non-root Linux/arm64 ordinary,
 race, installer, and release-script tests. Two four-target release builds were
 byte-identical; checksums, archive contents, build information, installer
-smoke, and a 21-package/4-file SPDX SBOM passed inspection. Independent review
-found no P0/P1/P2 findings, and [draft PR #6](https://github.com/rtwsvj/hukou/pull/6)
-is open. GitHub-hosted jobs are blocked before execution by the account's
+smoke, and a 21-package/4-file SPDX SBOM passed inspection. An internal Codex
+claim-to-evidence review recorded no P0/P1/P2 finding, but retained no
+standalone raw report and is not an external clearance. The
+[external audit handoff](AUDIT.md) lists newly identified review leads and
+known evidence gaps. [Draft PR #6](https://github.com/rtwsvj/hukou/pull/6) is
+open. GitHub-hosted jobs are blocked before execution by the account's
 billing/spending limit, so no remote-green claim is made.
 
 Still outside this RC:

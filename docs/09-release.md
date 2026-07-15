@@ -4,7 +4,7 @@
 
 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 是当前正式版本，包含 Darwin/Linux × amd64/arm64 四个归档与 `checksums.txt`；[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 保持不变。本次 GitHub-hosted CI/tag workflow 因账户 payment/spending limit 在 runner 调度前失败；发布仅在两个全新 Go/Linux 容器运行正式脚本得到逐字节一致结果、三平台 buildinfo smoke 通过、远端重新下载与本地产物逐字节一致后，使用同一 annotated tag 手动完成。该例外不改变未来正常流程的 runner gate 要求。
 
-V0.3 当前是已完成 local/private readiness 验收的 private RC 分支。没有
+V0.3 当前是有内部 local/private readiness 记录、正在准备外部审计的 private RC 分支。没有
 `v0.3.0`/prerelease tag，没有 V0.3 GitHub Release，也没有改变 repository visibility。
 本页后续 V0.3 内容描述 subject `1fa45a0` 已验证的发布契约；该结论不等于公开发布。
 本轮只创建 draft private PR；即使本地门禁通过，合并仍需单独 Go/No-Go，不能由
@@ -93,10 +93,18 @@ publish，因此 private snapshot/Release 不能声称拥有 GitHub attestation�
 `steps=[]`，被 billing/spending limit 在执行前阻断；必须记录为 external
 infrastructure gate，不能称作远端 CI 绿色。
 
+private 状态下先创建 Release、之后再公开仓库会让既有未 attested 资产随 visibility
+变化暴露，workflow 不会自动补证明链。因此公开 Go/No-Go 必须禁止或显式处置
+private tag/Release，并在 visibility 变化前验证最终公开资产的 attestation。另需分别
+验证 `go.mod` 声明的 Go 1.26.2 与历史 archive hash 使用的 Go 1.26.5，不能把后者
+代替 hosted 预期工具链。
+
 ## 发布清单
 
 1. 工作树干净，目标 commit 已进入 `main`；private RC 阶段只允许分支/draft PR，不打正式 tag。draft PR 不能在缺少独立 Go/No-Go 时合并。
-2. 当前变更 verification report 为 pass，`pinhaoma-review` claims-vs-evidence 无未关闭 blocker。
+2. 当前变更有固定 commit verification report；外部审计已完成并关闭/接受所有
+   P0/P1/P2 与交接 checklist hypotheses。内部 `pinhaoma-review` 无单独 raw report，
+   不能单独满足此项。
 3. CI 的 Linux/macOS test、race、build、coverage 与 quality/vulnerability gates 全绿；若 billing 阻断，Go/No-Go 必须显式接受 external gate，不能写成绿色。
 4. 双构建 snapshot 逐字节一致，四个 archive 可解压，`version` 正确。
 5. `checksums.txt` 可验证全部 archive；archive 包含 license/notices/双语 README/依赖许可证。
@@ -104,6 +112,8 @@ infrastructure gate，不能称作远端 CI 绿色。
 7. 更新 changelog/release notes，并重新核对 README 仍把 v0.2.0 写成当前正式版本直到实际发布完成。
 8. 获得独立公开 Go/No-Go 后，才可创建并推送 annotated SemVer tag；workflow 再验证 tag 指向 `main` 历史。
 9. release workflow 成功后核对远端资产、prerelease 标记和可见性；不得移动已发布 tag。
+10. visibility 变化前确认不存在会被意外公开的 private V0.3 Release；最终公开资产
+    必须经过 intended public attestation 路径。
 
 ## 回滚
 

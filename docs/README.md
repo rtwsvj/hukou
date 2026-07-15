@@ -13,7 +13,7 @@
 | H1 安全硬化 | 已交付；GitHub-hosted runner 计费例外已记录 | `codex/verification-reports/2026-07-13-hukou-hardening-local.md` |
 | 首个 SemVer 发布 | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布 | `codex/verification-reports/2026-07-13-v0.1.0-release.md` |
 | H2 恢复与诊断基础 | 已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布并完成验证；后续边界见路线图 | `codex/verification-reports/2026-07-14-h2-recovery-doctor.md`、`codex/verification-reports/2026-07-14-v0.2.0-release.md` |
-| V0.3 private RC | subject `1fa45a0` 已完成 local/private RC readiness 验收；hosted gate 因 billing infrastructure-blocked；未合并、未发布、未公开 | `specs/v0.3-private-rc.md`、`codex/verification-reports/2026-07-14-v0.3-private-rc.md` |
+| V0.3 private RC | subject `1fa45a0` 有内部 local/private RC readiness 记录；外部审计待完成；hosted gate 因 billing infrastructure-blocked；未合并、未发布、未公开 | `audit/README.md`、`specs/v0.3-private-rc.md`、`codex/verification-reports/2026-07-14-v0.3-private-rc.md` |
 | 公共 fixture、公共安装渠道、跨管理器执行、Windows | 未实现/不在本 RC | `02-roadmap.md`、`integrations/topgrade.md` |
 
 任何“通过”结论必须同时给出提交号和 `codex/verification-reports/` 中的报告。当前执行报告不等于验证报告。
@@ -22,7 +22,8 @@ V0.3 固定提交证据：安全关键路径 audit 321 tests / 6 packages；dire
 ordinary/race 各 641 tests / 21 packages；完整本地 `release-verify` 在命令级 GOPROXY
 mirror 下 exit 0、coverage 72.9%、govuln 无已知漏洞；non-root Linux/arm64、四目标
 双构建、installer/release tests 与 21 packages/4 files 的 SPDX SBOM 通过。最终边界、
-产物哈希、远端 billing exception 与独立 review 见本轮 verification report。
+产物哈希、远端 billing exception 与内部 review 见本轮 verification report；该
+review 没有单独 raw report，第三方应从 [`audit/`](audit/) 重新核验。
 
 ## 事实源优先级
 
@@ -51,6 +52,7 @@ mirror 下 exit 0、coverage 72.9%、govuln 无已知漏洞；non-root Linux/arm
 - [`10-glossary.md`](10-glossary.md)：术语
 - [`pinhaoma-sources.md`](pinhaoma-sources.md)：历史调研来源、许可证与复用边界
 - [`integrations/topgrade.md`](integrations/topgrade.md)：跨管理器编排边界与 custom command 配置
+- [`audit/`](audit/)：V0.3 外部审计交接、复现命令、证据映射与已知 hypotheses
 - [`adr/`](adr/)：不可轻易反转的技术决策
 - [`codex/`](codex/)：执行、改动和验证记录
 - [`records/`](records/)：历史阶段完成记录

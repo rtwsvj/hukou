@@ -48,6 +48,9 @@ private RC 中 job 会跳过，不能称为 CodeQL 通过。现有 GitHub-hosted
 `infrastructure-blocked`，不等于代码 pass/fail。
 
 CI 使用 `go.mod` 的 Go 版本，不维护第二份版本字符串。
+当前 `go.mod` 声明 Go 1.26.2，而固定提交的本地与容器记录使用 Go 1.26.5；hosted
+job 未启动，所以 Go 1.26.2 兼容门禁尚待独立复跑。历史 archive hash 复现则应使用
+Go 1.26.5，并记录 GNU tar 版本。
 
 ## 关键失败注入
 
@@ -108,10 +111,16 @@ V0.3 还必须覆盖：
 | actionlint 1.7.12 / Ruby YAML parse / Action pin 对账 | pass | workflow 静态结构与固定 SHA；hosted run 仍须单独解释 |
 | Markdown links / production 汉字 sweep / secret scan / `git diff --check` | 68 Markdown、89 targets、0 missing；0 汉字；0 leak；diff pass | 文档、界面与提交卫生门禁 |
 
-独立 `pinhaoma-review` 对固定 subject 的结论为 P0/P1/P2 = 0。Draft PR #6 的
+Codex 团队内部 `pinhaoma-review` 对固定 subject 当时记录为 P0/P1/P2 = 0，但没有
+保留单独 raw report，不能作为外部 clean bill。Draft PR #6 的
 GitHub-hosted CI run `29352308455` 五个 job 均在任何 step 前因 billing/spending limit
 失败，不能记为远端代码失败或远端绿色；CodeQL run `29352310557` 在 private repository
 按设计 skipped。
+
+2026-07-15 外部交接审阅又提出下载/归档资源预算、transaction intent 授权信任根、
+private Release 后公开的 attestation 时序、缺 publisher checksum 的默认策略和
+toolchain 差异等高优先级 hypotheses。它们尚待第三方确认/定级，详见
+[`audit/v0.3-review-checklist.md`](audit/v0.3-review-checklist.md)。
 
 Gap audit 缺口已在工作树关闭：installer 有 Perl时采用 `link(2)` atomic no-replace /
 force `rename(2)`，Linux 无 Perl时采用 `ln -T`/`mv -T` fallback；覆盖 directory、

@@ -46,8 +46,8 @@
 - [x] 上一份可解析且 schema 受支持的 `manifest.json.bak`
 - [x] 默认零写、零网络的 `doctor` 文本/JSON审计与 orphan/unclassifiable 区分
 - [x] macOS + 原生 Linux 全量/race、崩溃/持久化压力、四平台可重复资产与远端下载复核
-- [ ] 显式枚举、state fingerprint 绑定的安全 repair 动作（V0.3 分支已实现两类窄 action；RC 全门禁待完成）
-- [ ] 激活历史与可配置版本保留策略（V0.3 分支已实现 manifest v2；全仓/发布验收待完成）
+- [x] 显式枚举、state fingerprint 绑定的两类窄 repair 动作（V0.3 subject 已实现并完成内部 local/private RC 验收；尚未发布）
+- [x] 激活历史与可配置版本保留策略（V0.3 subject 已实现 manifest v2 并完成内部 local/private RC 验收；尚未发布）
 - [ ] 真实公共 fixture repo 的定时 smoke
 
 ## V0.3：Trust-first 私有 Release Candidate
@@ -68,7 +68,8 @@
 - [x] Topgrade custom command 集成文档；`upgrade --all` 继续只管 hukou entries
 - [x] uncached 全仓 ordinary/race/coverage/vet/build 最终绿灯并固化 commit
 - [x] macOS/Linux、四目标 build、双构建可重复性与 release snapshot/SBOM 内容验收
-- [x] `pinhaoma-review` claims-vs-evidence 独立复核（P0/P1/P2 = 0）
+- [x] Codex 团队内部 `pinhaoma-review` claims-vs-evidence 复核（当时记录 P0/P1/P2 = 0；无单独 raw report）
+- [ ] 第三方外部安全/可靠性审计；交接包已建立，重点 hypotheses 尚待确认或排除
 - [x] 推送私有分支并创建 draft private PR；hosted gate 的 billing 阻断已记录为 external gate
 
 最终固定提交证据：
@@ -89,8 +90,11 @@
 - Draft PR #6 的 CI run `29352308455` 五个 job 均 `steps=[]`，billing annotation
   明确为账户基础设施阻断；CodeQL private skip 不记 pass。
 
-这些结果只关闭 V0.3 local/private RC readiness。合并、tag、Release、public visibility
-与公开配套仓库仍需独立 Go/No-Go。
+这些结果只记录 V0.3 内部 local/private RC readiness。交接阶段已发现下载/归档
+资源预算、WAL intent trust anchor、private→public attestation 时序、toolchain 差异等
+高优先级审计 hypotheses；在外部审计确认或排除前，不得把原内部 P0/P1/P2 记录解释
+为外部 clean bill。合并、tag、Release、public visibility 与公开配套仓库仍需独立
+Go/No-Go。
 
 ## V0.3 之后
 

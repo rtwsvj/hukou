@@ -10,6 +10,7 @@
 - `change-records/`：实际文件、可核验 claims、命令结果和未完成项。
 - `verification-reports/`：独立核验当前 commit 的结果。
 - `session-log.md`：按时间记录任务入口与状态变化。
+- `../audit/`：第三方接手时使用的固定对象、复现命令、claims map 与 findings 模板。
 
 ## 状态规则
 
@@ -27,3 +28,6 @@
 4. 运行验证并创建 verification report。
 5. 更新 session log 与 roadmap。
 6. 用 `$pinhaoma-review` 对照代码、diff 和证据复核。
+
+内部 `$pinhaoma-review` 不能自动等同于独立外部审计。没有单独 raw report 时必须明确
+标注证据缺口，并要求第三方重新运行与保留自己的原始日志。

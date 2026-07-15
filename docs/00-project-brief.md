@@ -29,8 +29,9 @@ hukou 是一个 macOS/Linux CLI 工具管理器：先盘点机器上已有的可
 - `support bundle`：默认离线、脱敏、不上传的 JSON 诊断。
 - checksum 安装器、双语/社区/许可证入口、SBOM 与公开仓库条件下的 attestation/CodeQL 配置。
 
-“已实现”只表示代码和局部测试存在；在完整 verification report 与独立 review
-完成前，不等于 RC 已验收。当前正式版本仍是 v0.2.0，仓库仍保持 private。
+固定 subject 已有完整内部 local/private RC verification record，但外部审计与
+GitHub-hosted gate 尚未完成，因此不能提升为公开 readiness 或 release 结论。当前
+正式版本仍是 v0.2.0，仓库仍保持 private。
 
 ## 明确不在当前范围
 
