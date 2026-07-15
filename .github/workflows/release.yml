@@ -17,8 +17,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tag-guard:
+    name: Verify tag references main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
+    steps:
+      # This job runs no make target and executes none of the tag's tree code.
+      # It only proves a pushed tag is annotated and already an ancestor of
+      # origin/main *before* any later job (make verify, the release build)
+      # checks out and runs that tree. Credentials are persisted here solely so
+      # the explicit fetch below can populate refs/remotes/origin/main.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Require pushed tags to reference main and be annotated
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          commit="$(git rev-parse HEAD)"
+          git show-ref --verify refs/remotes/origin/main
+          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+          test "$(git cat-file -t "refs/tags/$VERSION")" = tag
+          test "$(git rev-list -n 1 "refs/tags/$VERSION")" = "$commit"
+
   verify:
     name: Release gate (${{ matrix.os }})
+    needs: tag-guard
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -56,15 +83,8 @@ jobs:
           cache-dependency-path: go.sum
       - name: Run release-only shell and vulnerability gates
         run: make shellcheck vulncheck
-      - name: Require pushed tags to reference main and be annotated
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        run: |
-          set -euo pipefail
-          commit="$(git rev-parse HEAD)"
-          git show-ref --verify refs/remotes/origin/main
-          git merge-base --is-ancestor "$commit" refs/remotes/origin/main
-          test "$(git cat-file -t "refs/tags/$VERSION")" = tag
-          test "$(git rev-list -n 1 "refs/tags/$VERSION")" = "$commit"
+      # The annotated-tag and origin/main ancestry gate now runs in the
+      # tag-guard job before any tree code executes; see that job above.
       - name: Build reproducible release archives
         run: |
           set -euo pipefail
@@ -110,7 +130,7 @@ jobs:
           done
           test "$(find "$sbom_root" -type f -name hukou | wc -l | tr -d ' ')" = 4
       - name: Generate SPDX JSON SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: ${{ runner.temp }}/hukou-sbom-root
           format: spdx-json
