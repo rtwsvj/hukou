@@ -93,7 +93,6 @@ transport trust (HTTPS plus the release's checksums.txt). Set
 `HUKOU_REQUIRE_ATTESTATION=1` (or `true`/`yes`) to make that verification
 mandatory instead of best-effort; leaving it empty or setting `0`/`false`/`no`
 keeps the fallback allowed, and any other value is rejected. The
-<!-- TODO(P1 handoff): README rewrite owner — internal docs/codex/ records were removed for the public tree; re-point or reword this link during the rewrite. -->
 [external audit entry point](AUDIT.md) tracks what is verified and what
 remains pending.
 
@@ -138,8 +137,6 @@ v0.2.0 publishes archives for:
 Windows is not currently supported. A cross-compiled artifact alone is not
 treated as platform support; the project records actual verification evidence
 under [docs/audit/](docs/audit/).
-<!-- TODO(P1 handoff): README rewrite owner — evidence formerly under docs/codex/verification-reports was removed for the public tree; confirm the final evidence location during the rewrite. -->
-
 
 ## Install v0.2
 
@@ -332,7 +329,7 @@ repository names, tokens, and details about private tools.
 ## License and attribution
 
 Original hukou work is licensed under the
-[Apache License 2.0](LICENSE), Copyright 2026 Eric (rtwsvj).
+[Apache License 2.0](LICENSE), Copyright (c) 2026 rtwsvj.
 
 Adapted code and dependencies remain under their respective licenses. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),

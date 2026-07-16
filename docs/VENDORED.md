@@ -30,7 +30,7 @@ Two categories are tracked separately:
 |---|---|---|---|
 | [zyedidia/eget](https://github.com/zyedidia/eget) @ `0983dea` | MIT | `internal/archive/`, `internal/verify/` | Archive location/verification approach used as a design reference. Upstream directory extraction lacked `../` path-traversal defense; hukou adds that guard. Upstream `--upgrade-only` compares by mtime; hukou compares explicit tags from the manifest instead. |
 | [marwanhawari/stew](https://github.com/marwanhawari/stew) @ `8a9a3ea` | MIT | `internal/ghrelease/`, `internal/manifest/` | GitHub download flow, binary hashing, and manifest design used as a reference. Known upstream pitfalls avoided: array-index panic on all-prerelease repos; archived `mholt/archiver` v3.1.1 (zip-slip history) replaced with the standard library / `mholt/archives`. |
-| [houseabsolute/ubi](https://github.com/houseabsolute/ubi) @ `edfac51` | Apache-2.0 | `internal/assetpick/pick.go` | Asset-tiebreak rules referenced; the Rust implementation is not ported. |
+| [houseabsolute/ubi](https://github.com/houseabsolute/ubi) @ `edfac51` | MIT OR Apache-2.0 (dual-licensed, per its upstream `Cargo.toml`) | `internal/assetpick/pick.go` | Asset-tiebreak rules referenced; the Rust implementation is not ported. |
 | [pkgforge/soar](https://github.com/pkgforge/soar) @ `cc0526e` | MIT | `internal/store/`, `internal/manifest/` | Version-addressing and switching architecture referenced. Multi-version/symlink/rollback is implemented independently (patterned after mise/aqua shims). |
 
 ## Go module dependencies

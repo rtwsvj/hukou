@@ -6,7 +6,6 @@ updates:
       interval: weekly
       day: monday
       time: "09:00"
-      timezone: Asia/Shanghai
     open-pull-requests-limit: 5
     labels:
       - dependencies
@@ -24,7 +23,6 @@ updates:
       interval: weekly
       day: monday
       time: "09:30"
-      timezone: Asia/Shanghai
     open-pull-requests-limit: 5
     labels:
       - dependencies

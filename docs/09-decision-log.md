@@ -41,7 +41,8 @@ Important, long-lived, or hard-to-reverse decisions are written to
   verification and the caller's subsequent read; (2) the three verification
   steps (name / Lstat / COMMIT) can be replaced concurrently relative to each
   other — was **recorded-accepted** without adding a read lock (maintainer
-  decision, corroborated by independent review). Rationale: the read path is a
+  decision, cited by the internal multi-round claims-vs-evidence review
+  (author-side)). Rationale: the read path is a
   same-user diagnostic view, not a security boundary; any writer able to race
   this check can already write the transaction root and directly control state;
   the hukou detector independently re-checks sha256 for every matched entry, so

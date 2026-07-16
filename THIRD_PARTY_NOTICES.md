@@ -40,7 +40,7 @@ not identify copied implementation in the corresponding hukou components:
   MIT. Its license is retained at
   [LICENSES/stew-MIT.txt](LICENSES/stew-MIT.txt).
 - [ubi](https://github.com/houseabsolute/ubi), evaluated at `edfac51`,
-  Apache License 2.0.
+  dual-licensed MIT OR Apache-2.0 (per its upstream `Cargo.toml`).
 - [soar](https://github.com/pkgforge/soar), evaluated at `cc0526e`, MIT.
 
 The detailed source relationship and maintenance rules are recorded in

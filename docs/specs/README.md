@@ -1,8 +1,7 @@
 # Specifications
 
-This directory holds the phase-level contracts for hukou. The specification
-bodies are kept in their original Chinese; the summaries below describe, in
-English, each spec's contract scope and current status. When a spec and the
+This directory holds the phase-level contracts for hukou. The summaries below
+give each spec's contract scope and current status. When a spec and the
 current code disagree, the code is authoritative — record the resolution in
 [`../09-decision-log.md`](../09-decision-log.md).
 
