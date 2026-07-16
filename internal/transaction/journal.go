@@ -26,6 +26,7 @@ const (
 	pendingPrefix        = "pending-"
 	completedPrefix      = "completed-"
 	quarantinedPrefix    = "quarantined-"
+	quarantinedHexLen    = 16
 	intentFileName       = "intent.json"
 	commitFileName       = "COMMIT"
 	maxIntentBytes       = 1 << 20
@@ -163,6 +164,62 @@ func CheckClean(dataRoot string) error {
 	return nil
 }
 
+// QuarantinedPrefix returns the journal prefix used for quarantine containers.
+func QuarantinedPrefix() string { return quarantinedPrefix }
+
+// IsValidQuarantineContainer reports whether name under txRoot is a trusted
+// quarantined container. The name must be exactly "quarantined-" followed by
+// 16 lowercase hex digits; the path must be a real directory (not a symlink);
+// and its contents must be exactly the expected META regular file and payload
+// entry, with no other names. Containers that fail any of these checks must be
+// treated as Unknown so they are fail-closed rather than silently purged.
+func IsValidQuarantineContainer(txRoot, name string) bool {
+	if txRoot == "" || name == "" {
+		return false
+	}
+	if len(name) != len(quarantinedPrefix)+quarantinedHexLen {
+		return false
+	}
+	if !strings.HasPrefix(name, quarantinedPrefix) {
+		return false
+	}
+	suffix := name[len(quarantinedPrefix):]
+	if strings.ToLower(suffix) != suffix {
+		return false
+	}
+	if _, err := hex.DecodeString(suffix); err != nil {
+		return false
+	}
+	path := filepath.Join(txRoot, name)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil || len(entries) != 2 {
+		return false
+	}
+	hasMeta, hasPayload := false, false
+	for _, entry := range entries {
+		switch entry.Name() {
+		case quarantineMetaFileName:
+			metaInfo, err := os.Lstat(filepath.Join(path, entry.Name()))
+			if err != nil || metaInfo.Mode()&os.ModeSymlink != 0 || !metaInfo.Mode().IsRegular() {
+				return false
+			}
+			hasMeta = true
+		case quarantinePayloadName:
+			hasPayload = true
+		default:
+			return false
+		}
+	}
+	return hasMeta && hasPayload
+}
+
 // Inspect inventories journal directories without creating or modifying any
 // path. It is safe for dry-run and doctor diagnostics.
 func Inspect(dataRoot string) (Status, error) {
@@ -191,7 +248,11 @@ func Inspect(dataRoot string) (Status, error) {
 		case strings.HasPrefix(name, buildingPrefix):
 			status.Building = append(status.Building, name)
 		case strings.HasPrefix(name, quarantinedPrefix):
-			status.Quarantined = append(status.Quarantined, name)
+			if IsValidQuarantineContainer(txRoot, name) {
+				status.Quarantined = append(status.Quarantined, name)
+			} else {
+				status.Unknown = append(status.Unknown, name)
+			}
 		case strings.HasPrefix(name, pendingPrefix):
 			status.Pending = append(status.Pending, name)
 		case strings.HasPrefix(name, completedPrefix):

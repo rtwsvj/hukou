@@ -223,7 +223,9 @@ func PurgeQuarantined(dataRoot string) ([]string, error) {
 	}
 	removed := make([]string, 0, len(status.Quarantined))
 	for _, name := range status.Quarantined {
-		if !strings.HasPrefix(name, quarantinedPrefix) {
+		// Inspect already validates containers, but purge is destructive so the
+		// same layout check is repeated defensively before any removal.
+		if !IsValidQuarantineContainer(txRoot, name) {
 			continue
 		}
 		dir := filepath.Join(txRoot, name)

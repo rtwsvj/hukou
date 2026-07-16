@@ -420,13 +420,16 @@ func TestPurgeQuarantinePlanAndApply(t *testing.T) {
 	if err := os.MkdirAll(txRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A quarantined directory carrying evidence, plus a real completed journal
-	// that purge must leave untouched.
-	quarantined := filepath.Join(txRoot, "quarantined-mystery-"+strings.Repeat("a", 32))
+	// A valid quarantined container carrying evidence, plus a real completed
+	// journal that purge must leave untouched.
+	quarantined := filepath.Join(txRoot, "quarantined-"+strings.Repeat("a", 16))
 	if err := os.Mkdir(quarantined, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(quarantined, "evidence"), []byte("keep"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(quarantined, "META"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "payload"), []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	completed := filepath.Join(txRoot, "completed-"+strings.Repeat("b", 32))
@@ -463,20 +466,29 @@ func TestPurgeQuarantineRejectsStalePlan(t *testing.T) {
 	if err := os.MkdirAll(txRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	quarantined := filepath.Join(txRoot, "quarantined-a-"+strings.Repeat("a", 32))
+	quarantined := filepath.Join(txRoot, "quarantined-"+strings.Repeat("a", 16))
 	if err := os.Mkdir(quarantined, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(quarantined, "x"), []byte("1"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(quarantined, "META"), []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "payload"), []byte("1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := BuildPlan(root, ActionPurgeQuarantine, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A new quarantined entry appears after planning; apply must fail closed.
-	other := filepath.Join(txRoot, "quarantined-b-"+strings.Repeat("b", 32))
+	// A new valid quarantined entry appears after planning; apply must fail closed.
+	other := filepath.Join(txRoot, "quarantined-"+strings.Repeat("b", 16))
 	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "META"), []byte("2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "payload"), []byte("2"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Apply(root, plan); !errors.Is(err, ErrStateChanged) {
@@ -718,6 +730,298 @@ func TestCleanLiveTempsRequiresNoActiveJournals(t *testing.T) {
 	}
 }
 
+func TestCleanLiveTempsRejectsSymlinkLiveDirectory(t *testing.T) {
+	realDir := t.TempDir()
+	linkDir := filepath.Join(t.TempDir(), "linkdir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(linkDir, "tool")
+	root, _, _ := manifestFixtureWithLive(t, livePath)
+	now := time.Now()
+	orphan := filepath.Join(realDir, ".hukou-txn-orphan")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildPlan(root, ActionCleanLiveTemps, now); !errors.Is(err, ErrNotRepairable) {
+		t.Fatalf("expected ErrNotRepairable for live directory reached via symlink, got %v", err)
+	}
+}
+
+func TestCleanLiveTempsFdAnchoredRemovalRejectsSymlinkSwap(t *testing.T) {
+	root, _, _, livePath := manifestBackupFixture(t)
+	liveDir := filepath.Dir(livePath)
+	now := time.Now()
+	orphan := filepath.Join(liveDir, ".hukou-txn-orphan")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(root, ActionCleanLiveTemps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := filepath.Join(liveDir, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := testBeforeCleanLiveTempRemove
+	testBeforeCleanLiveTempRemove = func(path string) {
+		if path != orphan {
+			t.Fatalf("hook path=%s want %s", path, orphan)
+		}
+		if err := os.Remove(orphan); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(sentinel, orphan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { testBeforeCleanLiveTempRemove = oldHook })
+
+	result, err := Apply(root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.RemovedLiveTemps) != 1 || result.RemovedLiveTemps[0] != orphan {
+		t.Fatalf("expected orphan removed, got %+v", result)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "sentinel" {
+		t.Fatalf("fd-anchored removal followed symlink target: data=%q err=%v", data, err)
+	}
+	if _, err := os.Lstat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan symlink entry still present: %v", err)
+	}
+}
+
+func TestCleanLiveTempsApplySkipsWhenParentNotLiveDir(t *testing.T) {
+	root, mainPath, _, livePath := manifestBackupFixture(t)
+	liveDir := filepath.Dir(livePath)
+	now := time.Now()
+	orphan := filepath.Join(liveDir, ".hukou-txn-orphan")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(root, ActionCleanLiveTemps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the manifest with a live path in a different directory so the
+	// planned orphan's parent is no longer a recognized live directory.
+	otherLive := filepath.Join(t.TempDir(), "other-tool")
+	_, otherMain, _ := manifestFixtureWithLive(t, otherLive)
+	otherManifest, err := os.ReadFile(otherMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainPath, otherManifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Apply(root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SkippedLiveTemps) != 1 || result.SkippedLiveTemps[0] != orphan {
+		t.Fatalf("expected skip when parent is no longer a live dir, got %+v", result)
+	}
+	if _, err := os.Lstat(orphan); err != nil {
+		t.Fatalf("orphan was deleted after parent stopped being live: %v", err)
+	}
+}
+
+func TestCleanLiveTempsApplySkipsWhenTargetBecomesLivePath(t *testing.T) {
+	root, mainPath, _, livePath := manifestBackupFixture(t)
+	liveDir := filepath.Dir(livePath)
+	now := time.Now()
+	orphan := filepath.Join(liveDir, ".hukou-txn-orphan")
+	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(root, ActionCleanLiveTemps, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := manifest.Load(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, err := store.SHA256File(orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := manifest.Entry{
+		Name:         "orphan",
+		Path:         orphan,
+		Repo:         "example/project",
+		Tag:          "v1.0.0",
+		SHA256:       sha,
+		Upstream:     "https://example.invalid",
+		AdoptedAt:    "2026-01-01T00:00:00Z",
+		UpdatedAt:    "2026-01-01T00:00:00Z",
+		UpdatePolicy: manifest.DefaultUpdatePolicy(),
+	}
+	if err := activation.RecordAdopt(&entry, "act-orphan", entry.UpdatedAt); err != nil {
+		t.Fatal(err)
+	}
+	m.Put(entry)
+	if err := m.Save(mainPath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Apply(root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SkippedLiveTemps) != 1 || result.SkippedLiveTemps[0] != orphan {
+		t.Fatalf("expected skip when orphan became a live path, got %+v", result)
+	}
+	if _, err := os.Lstat(orphan); err != nil {
+		t.Fatalf("orphan was deleted after it became a live path: %v", err)
+	}
+}
+
+func TestCleanLiveTempsApplyRevalidatesIdentity(t *testing.T) {
+	root, _, _, livePath := manifestBackupFixture(t)
+	liveDir := filepath.Dir(livePath)
+	// Use a future reference clock so that freshly-created symlinks (whose own
+	// mtime cannot be rewritten) still appear older than the one-hour cutoff.
+	now := time.Now().Add(2 * time.Hour)
+
+	tests := []struct {
+		name   string
+		setup  func(string)
+		kind   string
+		create func(string) error
+	}{
+		{
+			name: "mode changed",
+			kind: "regular",
+			setup: func(path string) {
+				if err := os.Chmod(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			create: func(path string) error {
+				return os.WriteFile(path, []byte("orphan"), 0o600)
+			},
+		},
+		{
+			name: "size changed",
+			kind: "regular",
+			setup: func(path string) {
+				if err := os.WriteFile(path, []byte("replaced-longer"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			create: func(path string) error {
+				return os.WriteFile(path, []byte("orphan"), 0o600)
+			},
+		},
+		{
+			name: "mtime changed",
+			kind: "regular",
+			setup: func(path string) {
+				if err := os.Chtimes(path, now.Add(30*time.Minute), now.Add(30*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			create: func(path string) error {
+				return os.WriteFile(path, []byte("orphan"), 0o600)
+			},
+		},
+		{
+			name: "sha prefix mismatch",
+			kind: "regular",
+			setup: func(path string) {
+				if err := os.WriteFile(path, []byte("xorphan"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			create: func(path string) error {
+				return os.WriteFile(path, []byte("orphan"), 0o600)
+			},
+		},
+		{
+			name: "age no longer satisfies cutoff",
+			kind: "regular",
+			setup: func(path string) {
+				if err := os.Chtimes(path, now.Add(30*time.Minute), now.Add(30*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			create: func(path string) error {
+				return os.WriteFile(path, []byte("orphan"), 0o600)
+			},
+		},
+		{
+			name: "symlink target changed",
+			kind: "symlink",
+			setup: func(path string) {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("elsewhere", path); err != nil {
+					t.Fatal(err)
+				}
+			},
+			create: func(path string) error {
+				return os.Symlink("somewhere", path)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(liveDir, ".hukou-txn-"+strings.ReplaceAll(tc.name, " ", "-"))
+			if err := tc.create(path); err != nil {
+				t.Fatal(err)
+			}
+			if tc.kind != "symlink" {
+				if err := os.Chtimes(path, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plan, err := BuildPlan(root, ActionCleanLiveTemps, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(path)
+			result, err := Apply(root, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, skipped := range result.SkippedLiveTemps {
+				if skipped == path {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected %s to be skipped, got %+v", path, result)
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("mismatched target was deleted: %v", err)
+			}
+		})
+	}
+}
+
 func TestCleanLiveTempsPlanRoundTripAndTamperRejection(t *testing.T) {
 	root, _, _, livePath := manifestBackupFixture(t)
 	liveDir := filepath.Dir(livePath)
@@ -764,6 +1068,12 @@ func TestNewActionsRejectCrossDataRoot(t *testing.T) {
 	}
 	quarantined := filepath.Join(txRootA, "quarantined-"+strings.Repeat("a", 16))
 	if err := os.Mkdir(quarantined, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "META"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "payload"), []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	purgePlan, err := BuildPlan(rootA, ActionPurgeQuarantine, time.Now())

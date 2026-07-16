@@ -301,10 +301,41 @@ func TestStagingManifestTempAndPendingTransaction(t *testing.T) {
 	}
 }
 
-func TestQuarantinedTransactionEntryIsWarned(t *testing.T) {
+func TestValidQuarantineContainerIsWarned(t *testing.T) {
 	root, _ := validAdoptState(t)
-	// A quarantined entry can be a stray file, not only a directory; doctor must
-	// classify it as a warning rather than an invalid-entry error.
+	quarantined := filepath.Join(root, "transactions", "quarantined-1234567890abcdef")
+	if err := os.MkdirAll(filepath.Dir(quarantined), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(quarantined, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "META"), []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantined, "payload"), []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report := doctor.Scan(doctor.Options{DataRoot: root})
+	if !hasCode(report, "TRANSACTION_QUARANTINED_PRESENT") {
+		t.Fatalf("missing TRANSACTION_QUARANTINED_PRESENT: %+v", report.Findings)
+	}
+	if hasCode(report, "TRANSACTION_QUARANTINED_INVALID") || hasCode(report, "TRANSACTION_ENTRY_INVALID") {
+		t.Fatalf("valid quarantine container misclassified as invalid: %+v", report.Findings)
+	}
+	for _, finding := range report.Findings {
+		if finding.Code == "TRANSACTION_QUARANTINED_PRESENT" && finding.Severity != doctor.SeverityWarning {
+			t.Fatalf("quarantine finding severity = %s, want warning", finding.Severity)
+		}
+	}
+}
+
+func TestInvalidQuarantineContainerIsRejected(t *testing.T) {
+	root, _ := validAdoptState(t)
+	// A quarantined-like name that does not satisfy the container layout is
+	// fail-closed: doctor reports it as an invalid quarantine entry, not a
+	// trusted warning.
 	quarantined := filepath.Join(root, "transactions", "quarantined-mystery-1234")
 	if err := os.MkdirAll(filepath.Dir(quarantined), 0o700); err != nil {
 		t.Fatal(err)
@@ -314,15 +345,15 @@ func TestQuarantinedTransactionEntryIsWarned(t *testing.T) {
 	}
 
 	report := doctor.Scan(doctor.Options{DataRoot: root})
-	if !hasCode(report, "TRANSACTION_QUARANTINED_PRESENT") {
-		t.Fatalf("missing TRANSACTION_QUARANTINED_PRESENT: %+v", report.Findings)
+	if !hasCode(report, "TRANSACTION_QUARANTINED_INVALID") {
+		t.Fatalf("missing TRANSACTION_QUARANTINED_INVALID: %+v", report.Findings)
 	}
-	if hasCode(report, "TRANSACTION_ENTRY_INVALID") {
-		t.Fatalf("quarantined entry misclassified as invalid: %+v", report.Findings)
+	if hasCode(report, "TRANSACTION_QUARANTINED_PRESENT") {
+		t.Fatalf("invalid quarantined-like entry misclassified as trusted: %+v", report.Findings)
 	}
 	for _, finding := range report.Findings {
-		if finding.Code == "TRANSACTION_QUARANTINED_PRESENT" && finding.Severity != doctor.SeverityWarning {
-			t.Fatalf("quarantine finding severity = %s, want warning", finding.Severity)
+		if finding.Code == "TRANSACTION_QUARANTINED_INVALID" && finding.Severity != doctor.SeverityError {
+			t.Fatalf("invalid quarantine severity = %s, want error", finding.Severity)
 		}
 	}
 }

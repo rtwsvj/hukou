@@ -13,6 +13,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
 const maxManifestSize = 16 << 20
@@ -635,8 +636,12 @@ func scanTransactions(report *Report, root string) {
 	pending := 0
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
-		if strings.HasPrefix(entry.Name(), "quarantined-") {
-			report.add(SeverityWarning, "TRANSACTION_QUARANTINED_PRESENT", "transaction", entry.Name(), entryPath, "quarantined transaction entry is retained for diagnosis; inspect it, then run `hukou repair plan --action purge-quarantine` and apply the plan to delete it")
+		if strings.HasPrefix(entry.Name(), statejournal.QuarantinedPrefix()) {
+			if statejournal.IsValidQuarantineContainer(path, entry.Name()) {
+				report.add(SeverityWarning, "TRANSACTION_QUARANTINED_PRESENT", "transaction", entry.Name(), entryPath, "quarantined transaction entry is retained for diagnosis; inspect it, then run `hukou repair plan --action purge-quarantine` and apply the plan to delete it")
+			} else {
+				report.add(SeverityError, "TRANSACTION_QUARANTINED_INVALID", "transaction", entry.Name(), entryPath, "quarantined-like entry failed layout validation; inspect it manually before recovery can proceed")
+			}
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {

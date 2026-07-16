@@ -254,8 +254,9 @@ func Apply(dataRoot string, plan Plan) (result Result, retErr error) {
 		// The deletion set was fixed at plan time and every target carries its
 		// own identity observation, so state drift degrades to per-item skips
 		// instead of a whole-plan failure. The fingerprint is recomputed from the
-		// plan's own targets to reject a tampered or internally inconsistent
-		// plan document before anything is removed.
+		// plan's own targets as a tamper-evidence hint; it is not an authorization
+		// check, because each target is re-proved against current manifest and
+		// directory reality immediately before removal.
 		expected, err := cleanLiveTempsFingerprint(plan.Targets, planTime)
 		if err != nil {
 			return result, err
@@ -266,7 +267,7 @@ func Apply(dataRoot string, plan Plan) (result Result, retErr error) {
 		if !reflect.DeepEqual(plan.Preconditions, cleanLiveTempsPreconditions()) {
 			return result, fmt.Errorf("%w: preconditions mismatch", ErrInvalidPlan)
 		}
-		return result, applyCleanLiveTemps(root, plan, &result)
+		return result, applyCleanLiveTemps(root, plan, planTime, &result)
 	}
 
 	current, err := evaluate(root, plan.Action, planTime)
@@ -576,19 +577,100 @@ func cleanLiveTempsPreconditions() []Precondition {
 	}
 }
 
-// registeredLivePaths returns the exact clean paths of every manifest entry.
-// These paths are permanently excluded from clean-live-temps: a registered
-// live file is never a deletion candidate, whatever its name or age.
-func registeredLivePaths(m *manifest.Manifest) map[string]struct{} {
-	result := make(map[string]struct{}, len(m.Entries))
+// fileIdentity is the physical device/inode identity of a filesystem node.
+type fileIdentity struct {
+	dev uint64
+	ino uint64
+}
+
+func (id fileIdentity) matches(dev, ino uint64) bool {
+	return id.dev == dev && id.ino == ino
+}
+
+func fileIdentityFromInfo(info os.FileInfo) (fileIdentity, bool) {
+	dev, ino, ok := fileID(info)
+	return fileIdentity{dev: dev, ino: ino}, ok
+}
+
+// liveIdentitySet captures the physical directories that contain manifest live
+// paths and the physical files that are manifest live paths themselves. On
+// platforms without stable file IDs the path string is retained as a fallback.
+type liveIdentitySet struct {
+	dirIDs    map[fileIdentity]struct{}
+	dirPaths  map[string]struct{}
+	fileIDs   map[fileIdentity]struct{}
+	filePaths map[string]struct{}
+}
+
+// collectLiveIdentities resolves every manifest entry to its parent directory
+// identity and to its own file identity. Directories are deduplicated by
+// device/inode, not by path string, so a live directory reached through a
+// symlink is not accidentally trusted.
+func collectLiveIdentities(m *manifest.Manifest) liveIdentitySet {
+	s := liveIdentitySet{
+		dirIDs:    make(map[fileIdentity]struct{}),
+		dirPaths:  make(map[string]struct{}),
+		fileIDs:   make(map[fileIdentity]struct{}),
+		filePaths: make(map[string]struct{}),
+	}
 	for _, entry := range m.Entries {
 		if entry.Path == "" || !filepath.IsAbs(entry.Path) {
 			continue
 		}
-		result[filepath.Clean(entry.Path)] = struct{}{}
+		clean := filepath.Clean(entry.Path)
+		s.filePaths[clean] = struct{}{}
+		if info, err := os.Lstat(clean); err == nil {
+			if id, ok := fileIdentityFromInfo(info); ok {
+				s.fileIDs[id] = struct{}{}
+			}
+		}
+		parent := filepath.Dir(clean)
+		if _, seen := s.dirPaths[parent]; seen {
+			continue
+		}
+		info, err := os.Lstat(parent)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			continue
+		}
+		if id, ok := fileIdentityFromInfo(info); ok {
+			s.dirIDs[id] = struct{}{}
+		}
+		s.dirPaths[parent] = struct{}{}
 	}
-	return result
+	return s
 }
+
+func (s liveIdentitySet) dirs() []string {
+	dirs := make([]string, 0, len(s.dirPaths))
+	for dir := range s.dirPaths {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+func (s liveIdentitySet) containsDir(info os.FileInfo, path string) bool {
+	if id, ok := fileIdentityFromInfo(info); ok {
+		_, in := s.dirIDs[id]
+		return in
+	}
+	_, in := s.dirPaths[path]
+	return in
+}
+
+func (s liveIdentitySet) isLivePath(info os.FileInfo, path string) bool {
+	if id, ok := fileIdentityFromInfo(info); ok {
+		_, in := s.fileIDs[id]
+		return in
+	}
+	_, in := s.filePaths[path]
+	return in
+}
+
+// testBeforeCleanLiveTempRemove is a deterministic race seam. Production leaves
+// it nil; package tests use it to swap a target after re-validation but before
+// the fd-anchored removal.
+var testBeforeCleanLiveTempRemove func(string)
 
 func evaluateCleanLiveTemps(root string, now time.Time) (evaluation, error) {
 	// Age alone cannot prove a temporary is orphaned: a slow copy inside a live
@@ -606,20 +688,11 @@ func evaluateCleanLiveTemps(root string, now time.Time) (evaluation, error) {
 	if err != nil {
 		return evaluation{}, fmt.Errorf("%w: load manifest: %v", ErrNotRepairable, err)
 	}
-	livePaths := registeredLivePaths(m)
-	dirSet := make(map[string]struct{}, len(livePaths))
-	for path := range livePaths {
-		dirSet[filepath.Dir(path)] = struct{}{}
-	}
-	dirs := make([]string, 0, len(dirSet))
-	for dir := range dirSet {
-		dirs = append(dirs, dir)
-	}
-	sort.Strings(dirs)
+	live := collectLiveIdentities(m)
 
 	cutoff := now.Add(-liveTempMinAge)
 	targets := make([]LiveTempTarget, 0)
-	for _, dir := range dirs {
+	for _, dir := range live.dirs() {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -633,17 +706,18 @@ func evaluateCleanLiveTemps(root string, now time.Time) (evaluation, error) {
 				continue
 			}
 			full := filepath.Join(dir, name)
-			if _, live := livePaths[filepath.Clean(full)]; live {
-				// Registered live paths are permanently excluded, even when their
-				// basename carries the temporary prefix.
-				continue
-			}
 			info, err := os.Lstat(full)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
 				return evaluation{}, fmt.Errorf("%w: inspect live temporary: %v", ErrNotRepairable, err)
+			}
+			if live.isLivePath(info, full) {
+				// Registered live paths are permanently excluded, even when their
+				// basename carries the temporary prefix. The exclusion prefers the
+				// physical file identity over the path string.
+				continue
 			}
 			symlink := info.Mode()&os.ModeSymlink != 0
 			if !symlink && !info.Mode().IsRegular() {
@@ -693,11 +767,13 @@ func evaluateCleanLiveTemps(root string, now time.Time) (evaluation, error) {
 	}, nil
 }
 
-// applyCleanLiveTemps deletes exactly the planned targets. Each target is
-// re-verified against its recorded identity immediately before removal; a
-// mismatch, a disappearance, or a path that is now registered in the manifest
+// applyCleanLiveTemps deletes exactly the planned targets. The plan's
+// fingerprint is retained only as a tamper-evidence hint; every target is
+// re-proved against the current manifest and directory reality under the
+// mutation lock before removal. A mismatch, a disappearance, a path that is
+// now a registered live path, or an age that no longer satisfies the cutoff
 // downgrades that item to a skip instead of a deletion.
-func applyCleanLiveTemps(root string, plan Plan, result *Result) error {
+func applyCleanLiveTemps(root string, plan Plan, planTime time.Time, result *Result) error {
 	status, err := statejournal.Inspect(root)
 	if err != nil {
 		return fmt.Errorf("%w: inspect transaction state: %v", ErrStateChanged, err)
@@ -709,38 +785,65 @@ func applyCleanLiveTemps(root string, plan Plan, result *Result) error {
 	if err != nil {
 		return fmt.Errorf("%w: load manifest: %v", ErrStateChanged, err)
 	}
-	livePaths := registeredLivePaths(m)
+	live := collectLiveIdentities(m)
+	cutoff := planTime.Add(-liveTempMinAge)
 	for _, target := range plan.Targets {
-		matches, err := liveTempTargetMatches(target, livePaths)
+		ok, err := revalidateLiveTempTarget(target, cutoff, live)
 		if err != nil {
 			return err
 		}
-		if !matches {
+		if !ok {
 			result.SkippedLiveTemps = append(result.SkippedLiveTemps, target.Path)
 			continue
 		}
-		if err := durablefs.Remove(target.Path); err != nil {
+		parent := filepath.Dir(target.Path)
+		rootFd, err := os.OpenRoot(parent)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				result.SkippedLiveTemps = append(result.SkippedLiveTemps, target.Path)
+				continue
+			}
+			return fmt.Errorf("anchor live temporary parent %s: %w", parent, err)
+		}
+		if testBeforeCleanLiveTempRemove != nil {
+			testBeforeCleanLiveTempRemove(target.Path)
+		}
+		if err := rootFd.Remove(filepath.Base(target.Path)); err != nil {
+			_ = rootFd.Close()
 			if errors.Is(err, os.ErrNotExist) {
 				result.SkippedLiveTemps = append(result.SkippedLiveTemps, target.Path)
 				continue
 			}
 			return fmt.Errorf("remove live transaction temporary %s: %w", target.Path, err)
 		}
+		if err := rootFd.Close(); err != nil {
+			return fmt.Errorf("close live temporary parent %s: %w", parent, err)
+		}
 		result.RemovedLiveTemps = append(result.RemovedLiveTemps, target.Path)
 	}
 	return nil
 }
 
-// liveTempTargetMatches re-observes one planned target and reports whether it
-// still matches every identity field recorded at plan time. Inspection errors
-// other than absence fail the whole apply, because an unverifiable resource
-// must never be deleted.
-func liveTempTargetMatches(target LiveTempTarget, livePaths map[string]struct{}) (bool, error) {
+// revalidateLiveTempTarget re-proves one planned target against the current
+// manifest and directory reality. It returns true only when the target is still
+// inside a manifest live directory, is not a registered live path itself, still
+// carries the transaction temporary prefix, matches the recorded seven-field
+// identity (kind, permissions, size, mtime, dev/inode, and SHA-256 prefix or
+// symlink target), and is still older than the age cutoff.
+func revalidateLiveTempTarget(target LiveTempTarget, cutoff time.Time, live liveIdentitySet) (bool, error) {
 	path := filepath.Clean(target.Path)
-	if _, live := livePaths[path]; live {
+	if !strings.HasPrefix(filepath.Base(path), liveTransactionTempPrefix) {
 		return false, nil
 	}
-	if !strings.HasPrefix(filepath.Base(path), liveTransactionTempPrefix) {
+	parent := filepath.Dir(path)
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect live temporary parent %s: %w", parent, err)
+	}
+	if !live.containsDir(parentInfo, parent) {
 		return false, nil
 	}
 	info, err := os.Lstat(path)
@@ -749,6 +852,9 @@ func liveTempTargetMatches(target LiveTempTarget, livePaths map[string]struct{})
 			return false, nil
 		}
 		return false, fmt.Errorf("inspect live transaction temporary %s: %w", path, err)
+	}
+	if live.isLivePath(info, path) {
+		return false, nil
 	}
 	symlink := info.Mode()&os.ModeSymlink != 0
 	switch target.Kind {
@@ -778,10 +884,13 @@ func liveTempTargetMatches(target LiveTempTarget, livePaths map[string]struct{})
 		return false, nil
 	}
 	if target.HasFileID {
-		dev, inode, ok := fileID(info)
-		if !ok || dev != target.Dev || inode != target.Inode {
+		dev, ino, ok := fileID(info)
+		if !ok || dev != target.Dev || ino != target.Inode {
 			return false, nil
 		}
+	}
+	if !info.ModTime().Before(cutoff) {
+		return false, nil
 	}
 	return true, nil
 }
