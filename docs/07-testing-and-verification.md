@@ -9,9 +9,9 @@
 | L3 全仓 | test、race、vet、build、coverage | 当前提交的工程基线 |
 | L4 隔离 smoke | 临时 HOME/PATH/data root 的 CLI 流程 | 命令接线与文件系统行为 |
 | L5 发布验证 | 四平台 archive、checksums、版本注入 | 发布链路 |
-| L6 真实网络 smoke | 受控公共 fixture repo | GitHub API/CDN 集成；当前后置 |
+| L6 真实网络 smoke | 受控公共 fixture repo | GitHub API + 资产选择 + 资产元数据（URL/大小）验证，不含下载/CDN 传输；已通过（2026-07-16） |
 
-历史 DONE 文档只记录当时声称的结果。新的“通过”结论必须写入 `docs/codex/verification-reports/`，并包含提交 SHA、命令、退出状态和关键输出。
+历史 DONE 文档只记录当时声称的结果。新的“通过”结论必须写入 `docs/audit/`，并包含提交 SHA、命令、退出状态和关键输出。
 
 ## 必需门禁
 
@@ -33,28 +33,45 @@ govulncheck；各 target 仍可单独运行。
 - release 脚本静态检查与 snapshot 打包
 - Linux amd64 archive 解包并执行 `hukou version`
 
-## L6 真实网络 smoke（后置，opt-in）
+## L6 真实网络 smoke（opt-in，已通过 2026-07-16）
 
-L6（受控公共 fixture repo 的真实 GitHub API/CDN 集成）当前仍**后置**，不在 `make
-verify`/`make release-verify` 与 CI 的默认门禁内，也未记录为通过。占位入口是
-`make verify-network`：
+L6 覆盖的范围是：**真实 GitHub API + 资产选择 + 资产元数据（URL/大小）验证，不含
+下载/CDN 传输**。它已在 2026-07-16 真实运行并通过（见下方真跑记录），仍是 opt-in，
+故意不在 `make verify`/`make release-verify` 与 CI 的默认门禁内——默认门禁保持零
+网络。入口是 `make verify-network`：
 
 ```bash
-make verify-network
+GH_TOKEN=$(gh auth token) make verify-network
 ```
 
 该目标运行 `cmd/network_e2e_test.go`，双重关闸确保默认零网络：
 
 - `//go:build network_e2e` 构建标签把测试文件排除在默认编译之外，`go test ./...`
   与 `make verify` 都不会编译或运行它。
-- 即使带标签编译，测试也会在 `HUKOU_NETWORK_E2E=1` 未设置时 `t.Skip`；缺
-  `GITHUB_TOKEN`/`GH_TOKEN` 时同样跳过。
+- 即使带标签编译，测试也会在 `HUKOU_NETWORK_E2E=1` 未设置时 `t.Skip`。
+- `make verify-network` 本身是显式请求跑门禁：缺 `GITHUB_TOKEN`/`GH_TOKEN` 时目标
+  直接报错退出，不允许"静默 skip 后绿灯"；测试内的 token 缺失 skip 只作为直接
+  `go test` 调用时的纵深防御。
 
-当前骨架对固定 fixture repo（默认 `rtwsvj/hukou`，可用
-`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO` 覆盖）走一次真实
-`ghrelease.Client.Latest` 元数据请求，验证 GitHub release API 集成。后续可在此
-入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，且不触碰真实
-PATH 文件；在真实运行并记录进 `docs/codex/verification-reports/` 前，L6 不得标绿。
+冒烟对固定 fixture repo（默认 `cli/cli` 的 gh CLI——发布节奏稳、资产命名可预测，可用
+`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO` 覆盖，例如 `junegunn/fzf`）依次
+验证三段：
+
+1. 真实 `ghrelease.Client.Latest` 元数据请求（GitHub release API 集成）；
+2. 把返回的资产名喂给真实 `assetpick.Pick`，断言在固定的 `linux/amd64` 目标上解析
+   出唯一归档（资产选择集成）；
+3. 对选中资产断言其 `BrowserDownloadURL` 为带 host 的 https URL 且 `Size > 0`
+   （下载路径将要消费的元数据字段可用）。
+
+它**不下载任何资产**：真实 CDN 传输（下载、解压、checksum/attestation 的联网路径）
+不在 L6 当前声明范围内，仍由隔离 `httptest` 单测覆盖。之前默认指向 `rtwsvj/hukou`
+无法运行，因为该私有仓尚无公开 release；改用外部稳定 fixture 后 L6 才可真实关闸。
+
+真跑证据绑定 subject 提交 `a668ef49d2d7be41c990664ada130df31cb7c92f`（含平台/
+工具链、命令、退出状态与关键输出），记录在
+[`docs/audit/2026-07-16-l6-network-smoke.md`](audit/2026-07-16-l6-network-smoke.md)。
+后续仍可在此入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，
+且不触碰真实 PATH 文件；该扩展是增量，不改变 L6 当前已绿的声明范围。
 
 ## CI
 

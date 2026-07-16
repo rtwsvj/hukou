@@ -55,6 +55,16 @@ Explain any checked item that does not apply or any accepted risk:
 - [ ] Or: exact source, commit, copyright, license, modification header, `LICENSES/`, `THIRD_PARTY_NOTICES.md`, and source records were updated.
 - [ ] All commits include a DCO `Signed-off-by` line.
 
+### Vendored / adapted files
+
+Adapted upstream files listed in `THIRD_PARTY_NOTICES.md` (for example
+`internal/assetpick/detect.go` and `internal/provenance/gobin.go`) are kept as
+close to their source as possible and must not be edited casually.
+
+- [ ] This PR does not modify any vendored/adapted third-party file.
+- [ ] Or: it does, and the reason, the upstream diff, and the updated
+      modification header / `THIRD_PARTY_NOTICES.md` records are described above.
+
 ## Related work
 
 <!-- Link issues, Discussions, ADRs, security advisories, or prior pull requests. -->

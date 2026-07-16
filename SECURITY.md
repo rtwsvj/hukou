@@ -4,6 +4,65 @@ hukou replaces executable files and stores rollback material, so integrity,
 path handling, archive extraction, credential handling, and crash recovery are
 part of its security boundary.
 
+hukou is an individual, best-effort open-source project maintained in spare
+time. There is no company, on-call rotation, or paid support behind it. The
+commitments below describe what the maintainer aims for, not a guarantee.
+
+## Threat model
+
+This summary states what hukou is designed to protect and what it explicitly is
+not. Architecture decision records carry the full rationale.
+
+### Protected (in scope)
+
+- **Installer trust chain.** `scripts/install.sh` refuses non-HTTPS asset URLs
+  by default: plain HTTP is always rejected, and `file://` sources are honored
+  only when explicitly opted in with `HUKOU_ALLOW_FILE_URL=1` (intended for
+  isolated tests and offline mirrors). It verifies the SHA-256 checksum of
+  every downloaded archive against the release's published `checksums.txt`,
+  and can additionally require a GitHub build-provenance attestation
+  (`gh attestation verify`, gated by `HUKOU_REQUIRE_ATTESTATION`) that binds
+  the archive to this repository and its release workflow before anything is
+  extracted. See
+  [ADR-0001](docs/adr/ADR-0001-h1-safety-and-release-contract.md).
+- **Write-path integrity.** Activating a binary replaces the live file through a
+  same-directory temporary regular file that is fully written, `fsync`ed, and
+  atomically renamed, so a concurrent reader always observes the complete old or
+  complete new binary — never a half-written one
+  ([ADR-0002](docs/adr/ADR-0002-regular-file-activation.md)). The paired live
+  binary and manifest updates are guarded by a single persisted transaction WAL:
+  a crash mid-update is deterministically rolled back or rolled forward on the
+  next run, and unknown external drift fails closed instead of being overwritten
+  ([ADR-0003](docs/adr/ADR-0003-crash-recovery-and-doctor.md),
+  [ADR-0006](docs/adr/ADR-0006-transaction-residue-self-heal.md)). Write
+  commands serialize through a cross-process state lock.
+- **Release-origin integrity.** Missing or invalid checksum entries fail
+  closed, and asset selection is deterministic. On the default production
+  path, release requests stay on an allowlisted set of GitHub hosts over
+  HTTPS, and the API token is never forwarded to download CDNs on redirect.
+  The `ghrelease` client also accepts an injected custom base URL (used by
+  tests and available for mirrors); a build or deployment configured that way
+  extends its trust to whatever endpoint it points at.
+
+### Not a security boundary (out of scope)
+
+- **The local same-user boundary.** hukou is a single-user CLI. `doctor`,
+  `explain`, and the other read-only reports describe your own installation for
+  diagnosis; they are not a sandbox and do not defend one local process against
+  another running as the same user. An attacker who can already write your
+  `$HOME`, `$PATH`, `HUKOU_DATA_DIR`, or the live binary's directory has already
+  crossed the boundary hukou protects
+  ([ADR-0004](docs/adr/ADR-0004-trust-first-and-manager-boundaries.md)).
+  Installing files you do not own into elevated/system locations is likewise out
+  of scope.
+- **Compromised upstream sources.** hukou verifies that a downloaded archive
+  matches the checksums and optional attestation the upstream repository
+  published; it cannot detect a project whose own release or signing identity is
+  compromised at the source.
+- **Other package managers.** `upgrade --all` only touches hukou-managed
+  manifest entries. Whole-machine upgrades delegated to Topgrade run under those
+  tools' own trust and failure semantics, not hukou's.
+
 ## Supported versions
 
 Before 1.0, the latest released minor line receives normal security fixes.
@@ -45,7 +104,8 @@ details through the private advisory.
 
 ## Response targets
 
-These are maintainer targets, not a service-level agreement:
+These are best-effort targets from a single maintainer, not a service-level
+agreement:
 
 - acknowledge a new private report within 72 hours;
 - provide an initial severity and scope assessment within 7 days;

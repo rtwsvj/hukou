@@ -22,14 +22,8 @@ if ! hukou_is_strict_semver "$version"; then
   exit 1
 fi
 
-commit="$(git rev-parse HEAD)"
 epoch="$(git show -s --format=%ct HEAD)"
 export SOURCE_DATE_EPOCH="$epoch"
-if build_date="$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
-  :
-else
-  build_date="$(date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ)"
-fi
 
 if tar --version 2>/dev/null | grep -q 'GNU tar'; then
   tar_cmd="tar"
@@ -44,8 +38,10 @@ dist="${DIST_DIR:-$root/dist}"
 rm -rf "$dist"
 mkdir -p "$dist"
 
-module="github.com/rtwsvj/hukou/internal/buildinfo"
-ldflags="-s -w -X ${module}.Version=${version} -X ${module}.Commit=${commit} -X ${module}.Date=${build_date}"
+# Version/commit/date -X assembly is single-sourced in scripts/build_flags.sh
+# (shared with `make build-release`); the strict SemVer validation above is
+# this script's own, stricter contract.
+ldflags="$(bash ./scripts/build_flags.sh "$version")"
 short_version="${version#v}"
 targets=(
   "darwin amd64"
