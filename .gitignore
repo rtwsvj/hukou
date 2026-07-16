@@ -20,3 +20,6 @@ xcuserdata/
 .vscode/
 .idea/
 bin/
+
+# Per-card scratch summary (not part of the repo history)
+CARD-P2-DONE.md
