@@ -65,8 +65,8 @@ release exists, the PR is not merged, and the repository has not been made publi
 
 The entries above describe the private RC branch, not the v0.2.0 release.
 Local fixed-commit verification and release snapshot/SBOM inspection passed.
-The claim-vs-evidence review was internal to the Codex execution team and has
-no standalone raw report, so it is not an external clearance. The external
+The claim-vs-evidence review was internal to the author's execution team and
+has no standalone raw report, so it is not an external clearance. The external
 audit package records open high-priority review leads. Hosted PR jobs remain
 blocked before execution; merge, tag, Release, and public visibility still
 require a separate Go/No-Go decision.

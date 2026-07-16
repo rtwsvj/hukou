@@ -3,7 +3,7 @@
 ## Purpose
 
 This directory lets a third-party reviewer audit V0.3 without relying on the
-author's Codex conversation or local machine. It deliberately separates
+author's private working sessions or local machine. It deliberately separates
 claims, reproducible evidence, recorded-but-not-portable evidence, and known
 gaps.
 
@@ -56,11 +56,12 @@ The branch is only a transport. Pin every review result to a full commit SHA.
 2. Independent reproduction output.
 3. Git/GitHub immutable objects and refreshed hosted state.
 4. Maintained specifications and ADRs.
-5. Original Codex change and verification records.
-6. Historical `docs/records/*-DONE.md` files.
+5. The author's original internal change, verification, and phase records
+   (not retained in the public tree; treat any citation of them as a claim).
 
 If two sources disagree, report the disagreement instead of silently choosing
 the more favorable one.
 
-The original `pinhaoma-review` was performed inside the Codex execution team
-and has no standalone raw finding log. It is not an independent external audit.
+The original multi-round review was performed inside the author's own execution
+team and has no standalone raw finding log. It is not an independent external
+audit.

@@ -294,7 +294,7 @@ ordinary and race runs of 641 tests across 21 packages, the complete local
 `release-verify` target at 72.9% coverage, and non-root Linux/arm64 ordinary,
 race, installer, and release-script tests. Two four-target release builds were
 byte-identical; checksums, archive contents, build information, installer
-smoke, and a 21-package/4-file SPDX SBOM passed inspection. An internal Codex
+smoke, and a 21-package/4-file SPDX SBOM passed inspection. An internal
 claim-to-evidence review recorded no P0/P1/P2 finding, but retained no
 standalone raw report and is not an external clearance. The
 [external audit handoff](AUDIT.md) lists newly identified review leads and

@@ -256,7 +256,7 @@ packages 的安全关键路径 audit、21 packages 共 641 tests 的 direct unca
 ordinary/race、coverage 72.9% 的完整本地 `release-verify`，以及 non-root
 Linux/arm64 全仓 ordinary/race 与 installer/release-script tests。四目标双构建逐字节
 一致，checksums、归档内容、buildinfo、安装 smoke 和 21 packages / 4 files 的 SPDX
-SBOM 均通过。Codex 团队内部 claims-vs-evidence review 当时记录为未发现
+SBOM 均通过。内部 claims-vs-evidence review 当时记录为未发现
 P0/P1/P2，但没有保留单独原始报告，不能替代外部审计；
 [外部审计交接包](AUDIT.md)已经列出新发现的重点审计线索和证据缺口。
 [Draft PR #6](https://github.com/rtwsvj/hukou/pull/6) 已创建。GitHub-hosted Actions

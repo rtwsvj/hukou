@@ -1,39 +1,65 @@
-# 发布流程
+# Release Process
 
-## 当前正式版本
+## Current Stable Release
 
-[`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 是当前正式版本，包含 Darwin/Linux × amd64/arm64 四个归档与 `checksums.txt`；[`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 保持不变。本次 GitHub-hosted CI/tag workflow 因账户 payment/spending limit 在 runner 调度前失败；发布仅在两个全新 Go/Linux 容器运行正式脚本得到逐字节一致结果、三平台 buildinfo smoke 通过、远端重新下载与本地产物逐字节一致后，使用同一 annotated tag 手动完成。该例外不改变未来正常流程的 runner gate 要求。
+[`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) is the current
+stable release, containing four Darwin/Linux × amd64/arm64 archives and
+`checksums.txt`; [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0)
+remains unchanged. This time the GitHub-hosted CI/tag workflow failed before
+runner scheduling due to an account payment/spending limit; the release was
+completed manually using the same annotated tag, only after two fresh
+Go/Linux containers running the official scripts produced byte-for-byte
+identical results, three-platform buildinfo smoke tests passed, and remote
+re-download matched the local artifacts byte-for-byte. This exception does
+not change the runner-gate requirement for the normal future process.
 
-V0.3 当前是有内部 local/private readiness 记录、正在准备外部审计的 private RC 分支。没有
-`v0.3.0`/prerelease tag，没有 V0.3 GitHub Release，也没有改变 repository visibility。
-本页后续 V0.3 内容描述 subject `1fa45a0` 已验证的发布契约；该结论不等于公开发布。
-本轮只创建 draft private PR；即使本地门禁通过，合并仍需单独 Go/No-Go，不能由
-“测试通过”自动授权。
+V0.3 is currently a private RC branch with internal local/private readiness
+records, in preparation for an external audit. There is no `v0.3.0`/prerelease
+tag, no V0.3 GitHub Release, and no change to repository visibility. The V0.3
+content later on this page describes the release contract verified for
+subject `1fa45a0`; that conclusion does not equal a public release. This
+round only created a draft private PR; even if local gates pass, merging
+still requires an independent Go/No-Go decision — it cannot be
+auto-authorized by "tests passed."
 
-## 版本策略
+## Versioning Policy
 
-- 正式版本使用稳定 SemVer tag，例如 `v0.3.0`；RC 可使用 `v0.3.0-rc.1`。
-- 发布/安装脚本严格接受 SemVer 2.0.0：core 与纯数字 prerelease identifier
-  都不得有前导零，点分 prerelease identifier 不得为空；本项目不接受 build
-  metadata。含 `-` 的 tag 会创建 GitHub prerelease。
-- 上述是 shell 发布入口的 v-prefix 契约；Go update policy 另行接受可排序的
-  `X.Y.Z`/`vX.Y.Z` 与合法 build metadata。两者用途不同，测试矩阵也分开维护。
-- 历史 `phase1` / `phase2` tag 保留，但不作为可安装发布版本。
-- 已发布 tag 不移动；修复使用新的 patch 版本。
+- Stable releases use a stable SemVer tag, e.g. `v0.3.0`; RCs may use
+  `v0.3.0-rc.1`.
+- The release/install scripts strictly accept SemVer 2.0.0: neither the core
+  nor purely numeric prerelease identifiers may have leading zeros, and
+  dot-separated prerelease identifiers must not be empty; this project does
+  not accept build metadata. A tag containing `-` creates a GitHub
+  prerelease.
+- The above is the v-prefix contract for the shell release entry point; the
+  Go update policy separately accepts sortable `X.Y.Z`/`vX.Y.Z` with valid
+  build metadata. The two serve different purposes, and their test matrices
+  are maintained separately.
+- The historical `phase1` / `phase2` tags are retained, but are not
+  installable releases.
+- Published tags are never moved; fixes use a new patch version.
 
-## 构建契约
+## Build Contract
 
-`scripts/release.sh` 从固定 commit 读取 commit SHA 与 commit timestamp，并向以下变量注入：
+`scripts/release.sh` reads the commit SHA and commit timestamp from a pinned
+commit, and injects them into the following variables:
 
 - `github.com/rtwsvj/hukou/internal/buildinfo.Version`
 - `github.com/rtwsvj/hukou/internal/buildinfo.Commit`
 - `github.com/rtwsvj/hukou/internal/buildinfo.Date`
 
-构建使用 `CGO_ENABLED=0`、`-trimpath`、`-buildvcs=false`。脚本固定 umask 和文件 mode；GNU tar 固定成员顺序、owner/group、mtime；gzip 使用 `-n` 去除时间戳。Release workflow 会在同一受控 runner 上独立构建两次并逐文件比较，然后才使用产物。
+The build uses `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`. The script
+pins umask and file mode; GNU tar pins member order, owner/group, and mtime;
+gzip uses `-n` to strip timestamps. The release workflow builds independently
+twice on the same controlled runner and compares file-by-file before using
+the artifacts.
 
-脚本默认拒绝 dirty worktree，避免用某个 commit 的版本信息包装未提交代码。本地实验可显式设置 `ALLOW_DIRTY=1`，但这种产物不得发布。
+By default the script rejects a dirty worktree, to avoid wrapping
+uncommitted code with a given commit's version information. Local
+experiments may explicitly set `ALLOW_DIRTY=1`, but such artifacts must not
+be released.
 
-产物：
+Artifacts:
 
 ```text
 dist/
@@ -44,79 +70,121 @@ dist/
 └── checksums.txt
 ```
 
-每个 V0.3 archive 配置为包含 `hukou`、`README.md`、`README.zh-CN.md`、
-根 `LICENSE`、`THIRD_PARTY_NOTICES.md` 与 `LICENSES/*.txt`。仓库虽仍 private，
-但公开准备已经加入 Apache-2.0 根许可证；这不等于仓库已公开。
+Each V0.3 archive is configured to include `hukou`, `README.md`,
+`README.zh-CN.md`, the root `LICENSE`, `THIRD_PARTY_NOTICES.md`, and
+`LICENSES/*.txt`. Although the repository remains private, public-readiness
+preparation has already added the Apache-2.0 root license; this does not
+mean the repository is public.
 
-## 本地 snapshot
+## Local Snapshot
 
 ```bash
-VERSION=v0.3.0-rc.1 ALLOW_DIRTY=1 bash scripts/release.sh  # 仅未提交开发树实验
+VERSION=v0.3.0-rc.1 ALLOW_DIRTY=1 bash scripts/release.sh  # only for uncommitted dev-tree experiments
 ```
 
-要求 GNU tar；macOS 默认 BSD tar 时安装并使用 `gtar`。生成物位于被忽略的 `dist/`。
+Requires GNU tar; on macOS, where BSD tar is the default, install and use
+`gtar`. Generated artifacts are placed in the gitignored `dist/`.
 
 ## GitHub Actions
 
-`.github/workflows/release.yml` 支持：
+`.github/workflows/release.yml` supports:
 
-- 手动运行：在 Linux/macOS 上执行完整门禁并上传 snapshot artifact，不创建 Release。
-- 推送 `v*` tag：在 Linux/macOS 上执行同一门禁，随后打包、验证 tag 并创建 GitHub Release。
+- Manual run: executes the full gate on Linux/macOS and uploads a snapshot
+  artifact, without creating a Release.
+- Pushing a `v*` tag: executes the same gate on Linux/macOS, then packages,
+  verifies the tag, and creates a GitHub Release.
 
-第三方 GitHub Actions 使用经官方 API 核对的不可变 commit SHA，并在行尾记录对应版本，避免可移动主版本 tag 改变发布执行内容。
+Third-party GitHub Actions are pinned to immutable commit SHAs verified
+against the official API, with the corresponding version noted at the end of
+the line, to prevent a movable major-version tag from changing what the
+release executes.
 
-常规 verify 包括 fmt/module/vet/test/race/coverage/build/license/installer 与
-release-version matrix；package job
-再执行 shellcheck 与固定 `govulncheck@v1.5.0`。tag 发布还会强制检查：tag 为
-annotated tag、目标 commit 已在 `origin/main`、四个 archive 与 `checksums.txt` 的
-四条文件名逐一对应且校验通过、Linux amd64 二进制输出的 version/commit/build
-date 与当前提交完全一致。打包 job 只有 `contents: read`；仅在 Linux/macOS 验证和
-全部打包门禁成功后，独立 publish job 获得 `contents: write` 并创建 Release。
+The regular verify step includes fmt/module/vet/test/race/coverage/build/
+license/installer and the release-version matrix; the package job further
+runs shellcheck and a pinned `govulncheck@v1.5.0`. Tag releases additionally
+enforce: the tag is an annotated tag, the target commit is already on
+`origin/main`, the four archives correspond one-to-one to the four filenames
+in `checksums.txt` and pass verification, and the Linux amd64 binary's
+reported version/commit/build date exactly matches the current commit. The
+package job holds only `contents: read`; only after Linux/macOS verification
+and all packaging gates succeed does the independent publish job gain
+`contents: write` and create the Release.
 
-package job 会解开 Linux amd64 archive 并运行 `hukou version`，确认 archive
-布局和 ldflags 注入；随后从四个 archive 各提取一个平台二进制到隔离 scan root，
-用固定 Syft 1.46.0 生成 SPDX JSON SBOM，并强制断言 hukou 与三项直接依赖各出现
-4 次、files 为 4。四个 archive、`checksums.txt` 与 SBOM 作为 workflow artifact 上传。
+The package job extracts the Linux amd64 archive and runs `hukou version` to
+confirm the archive layout and ldflags injection; it then extracts one
+platform binary from each of the four archives into an isolated scan root,
+generates an SPDX JSON SBOM with a pinned Syft 1.46.0, and asserts that
+hukou and its three direct dependencies each appear 4 times, with files
+equal to 4. The four archives, `checksums.txt`, and the SBOM are uploaded as
+workflow artifacts.
 
-截至 2026-07-15，subject `1fa45a0` 已完成 direct uncached ordinary/race 各
-641 tests / 21 packages，命令级 mirror override 下 `make release-verify` exit 0
-（coverage 72.9%、govuln 无已知漏洞），并在 non-root Linux/arm64 + GNU tar 1.34
-环境通过全仓 ordinary/race 与 installer/release tests。四目标独立构建两次逐字节
-一致，4/4 checksums、archive root/mode、buildinfo 与 installer smoke 通过。Syft 1.46.0
-最终 SBOM 为 SPDX 2.3、21 packages/4 files；验收发现并修复了旧方案 1 package/0 files
-的空壳 SBOM。默认 `proxy.golang.org` IPv6 timeout 仍如实保留。
+As of 2026-07-15, subject `1fa45a0` has completed direct uncached
+ordinary/race testing at 641 tests / 21 packages each, `make release-verify`
+exits 0 under a command-level mirror override (coverage 72.9%, govuln
+reports no known vulnerabilities), and it passed whole-repo ordinary/race
+plus installer/release tests in a non-root Linux/arm64 + GNU tar 1.34
+environment. Two independent builds of all four targets are byte-for-byte
+identical, with 4/4 checksums, archive root/mode, buildinfo, and installer
+smoke all passing. The final Syft 1.46.0 SBOM is SPDX 2.3, 21 packages/4
+files; acceptance testing found and fixed the prior scheme's hollow SBOM of
+1 package/0 files. The default `proxy.golang.org` IPv6 timeout remains
+honestly noted as-is.
 
-Artifact attestation 只在 repository visibility 为 public 时运行。public tag 发布
-必须等 build provenance 与 SBOM attestation 成功；private tag 跳过 attest 仍可进入
-publish，因此 private snapshot/Release 不能声称拥有 GitHub attestation。CodeQL 同样
-只对 public repository 启用。Draft PR #6 的 CI run `29352308455` 五个 job 已确认
-`steps=[]`，被 billing/spending limit 在执行前阻断；必须记录为 external
-infrastructure gate，不能称作远端 CI 绿色。
+Artifact attestation only runs when repository visibility is public. A
+public tag release must wait for build provenance and SBOM attestation to
+succeed; a private tag skips attestation and can still proceed to publish,
+so a private snapshot/Release cannot claim to have GitHub attestation.
+CodeQL is likewise only enabled for a public repository. Draft PR #6's CI
+run `29352308455` has confirmed `steps=[]` for all five jobs, blocked before
+execution by the billing/spending limit; this must be recorded as an
+external infrastructure gate, not described as a green remote CI.
 
-private 状态下先创建 Release、之后再公开仓库会让既有未 attested 资产随 visibility
-变化暴露，workflow 不会自动补证明链。因此公开 Go/No-Go 必须禁止或显式处置
-private tag/Release，并在 visibility 变化前验证最终公开资产的 attestation。另需分别
-验证 `go.mod` 声明的 Go 1.26.2 与历史 archive hash 使用的 Go 1.26.5，不能把后者
-代替 hosted 预期工具链。
+Creating a Release while private and later making the repository public
+would expose existing un-attested assets as visibility changes, since the
+workflow does not retroactively fill in the attestation chain. The public
+Go/No-Go must therefore either forbid or explicitly handle private
+tags/Releases, and verify the attestation of the final public assets before
+the visibility change. It's also necessary to separately verify the Go
+1.26.2 declared in `go.mod` against the Go 1.26.5 used for the historical
+archive hash, and not substitute the latter for the expected hosted
+toolchain.
 
-## 发布清单
+## Release Checklist
 
-1. 工作树干净，目标 commit 已进入 `main`；private RC 阶段只允许分支/draft PR，不打正式 tag。draft PR 不能在缺少独立 Go/No-Go 时合并。
-2. 当前变更有固定 commit verification report；外部审计已完成并关闭/接受所有
-   P0/P1/P2 与交接 checklist hypotheses。内部 `pinhaoma-review` 无单独 raw report，
-   不能单独满足此项。
-3. CI 的 Linux/macOS test、race、build、coverage 与 quality/vulnerability gates 全绿；若 billing 阻断，Go/No-Go 必须显式接受 external gate，不能写成绿色。
-4. 双构建 snapshot 逐字节一致，四个 archive 可解压，`version` 正确。
-5. `checksums.txt` 可验证全部 archive；archive 包含 license/notices/双语 README/依赖许可证。
-6. SPDX JSON SBOM 可解析并对应目标 commit/产物；public 时 attest 必须成功。
-7. 更新 changelog/release notes，并重新核对 README 仍把 v0.2.0 写成当前正式版本直到实际发布完成。
-8. 获得独立公开 Go/No-Go 后，才可创建并推送 annotated SemVer tag；workflow 再验证 tag 指向 `main` 历史。
-9. release workflow 成功后核对远端资产、prerelease 标记和可见性；不得移动已发布 tag。
-10. visibility 变化前确认不存在会被意外公开的 private V0.3 Release；最终公开资产
-    必须经过 intended public attestation 路径。
+1. The worktree is clean, and the target commit is already on `main`; during
+   the private RC phase only branches/draft PRs are allowed, no stable tag is
+   cut. A draft PR must not be merged without an independent Go/No-Go.
+2. The current change has a pinned-commit verification report; the external
+   audit has completed and closed/accepted all P0/P1/P2 findings and
+   handoff-checklist hypotheses. The internal review has no standalone raw
+   report and cannot satisfy this item on its own.
+3. CI's Linux/macOS test, race, build, coverage, and quality/vulnerability
+   gates are all green; if blocked by billing, the Go/No-Go must explicitly
+   accept the external gate rather than recording it as green.
+4. The dual-build snapshot is byte-for-byte identical, all four archives
+   extract correctly, and `version` is correct.
+5. `checksums.txt` verifies all archives; the archives contain the
+   license/notices/bilingual README/dependency licenses.
+6. The SPDX JSON SBOM parses correctly and corresponds to the target
+   commit/artifacts; attestation must succeed when public.
+7. Update the changelog/release notes, and re-confirm that the README still
+   lists v0.2.0 as the current stable release until the actual release
+   completes.
+8. Only after obtaining an independent public Go/No-Go may the annotated
+   SemVer tag be created and pushed; the workflow then verifies the tag
+   points into `main`'s history.
+9. After the release workflow succeeds, verify the remote assets, prerelease
+   flag, and visibility; a published tag must never be moved.
+10. Before the visibility change, confirm there is no private V0.3 Release
+    that would be unintentionally exposed; the final public assets must go
+    through the intended public attestation path.
 
-## 回滚
+## Rollback
 
-- tag 前失败：删除本地 `dist/`，修复后重跑，不创建 tag。
-- 若人工流程创建了 draft/未发布 Release：删除 draft 后重跑；当前自动 workflow 通过后会直接发布，不创建 draft。
-- 已发布 Release：不覆盖资产、不移动 tag；标注问题并发布 patch 版本。
+- Failure before tagging: delete the local `dist/`, fix the issue, rerun,
+  and do not create a tag.
+- If the manual process created a draft/unpublished Release: delete the
+  draft and rerun; the current automated workflow publishes directly on
+  success and does not create a draft.
+- Published Release: never overwrite assets or move the tag; note the issue
+  and publish a patch version.

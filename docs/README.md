@@ -4,15 +4,15 @@
 
 This directory is the single entry point for the project's current facts and
 its long-lived decisions. A reader should not infer current behavior from any
-one historical `*-DONE.md`; those records only prove what was claimed complete
-at the time.
+one historical record; a past claim only proves what was claimed complete at
+the time.
 
 ## Current status
 
 | Area | Status | Current evidence entry |
 |---|---|---|
-| Phase 1: PATH scan and attribution | Implemented | `specs/phase1-scan.md`, `records/` |
-| Phase 2: adopt, upgrade, rollback, manifest | Implemented | `specs/phase2-adopt-upgrade.md`, `records/` |
+| Phase 1: PATH scan and attribution | Implemented | `specs/phase1-scan.md` |
+| Phase 2: adopt, upgrade, rollback, manifest | Implemented | `specs/phase2-adopt-upgrade.md` |
 | H1 safety hardening | Delivered; GitHub-hosted-runner billing exception recorded | `audit/`, `08-risk-and-debt.md` |
 | First SemVer release | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) published | GitHub Releases |
 | H2 recovery and doctor foundation | Released and verified with [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0); further boundaries in the roadmap | `02-roadmap.md`, GitHub Releases |
@@ -40,7 +40,6 @@ report, so a third party should re-verify from [`audit/`](audit/).
 3. Architecture and data: `03-architecture.md`, `04-data-and-api.md`.
 4. Verification and release: `07-testing-and-verification.md`, `09-release.md`.
 5. Current progress: `02-roadmap.md`, the audit evidence map.
-6. Historical material: `records/*-DONE.md`.
 
 On a contradiction, do not silently pick one document: record the ruling in
 `09-decision-log.md` and update the affected specs and user docs.
@@ -63,7 +62,6 @@ On a contradiction, do not silently pick one document: record the ruling in
 - [`integrations/topgrade.md`](integrations/topgrade.md): cross-manager orchestration boundary and custom-command configuration
 - [`audit/`](audit/): V0.3 external-audit handoff, reproduction commands, evidence map, and known hypotheses
 - [`adr/`](adr/): technical decisions that are not easily reversed
-- [`records/`](records/): historical phase completion records
 - [`specs/`](specs/): phase specifications
 
 ## When to maintain

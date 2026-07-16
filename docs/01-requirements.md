@@ -1,107 +1,208 @@
-# 需求与安全不变量
+# Requirements and Security Invariants
 
-## 功能需求
+## Functional Requirements
 
-### R1：扫描
+### R1: Scan
 
-- 遍历进程 `PATH` 与重复 `--dir` 指定的目录。
-- 保留 shadowed 二进制并标记。
-- 输出人类表格或稳定 JSON。
-- 支持 `--unknown-only`、`--source` 过滤。
-- hukou manifest 中已登记的路径应优先归属为 `source=hukou`。
+- Walks the process `PATH` and directories specified by repeated `--dir`.
+- Retains shadowed binaries and flags them.
+- Outputs a human-readable table or stable JSON.
+- Supports `--unknown-only` and `--source` filtering.
+- Paths already registered in the hukou manifest should be attributed as
+  `source=hukou` with priority.
 
-### R2：收编
+### R2: Adopt
 
-- 只接受普通、可执行文件。
-- 默认拒绝其他管理器已认领的文件；`--force` 必须由用户显式给出。
-- `--local` 条目没有 GitHub repo，upgrade 自动跳过。
-- 同名 manifest 冲突不得静默覆盖。
-- 登记前计算当前二进制 SHA-256，并保留 original 备份。
-- `--dry-run` 必须完成文件、来源、repo/tag、冲突和 SHA 检查，但不得创建 data root、lock、manifest、store、transaction 或 backup；`--json` 只允许与 dry-run 同用。
+- Accepts only regular, executable files.
+- Rejects files already claimed by other managers by default; `--force`
+  must be explicitly given by the user.
+- `--local` entries have no GitHub repo, and upgrade skips them
+  automatically.
+- A manifest name conflict must never be silently overwritten.
+- Computes the SHA-256 of the current binary before registration, and keeps
+  an original backup.
+- `--dry-run` must complete the file, source, repo/tag, conflict, and SHA
+  checks, but must not create a data root, lock, manifest, store,
+  transaction, or backup; `--json` is only allowed together with dry-run.
 
-### R3：升级
+### R3: Upgrade
 
-- 只处理 manifest 中已收编且带 repo 的条目。
-- `--dry-run` 只读取本地状态和 GitHub metadata，不创建数据目录、GC 或下载资产。
-- 真升级必须依次完成：完整性闸门、release 查询、资产选择、下载、校验、解压、store 入库、激活、manifest 保存。
-- 部分失败应返回非零状态，并列出失败项。
-- `--all` 只处理 hukou manifest 条目，绝不代理其他管理器。
-- release 候选与 `outdated` 必须使用同一 policy-aware checker；exact pin、channel 与 SemVer 降级边界不得在真实写路径中另写一套。
+- Processes only entries already adopted in the manifest and carrying a
+  repo.
+- `--dry-run` only reads local state and GitHub metadata; it does not
+  create data directories, run GC, or download assets.
+- An actual upgrade must complete, in order: the integrity gate, release
+  lookup, asset selection, download, verification, extraction, store
+  ingestion, activation, and manifest save.
+- A partial failure must return a non-zero status and list the failed
+  items.
+- `--all` processes only hukou manifest entries and never proxies other
+  managers.
+- Release candidate selection and `outdated` must use the same
+  policy-aware checker; exact pin, channel, and SemVer downgrade
+  boundaries must not be reimplemented separately in the real write path.
 
-### R4：回滚
+### R4: Rollback
 
-- 回滚前校验当前活跃文件。
-- 默认按 manifest v2 activation parent 选择上一个逻辑版本；`--to <tag>` 只允许当前 lineage 中可证明的 ancestor，`--to original` 恢复不可变原件并终止可猜测 lineage。
-- 激活与 manifest 更新必须作为一个可补偿操作处理。
+- Verifies the current active file before rolling back.
+- By default selects the previous logical version via the manifest v2
+  activation parent; `--to <tag>` only allows a provable ancestor within
+  the current lineage, and `--to original` restores the immutable original
+  and terminates any guessable lineage.
+- Activation and the manifest update must be handled as a single
+  compensable operation.
 
-### R5：发布
+### R5: Release
 
-- `version` 输出版本、提交、构建时间。
-- 发布四个平台 tar.gz 与统一 `checksums.txt`。
-- 手动 workflow 只产出 snapshot；只有已推送的 `v*` tag 自动发布。
+- `version` outputs the version, commit, and build time.
+- Releases four platform tar.gz archives and a unified `checksums.txt`.
+- A manually triggered workflow produces only a snapshot; only a pushed
+  `v*` tag triggers an automatic release.
 
-### R6：诊断与崩溃恢复
+### R6: Diagnostics and Crash Recovery
 
-- adopt、upgrade、rollback 在跨 original/live/manifest 修改前必须持久化可恢复的 before/after 状态。
-- 没有 durable COMMIT 的事务恢复到 before；存在有效 COMMIT 的事务前滚到 after。
-- 恢复前必须先分类全部资源；预检或写入前复核时，任一路径既不匹配 before 也不匹配 after，必须零覆盖失败并保留 journal。非协作写入若发生在最后一次复核与系统调用之间，仍受已记录的 TOCTOU 边界约束。
-- `doctor` 默认只读、零网络，支持人类文本与稳定 JSON；`--deep` 只扩大读取范围，不改变状态。
-- doctor 不得把 retained rollback version 误判为 orphan；manifest 无效时，store tool 必须标为不可分类。
+- adopt, upgrade, and rollback must durably persist a recoverable
+  before/after state before making changes that span
+  original/live/manifest.
+- A transaction without a durable COMMIT recovers to before; a transaction
+  with a valid COMMIT rolls forward to after.
+- Before recovery, all resources must first be classified; during the
+  precheck or the write-time recheck, if any path matches neither before
+  nor after, it must fail with zero overwrite and preserve the journal. A
+  non-cooperating write occurring between the final recheck and the system
+  call remains subject to the documented TOCTOU boundary.
+- `doctor` is read-only and network-free by default, and supports human
+  text and stable JSON; `--deep` only widens the read scope and does not
+  change state.
+- doctor must not misclassify a retained rollback version as an orphan;
+  when the manifest is invalid, a store tool must be marked as
+  unclassifiable.
 
-### R7：Trust-first 只读入口
+### R7: Trust-First Read-Only Entry Points
 
-- `explain <name|path>` 输出实际 PATH 命中、同名 shadowed 候选、real path、kind、source、package/version、confidence 与 evidence；零网络、零写入。
-- `outdated [name ...]` 对 local 项不联网，对 drift 在联网前失败关闭；其余只查询 GitHub release metadata 并选择资产，不下载、不写本地状态。
-- explain、adopt plan、outdated 等 JSON report 必须有独立 `schema_version`、英文字段和确定性排序。
+- `explain <name|path>` outputs the actual PATH hit, same-name shadowed
+  candidates, real path, kind, source, package/version, confidence, and
+  evidence; zero network, zero writes.
+- `outdated [name ...]` never touches the network for local entries, and
+  fails closed before going online for drift; otherwise it only queries
+  GitHub release metadata and selects an asset, without downloading or
+  writing local state.
+- JSON reports for explain, adopt plan, outdated, and similar commands must
+  each carry an independent `schema_version`, English field names, and
+  deterministic ordering.
 
-### R8：更新与保留策略
+### R8: Update and Retention Policy
 
-- `policy show` 只读展示全局/entry 有效策略；`policy set` 只在 state lock 内原子保存 manifest，不触碰 live binary，存在 pending transaction 时拒绝而不是自动 recovery。
-- 支持 `semver` 与兼容用 `github-latest`、`stable`/`prerelease`、exact pin、entry rollback depth。
-- 显式切换到 `semver` 时，local entry 或当前 tag 不是严格 `X.Y.Z`（允许小写 `v` 前缀及合法 prerelease/build）的 entry 必须拒绝且零 manifest/live 变化。
-- SemVer 模式选择最高合格版本、normalized equal 为 no-op、默认拒绝隐式降级；exact pin 是显式 desired state，可前进或回退。
-- retention 保护 current、immutable original、已安装 exact pin artifact 和最近 N 个 activation ancestors；存在未完成 transaction 时整体跳过 prune、零删除；不得读取 mtime 作决策。
+- `policy show` read-only displays the effective global/entry policy;
+  `policy set` atomically saves the manifest only within the state lock,
+  never touches the live binary, and rejects the operation rather than
+  auto-recovering when a transaction is pending.
+- Supports `semver` and, for compatibility, `github-latest`,
+  `stable`/`prerelease`, exact pin, and per-entry rollback depth.
+- When explicitly switching to `semver`, an entry that is a local entry or
+  whose current tag is not strictly `X.Y.Z` (a lowercase `v` prefix and
+  legal prerelease/build metadata are allowed) must be rejected with zero
+  manifest/live changes.
+- SemVer mode selects the highest qualifying version, treats a
+  normalized-equal result as a no-op, and rejects implicit downgrades by
+  default; exact pin is an explicit desired state and may move forward or
+  backward.
+- retention protects current, the immutable original, any installed
+  exact-pin artifact, and the most recent N activation ancestors; when an
+  incomplete transaction exists, prune is skipped entirely with zero
+  deletions; mtime must never be read as a basis for decisions.
 
-### R9：Manifest v2 与 activation lineage
+### R9: Manifest v2 and Activation Lineage
 
-- schema 0/1 只按当前 tag/SHA 迁移为 synthetic root，不猜历史；schema 2 必须显式包含有效 policy、retention 与 activation lineage。
-- future schema、未知字段、重复 name/path、非法路径/摘要/时间/policy/history 必须拒绝。
-- adopt、upgrade、rollback 产生不可变 event；active event 必须是最后一项并与 entry 当前 tag/SHA 一致。
-- history 和当前状态必须进入同一 after-manifest，由现有 WAL 一起提交。
+- schema 0/1 is migrated to a synthetic root based only on the current
+  tag/SHA, without guessing history; schema 2 must explicitly include a
+  valid policy, retention, and activation lineage.
+- A future schema, unknown fields, duplicate name/path, or an invalid
+  path/digest/timestamp/policy/history must be rejected.
+- adopt, upgrade, and rollback each produce an immutable event; the active
+  event must be the last item and must match the entry's current tag/SHA.
+- History and current state must land in the same after-manifest,
+  committed together by the existing WAL.
 
-### R10：窄版 repair 与 support
+### R10: Narrow-Scope Repair and Support
 
-- doctor 保持只读；repair 只支持 `recover-transaction` 与 `restore-manifest-backup` 两个 action。
-- `repair plan --output` 只读 hukou 状态，只写显式 plan 文件（0600）；`repair apply` 持锁重算 data-root identity、fingerprint 和前置条件，不一致时不得修改业务状态。
-- backup restore 只允许主 manifest 缺失/无效、backup schema/语义有效、transaction clean、且每个 live SHA 与 backup 一致的现场。
-- `support bundle --format json` 零写，`--output` 只写 0600 文件；两者均离线、不上传，并排除原始路径、repo、用户名、HOME、环境变量、二进制、WAL payload 等私密值。
+- doctor remains read-only; repair supports only the two actions
+  `recover-transaction` and `restore-manifest-backup`.
+- `repair plan --output` only reads hukou state and only writes the
+  explicit plan file (0600); `repair apply` holds the lock and recomputes
+  the data-root identity, fingerprint, and preconditions, and must not
+  modify business state on any mismatch.
+- backup restore is only allowed on-scene when the primary manifest is
+  missing/invalid, the backup schema/semantics are valid, the transaction
+  is clean, and every live SHA matches the backup.
+- `support bundle --format json` performs zero writes, and `--output` only
+  writes a 0600 file; both are offline, never upload, and exclude private
+  values such as raw paths, repos, usernames, HOME, environment variables,
+  binaries, and WAL payloads.
 
-## 安全不变量
+## Security Invariants
 
-1. **scan 只读**：不得联网、写用户目录或执行包管理器命令。
-2. **所有权边界**：upgrade/rollback 永不触碰 manifest 之外的路径。
-3. **fail closed**：发现 checksum 文件却找不到所选资产条目时必须失败。
-4. **双 hash**：下载资产 hash 用于来源审计，active binary hash 用于本地完整性闸门，二者不可混用。
-5. **宿主隔离**：GitHub token 只发送给允许的 API host，不随下载或重定向泄露。
-6. **大小限制**：下载和解压都有有界上限。
-7. **路径限制**：name/tag 与归档条目不得逃逸各自根目录；store 子目录必须精确拼写且不得是 symlink，激活源必须位于 store；事务恢复旧 symlink 时只复现已捕获的原目标。
-8. **错误补偿**：激活后任何可观测失败必须恢复旧路径拓扑与旧 manifest。
-9. **进程互斥**：写 manifest/store 的命令必须串行；锁已被占用时立即失败并给出清晰错误，不无限等待。
-10. **测试隔离**：测试不得读写真实 hukou 数据目录或真实用户二进制。
-11. **保留命名空间**：`.tmp` 工具名与 `original` 版本标签（含大小写别名）必须在任何 store/manifest 持久化前拒绝。
-12. **持久化事务决策**：资源 payload、journal、live/store/manifest 的 rename/link/remove 只有在文件及相关父目录同步后才算成功。
-13. **只读诊断**：无 repair 参数的 doctor 不创建 data root、不获取会改写状态的锁、不 GC、不联网。
-14. **计划不等于授权**：adopt dry-run、update plan 与 repair plan 都不能绕过真实写操作在锁内的现场重检。
-15. **历史可证明**：rollback/retention 只消费经过 manifest 语义验证的 activation lineage；缺失、forward/cyclic 或 active 不一致的历史失败关闭。
-16. **删除前完整验证**：Prune 在删除前验证 protected refs、immutable original 与 store 拓扑；journal 不 clean 时零删除。
-17. **支持信息最小化**：support report 只输出匿名序号、枚举、计数和安全 build/platform 值，不自动上传。
-18. **单一 schema 边界**：command、doctor 与 repair 必须共享 strict manifest decoder；unknown field 或语义无效 backup 不能在某条旁路被接受。
+1. **scan is read-only**: must not access the network, write to user
+   directories, or execute package-manager commands.
+2. **Ownership boundary**: upgrade/rollback never touch paths outside the
+   manifest.
+3. **Fail closed**: must fail when a checksum file is found but no entry
+   for the selected asset can be located.
+4. **Dual hash**: the downloaded-asset hash is used for provenance auditing
+   and the active-binary hash is used for the local integrity gate; the
+   two must never be conflated.
+5. **Host isolation**: the GitHub token is sent only to the allowed API
+   host and never leaks via downloads or redirects.
+6. **Size limits**: both download and extraction are bounded.
+7. **Path restrictions**: name/tag and archive entries must not escape
+   their respective root directories; a store subdirectory must match its
+   exact spelling and must not be a symlink, and the activation source
+   must reside within the store; when transaction recovery restores an old
+   symlink, it only reproduces the previously captured original target.
+8. **Error compensation**: any observable failure after activation must
+   restore the old path topology and the old manifest.
+9. **Process mutual exclusion**: commands that write the manifest/store
+   must be serialized; when the lock is already held, the command fails
+   immediately with a clear error rather than waiting indefinitely.
+10. **Test isolation**: tests must never read or write the real hukou data
+    directory or real user binaries.
+11. **Reserved namespace**: the `.tmp` tool name and the `original` version
+    tag (including case-variant aliases) must be rejected before any
+    store/manifest persistence.
+12. **Durable transaction decisions**: a resource payload, journal, or
+    live/store/manifest rename/link/remove is considered successful only
+    after the file and its relevant parent directories have been synced.
+13. **Read-only diagnostics**: doctor without repair arguments never
+    creates a data root, never acquires a state-mutating lock, never runs
+    GC, and never touches the network.
+14. **A plan is not authorization**: adopt dry-run, update plan, and repair
+    plan must never bypass the in-lock on-scene recheck performed by the
+    real write operation.
+15. **Provable history**: rollback/retention consume only an activation
+    lineage that has passed manifest semantic validation; history that is
+    missing, forward-pointing/cyclic, or inconsistent with active fails
+    closed.
+16. **Full verification before deletion**: Prune verifies protected refs,
+    the immutable original, and store topology before deleting; when the
+    journal is not clean, zero deletions occur.
+17. **Support information minimization**: a support report outputs only
+    anonymous indices, enumerations, counts, and safe build/platform
+    values, and is never auto-uploaded.
+18. **Single schema boundary**: commands, doctor, and repair must share a
+    strict manifest decoder; an unknown field or a semantically invalid
+    backup must not be accepted through any side path.
 
-## 非功能需求
+## Non-Functional Requirements
 
-- Go 版本以 `go.mod` 为唯一工具链基准。
-- 新增运行时第三方依赖必须有明确架构理由、锁定版本、许可证/notices 记录和对应测试；V0.3 的 SemVer 比较使用 `golang.org/x/mod/semver`，决策见 ADR-0005。
-- Linux/macOS 都必须进入 CI。
-- 发布产物必须使用 `-trimpath`，版本信息由固定提交注入。
-- 未运行的验证不得记录为“通过”。
-- 默认公共 CLI help、错误和正常输出使用英文；中文项目入口保留在 `README.zh-CN.md`。
+- Go version is governed solely by the toolchain baseline in `go.mod`.
+- Adding a new runtime third-party dependency requires a clear
+  architectural rationale, a pinned version, license/notices records, and
+  corresponding tests; V0.3's SemVer comparison uses
+  `golang.org/x/mod/semver` — see ADR-0005 for the decision.
+- Both Linux and macOS must be covered by CI.
+- Release artifacts must use `-trimpath`, with version information
+  injected from a fixed commit.
+- Verification that was not actually run must never be recorded as
+  "passed."
+- The default public CLI help, error, and normal output is in English; the
+  Chinese-language project entry point is kept in `README.zh-CN.md`.

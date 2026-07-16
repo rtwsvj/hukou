@@ -41,9 +41,8 @@ git diff bd4faa32d9b5b604b1b224f97fe891ed670f3742...1fa45a0d8473446e3208490f037a
   repository is private. Neither result is a green remote gate.
 - The recorded release archives and SBOM were local-only evidence. Their
   hashes are useful for comparison but do not replace an independent rebuild.
-- The original `pinhaoma-review` was an internal Codex review without a
-  standalone raw report. It is context, not an external clearance or proof
-  that no P1/P2 issue exists.
+- The original internal multi-round review kept no standalone raw report. It
+  is context, not an external clearance or proof that no P1/P2 issue exists.
 
 ## Reporting findings
 

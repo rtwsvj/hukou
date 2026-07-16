@@ -1,54 +1,85 @@
-# 项目简报
+# Project Brief
 
-## 一句话目标
+## One-Line Goal
 
-hukou 是一个 macOS/Linux CLI 工具管理器：先盘点机器上已有的可执行文件并判断来源，再把无主工具收编到可校验、可升级、可回滚的本地版本仓库。
+hukou is a macOS/Linux CLI tool manager: it first inventories the executables
+already present on the machine and determines their provenance, then adopts
+unowned tools into a verifiable, upgradable, and rollback-capable local
+version store.
 
-## 目标用户
+## Target Users
 
-- 同时使用 Homebrew、Cargo、Go、npm、pipx、mise 等多种工具链的开发者。
-- 手工下载或 curl 安装过散装二进制、希望补上来源与回滚能力的用户。
-- 需要审计本机 CLI 来源，但不希望扫描过程联网或修改系统的人。
+- Developers who use multiple toolchains at once — Homebrew, Cargo, Go, npm,
+  pipx, mise, and others.
+- Users who have manually downloaded or curl-installed standalone binaries
+  and want to retrofit provenance tracking and rollback capability.
+- People who need to audit the provenance of CLI tools on their machine, but
+  don't want the scan process to touch the network or modify the system.
 
-## 当前正式发布范围（v0.2.0）
+## Current Official Release Scope (v0.2.0)
 
-- `scan`：PATH 扫描、来源责任链、表格与 JSON。
-- `adopt`：登记并备份本地二进制。
-- `upgrade`：GitHub Release 查询、资产选择、下载、校验和激活。
-- `rollback`：切换到 store 中旧版本或 original。
-- `list`：展示 manifest。
-- `doctor`：以文本或稳定 JSON 只读审计 manifest、live、store、backup、transaction 与临时残留。
-- `version`：展示发布版本、提交和构建时间。
+- `scan`: PATH scanning, source attribution chain, table and JSON output.
+- `adopt`: registers and backs up local binaries.
+- `upgrade`: GitHub Release lookup, asset selection, download, verification,
+  and activation.
+- `rollback`: switches to an older version in the store or to the original.
+- `list`: displays the manifest.
+- `doctor`: read-only audit of the manifest, live files, store, backups,
+  transactions, and leftover temp files, in text or stable JSON.
+- `version`: displays the release version, commit, and build time.
 
-## V0.3 私有 RC 分支已实现范围
+## Scope Already Implemented on the V0.3 Private RC Branch
 
-- `explain`、`adopt --dry-run`、`outdated`：先解释、先预览、再修改。
-- `policy show/set`：SemVer/GitHub-latest、stable/prerelease、精确 pin 与 rollback depth。
-- manifest v2 activation lineage：确定性 rollback 与不依赖 mtime 的保留计划。
-- `repair plan/apply`：只开放 transaction recovery 和 manifest backup restore。
-- `support bundle`：默认离线、脱敏、不上传的 JSON 诊断。
-- checksum 安装器、双语/社区/许可证入口、SBOM 与公开仓库条件下的 attestation/CodeQL 配置。
+- `explain`, `adopt --dry-run`, `outdated`: explain first, preview first,
+  modify last.
+- `policy show/set`: SemVer/GitHub-latest, stable/prerelease, exact pin, and
+  rollback depth.
+- manifest v2 activation lineage: deterministic rollback and a retention
+  plan that does not depend on mtime.
+- `repair plan/apply`: exposes only transaction recovery and manifest backup
+  restore.
+- `support bundle`: offline-by-default, redacted, non-uploading JSON
+  diagnostics.
+- checksum installer, bilingual/community/license entry points, SBOM, and
+  attestation/CodeQL configuration conditional on the repository going
+  public.
 
-固定 subject 已有完整内部 local/private RC verification record，但外部审计与
-GitHub-hosted gate 尚未完成，因此不能提升为公开 readiness 或 release 结论。当前
-正式版本仍是 v0.2.0，仓库仍保持 private。
+The fixed subject already has a complete internal local/private RC
+verification record, but external audit and the GitHub-hosted gate are not
+yet complete, so it cannot be upgraded to a public-readiness or release
+conclusion. The current official release remains v0.2.0, and the repository
+remains private.
 
-## 明确不在当前范围
+## Explicitly Out of Current Scope
 
-- 管理或代理 Homebrew/npm/Cargo 等已有管理器的升级。
-- Windows。
-- hukou 自己执行其他管理器的升级；Topgrade 只作为外层编排器，配置见 `integrations/topgrade.md`。
-- mise/Brewfile 导出。
-- changelog diff、供应链风险评分和 GUI。
-- repair-all、孤儿自动删除、硬件掉电/控制器缓存重排证明，以及非协作 writer 在最终复核与系统调用之间的原子 CAS 保证。
+- Managing or proxying upgrades for existing managers such as
+  Homebrew/npm/Cargo.
+- Windows.
+- hukou performing upgrades for other managers itself; Topgrade acts only as
+  an outer orchestrator — see `integrations/topgrade.md` for configuration.
+- mise/Brewfile export.
+- changelog diffing, supply-chain risk scoring, and a GUI.
+- repair-all, automatic orphan deletion, proof against hardware power
+  loss/controller cache reordering, and atomic CAS guarantees against a
+  non-cooperating writer acting between the final recheck and the system
+  call.
 
-## 成功标准
+## Success Criteria
 
-1. `scan` 保持本地只读、无网络。
-2. 未收编工具不会被 upgrade/rollback 修改。
-3. checksum 和当前文件完整性检查失败时不切换安装。
-4. 正常错误或 hukou 协作事务的进程级中断后，活跃文件、store 与 manifest 可由 WAL 收敛到已记录的 before/after；未知漂移失败关闭。
-5. `doctor` 默认零写、零网络，不把无法安全判断的状态猜成可删除对象。
-6. Linux/macOS CI 可重复完成 fmt、vet、test、race、coverage、build。
-7. 同一提交和 Go 工具链可重复生成四个平台 archive 与 checksums。
-8. V0.3 repair 只执行 fingerprint 绑定且满足完整前置条件的两类动作；support 输出不泄露原始路径、私有 repo、环境变量、WAL payload 或二进制。
+1. `scan` remains local, read-only, and network-free.
+2. Unadopted tools are never modified by upgrade/rollback.
+3. The installation is not switched over when the checksum or current-file
+   integrity check fails.
+4. After an ordinary error or a process-level interruption of a
+   hukou-cooperating transaction, the active file, store, and manifest can
+   converge to a recorded before/after state via the WAL; unrecognized
+   drift fails closed.
+5. `doctor` performs zero writes and zero network access by default, and
+   never guesses that a state it cannot safely determine is deletable.
+6. Linux/macOS CI reproducibly completes fmt, vet, test, race, coverage, and
+   build.
+7. The same commit and Go toolchain reproducibly generate the four platform
+   archives and checksums.
+8. V0.3 repair executes only the two action types that are fingerprint-bound
+   and satisfy their full preconditions; support output never leaks raw
+   paths, private repos, environment variables, WAL payloads, or binaries.
