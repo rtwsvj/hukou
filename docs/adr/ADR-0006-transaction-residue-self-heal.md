@@ -1,7 +1,7 @@
-# ADR-0006：事务残留隔离与自愈
+# ADR-0006：安全隔离（仅移动）+ 未知目录 fail-closed + 只读诊断，不做自动删除
 
-- Status: Accepted（2026-07-15 依独立核验意见修订决策边界）
-- Date: 2026-07-15
+- Status: Accepted（2026-07-16 依产品决策缩窄范围修订）
+- Date: 2026-07-16
 - Extends: ADR-0003（持久化事务恢复与只读 doctor）；ADR-0005（窄版 repair）
 
 ## 背景
@@ -19,19 +19,23 @@ building/completed 残留。早期实现对 `transactions/` 目录里出现的�
   修复路径都被堵死。
 - 唯一的出路是让用户手动 `rm`，既有误删风险，也丢失了诊断证据。
 
-同时评审发现 live 目录可能残留孤儿临时文件 `.hukou-txn-*` / `.hukou-txn-link-*`
-（进程在 rename 前崩溃）。ADR-0003 的恢复例程不清理它们，`doctor --deep` 会报
-`LIVE_TRANSACTION_TEMP_PRESENT`，却没有任何动作可以处置。
+因此卡 B 的原始诉求是：**`transactions/` 里的未知非目录条目不再楔死写命令**。
+
+在后续实现中曾尝试通过 `repair purge-quarantine` 与 `repair clean-live-temps`
+两个动作提供自动删除能力，但二者均涉及对用户文件的破坏性删除。经过多轮独立核验，
+删除动作的安全论证始终无法稳定通过评审，反复出现“可能删除合法数据”或
+“身份绑定/TOCTOU 边界不达标”的问题。产品决策决定：**彻底移除所有破坏性删除动作**，
+把卡 B 拉回原始诉求，只保留安全的移动隔离与只读诊断。
 
 ## 决策
 
-### 1. 只隔离非目录未知条目；未知目录保持楔死
+### 1. 只隔离非目录未知条目；未知目录保持楔死；不做任何自动删除
 
 `Recover` 对未知条目按拓扑分流：
 
 - **非目录条目（普通文件、符号链接等明显垃圾）**：移入隔离容器（见 §2），记入
   `Recover` 返回的恢复摘要（`RecoverSummary`），然后继续正常恢复已知目录。数据
-  完整保留，绝不删除。
+  完整保留，**只 rename 不删除**。
 - **未知真实目录**：保持 fail-closed。未知目录可能是**更新版本 hukou 的 journal
   布局**，自动降级隔离等于销毁未来版本的权威恢复证据。`Recover` 返回错误并提示
   用 `hukou doctor` 检查、手动移出或升级 hukou——宁可楔死也不销毁证据。
@@ -45,8 +49,11 @@ building/completed 残留。早期实现对 `transactions/` 目录里出现的�
 `recover-transaction` repair 动作与此完全一致：未知非目录条目不再让 plan 失败
 （apply 经由 `Recover` 隔离并写入结果），未知目录使 plan 返回 `ErrNotRepairable`。
 
+**本 ADR 不再提供任何自动删除隔离区或 live 临时文件的动作。** 删除必须交给用户
+在确认无价值后手动执行。
+
 **摘要必须被消费**：`acquireMutationLock` 把隔离记录写到 stderr warning 通道，
-`repair apply` 把隔离/清除/删除/跳过明细写入命令输出——恢复的副作用永不静默。
+`repair apply` 把隔离明细写入命令输出——恢复的副作用永不静默。
 
 ### 2. 隔离容器命名：长度受控、碰撞安全
 
@@ -60,38 +67,35 @@ building/completed 残留。早期实现对 `transactions/` 目录里出现的�
 - Unix 上反斜杠是合法文件名字符：不再把 `\` 当路径分隔符拒绝，只拒绝空名、`.`、
   `..` 与含 `/` 的名字（目录项中本不可能出现）。
 
-### 3. 隔离区的显式清理
+### 3. 隔离容器识别：只用于诊断，不驱动删除
 
-隔离刻意保留证据，删除必须是显式、指纹绑定的动作，沿用 ADR-0005 的 plan/apply
-两步模型：
+`IsValidQuarantineContainer` 对 `quarantined-*` 容器做精确布局校验：
 
-- `doctor` 以 Warning 级别上报每个 `quarantined-*` 条目，附路径与建议动作。
-- `repair` 新增 `purge-quarantine`：plan 观测隔离区（含子树内容）并绑定
-  fingerprint，apply 在 state lock 内复核后删除全部 `quarantined-*` 容器，绝不
-  触碰 building/pending/completed。
+- 名字必须精确为 `quarantined-` + 16 位小写 hex；
+- 容器本身必须是真实目录（非软链）；
+- 内部必须只含 `META` 常规文件与 `payload` 非目录条目，无其他名字；
+- `META` 为软链、`payload` 为目录等畸形布局一律判为非法容器。
 
-### 4. 孤儿 live 临时文件：身份绑定 + 无活跃写入者门禁
+校验结果仅用于 `Inspect`/`doctor` 分类展示：合法容器归入 `Quarantined` 并以
+Warning 提示用户手动检查/删除；非法容器归入 `Unknown` 并以 Error 提示手动处置。
+任何删除决策都不由程序自动做出。
 
-`repair` 新增 `clean-live-temps`，安全论证由三层构成（mtime 阈值只是辅助条件，
-不是唯一依据——大文件慢拷贝的活跃事务临时文件完全可能超过任何阈值）：
+### 4. 孤儿 live 临时文件：只读上报，用户手动清理
 
-1. **无活跃写入者门禁**：plan 与 apply（持 mutation lock）都要求事务系统当前
-   **无任何 building/pending journal**。存在即拒绝（plan 返回 `ErrNotRepairable`，
-   apply 返回 `ErrStateChanged`），因为无法证明某个临时文件不属于进行中的事务。
-2. **manifest 精确 live 路径永久排除**：删除候选永不包含任何 manifest 条目的
-   live 路径本身（plan 与 apply 各自对照当时的 manifest 复核一次），即使该路径
-   的 basename 恰好带 `.hukou-txn-` 前缀。
-3. **逐项身份绑定**：plan 把每个候选的 (路径、类型、权限位、大小、mtime、
-   dev/inode、SHA-256 前 16 位 hex 或 symlink 目标) 记入 plan 的 `targets` 字段；
-   apply 逐项重新观测，**任一字段不符即跳过该项**（宁可留下不删）。删除集合在
-   plan 时刻固化：plan 之后新出现的孤儿不会被删。
+`doctor --deep` 继续报告已登记 live parent 目录下的 `.hukou-txn-*` /
+`.hukou-txn-link-*` 临时文件名（`LIVE_TRANSACTION_TEMP_PRESENT`），但仅作为只读
+诊断：提示用户“确认无活跃事务后手动删除”。不再提供任何自动清理命令或动作。
 
-fingerprint 语义相应调整：`clean-live-temps` 的 `state_fingerprint` 由 plan 自身的
-targets 与参考时钟（`generated_at`）重算校验——它拒绝被篡改或内部不一致的 plan
-文档；磁盘漂移则由逐项身份复核降级为跳过，而非整单失败。候选年龄下限（1 小时，
-以 `generated_at` 为参考时刻）仍然保留为额外过滤。
+### 5. repair 动作范围
 
-`doctor` 的 `LIVE_TRANSACTION_TEMP_PRESENT` 提示语指向该动作。
+`repair` 仅保留卡 B 之前已有的两个动作：
+
+- `recover-transaction`：收敛未决 journal；未知非目录条目隔离后继续，未知目录
+  fail-closed。
+- `restore-manifest-backup`：在主 manifest 缺失/无效、backup 语义有效、transaction
+  clean 且所有 live SHA 匹配时恢复备份。
+
+`purge-quarantine` 与 `clean-live-temps` 已移除。
 
 ## 结果
 
@@ -100,19 +104,23 @@ targets 与参考时钟（`generated_at`）重算校验——它拒绝被篡改�
 - 一个来路不明的垃圾文件不再让所有写命令与 recover-transaction 卡死；系统自愈、
   保留证据并把隔离行为报告给用户。
 - 未来版本的 journal 布局不会被当前版本销毁——升级路径的恢复证据受保护。
-- 隔离与两条新 repair 动作都遵守“只读 plan + 显式 apply”边界；clean-live-temps
-  的每一次删除都被完整身份观测约束。
+- 隔离动作只 rename 不删除，不存在误删用户数据的风险。
+- 实现范围收窄后，代码与测试更容易验证，安全边界清晰。
 
 ### 代价
 
-- 隔离会累积 `quarantined-*` 容器，需要运维用 `purge-quarantine` 显式回收。
+- 隔离会累积 `quarantined-*` 容器，需要运维在确认无价值后手动删除。
 - 未知目录仍会楔死写命令——这是有意保留的安全边界，代价由手动处置承担。
-- 与 ADR-0003 一样，最后一次身份复核与 remove 之间仍存在窄 TOCTOU 窗口；hukou
-  的 mutation lock 只能排除 hukou 自身的并发写者。
+- live 目录的孤儿临时文件需要用户自行判断并手动删除。
 
 ## 非目标
 
-- 不自动删除隔离区或任何 live 临时文件——删除永远是显式 plan/apply。
+- **不自动删除**隔离区、live 临时文件或任何其他用户文件。
 - 不解释隔离条目的来源，也不尝试把它重新分类为合法 journal。
 - 不为未知目录提供自动降级通道。
 - 不改变 ADR-0003 关于唯一持久化事务与单一 COMMIT 决策的模型。
+
+## 历史记录
+
+- 2026-07-15：初稿接受，包含 `purge-quarantine` 与 `clean-live-temps` 两个删除动作。
+- 2026-07-16：产品决策缩窄范围，移除全部破坏性删除动作，本 ADR 改写为当前版本。

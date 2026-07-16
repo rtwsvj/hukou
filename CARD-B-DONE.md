@@ -150,22 +150,82 @@
   `TestInvalidQuarantineContainerIsRejected`
   （`doctor_test.go:334`）。
 
-## 其余关键位置
+## 第四轮：缩范围移除破坏性删除（2026-07-16）
 
-- `internal/transaction/journal.go:28`（`quarantinedPrefix`）、`:134`
-  （`Status.Quarantined`）、`:140`（`NeedsRecovery` 不计隔离）、`:193`
-  （`Inspect` 分类）
-- `internal/transaction/recover.go:214`（`PurgeQuarantined`）
-- `internal/repair/repair.go:42-43`（动作常量）、`:217`（`Apply` 返回 Result）、
-  `:514`（`evaluatePurgeQuarantine`）、`:850`（`validatePlanTargets`）
-- `internal/repair/fileid_unix.go` / `fileid_other.go`（dev/inode 观测，
-  build-tag 隔离）
-- `internal/doctor/scanner.go:639`（`TRANSACTION_QUARANTINED_PRESENT` Warning）、
-  `:697`（`LIVE_TRANSACTION_TEMP_PRESENT` 指向 clean-live-temps）
-- `internal/supportbundle/supportbundle.go`（`TransactionTopology.Quarantined`
-  计数）
-- 文档：`docs/adr/ADR-0006-transaction-residue-self-heal.md`（决策边界重写）、
-  `docs/05-cli-reference.md`（doctor/repair 段落）、`docs/09-decision-log.md`
+产品决策：卡 B 彻底拉回原始诉求——只解决“`transactions/` 未知条目不再楔死写命令”，
+不再引入任何自动删除用户文件的动作。
+
+### 移除
+
+- `repair` 的 `purge-quarantine` 动作及全部支撑代码：
+  - `internal/transaction/recover.go` 删除 `PurgeQuarantined`；
+  - `internal/repair/repair.go` 移除 `ActionPurgeQuarantine`
+    （原 `:42`）、`evaluatePurgeQuarantine`（原 `:514`）、
+    `Result.PurgedQuarantine`；
+  - `cmd/repair_support_test.go` 删除 `TestRepairCLIQuarantineChain`。
+- `repair` 的 `clean-live-temps` 动作及全部支撑代码：
+  - `internal/repair/repair.go` 移除 `ActionCleanLiveTemps`、
+    `LiveTempTarget`、`Targets` 字段、`evaluateCleanLiveTemps`、
+    `applyCleanLiveTemps`、`revalidateLiveTempTarget`、
+    `collectLiveIdentities`/`liveIdentitySet`、`os.OpenRoot` 删除、
+    `cleanLiveTempsFingerprint`/`cleanLiveTempsPreconditions`；
+  - 删除平台文件 `internal/repair/fileid_unix.go` 与
+    `internal/repair/fileid_other.go`；
+  - `internal/repair/repair_test.go` 删除全部 14 个 clean/purge 相关测试
+    （`TestPurgeQuarantinePlanAndApply`、`TestPurgeQuarantineRejectsStalePlan`、
+    `TestCleanLiveTemps*` 系列、`TestNewActionsRejectCrossDataRoot`、
+    `TestNewRepairActionsRequirePresentState`）；
+  - `cmd/repair_support_test.go` 删除 `TestRepairCLICleanLiveTempsChain`。
+- `repair` 只保留两个既有动作：`recover-transaction`、
+  `restore-manifest-backup`（`internal/repair/repair.go:39-40`）。
+
+### 保留并收紧
+
+- **未知非目录条目安全隔离**：`Recover`（`internal/transaction/recover.go:78`）
+  继续把普通文件/软链移入 `quarantined-<16hex>` 容器，碰撞安全
+  （`os.Mkdir` exclusive + EEXIST 重试，上限 64 次），原名 `%q` 写入
+  `META`，本体保存为 `payload`（`quarantineEntry`，`:158`）。
+- **未知目录 fail-closed**：`Recover`（`:92-112`）与
+  `evaluateRecoverTransaction`（`internal/repair/repair.go`）保持遇到真实目录
+  即返回错误，不自动处理。
+- **隔离容器识别**：`IsValidQuarantineContainer`
+  （`internal/transaction/journal.go:177`）保留精确 16hex 名 + 真实目录 +
+  仅 `META`/payload 布局验证，并新增对 `payload` 非目录、`META` 非软链的
+  校验；仅用于 `Inspect`/`doctor` 分类，不驱动删除。
+- **`RecoverSummary` 消费**：`acquireMutationLock`
+  （`cmd/helpers.go:49`）与 `commitStateTransaction`
+  （`cmd/state_transaction.go:80`）继续把隔离记录写 stderr；
+  `reportRecoverSummary`（`cmd/helpers.go:58`）提示改为手动删除。
+- **doctor 只读上报**：
+  - 隔离容器 Warning（`internal/doctor/scanner.go:641`）提示手动删除；
+  - 未知目录 Error（`:667`）提示手动处置或升级；
+  - live 临时文件 Warning（`:702`）提示用户确认无活跃事务后手动删除。
+
+### 文档更新
+
+- `docs/adr/ADR-0006-transaction-residue-self-heal.md` 标题与决策改为
+  “安全隔离（仅移动）+ 未知目录 fail-closed + 只读诊断，不做自动删除”，
+  记录 clean-live-temps/purge 因删除安全反复不达标而移除。
+- `docs/05-cli-reference.md` 的 `repair` 段移除两个动作；`doctor` 段更新为
+  手动清理提示。
+- `docs/09-decision-log.md` 更新 ADR-0006 摘要与历史摘要。
+
+## 其余关键位置（第四轮后）
+
+- `internal/transaction/journal.go:28-29`（`quarantinedPrefix`/`quarantinedHexLen`）、
+  `:134`（`Status.Quarantined`）、`:140`（`NeedsRecovery` 不计隔离）、
+  `:177`（`IsValidQuarantineContainer`，新增 payload 非目录校验）、`:230`（`Inspect` 分类）
+- `internal/transaction/recover.go:40`（`RecoverSummary`）、`:78`（`Recover`）、
+  `:158`（`quarantineEntry`）
+- `internal/repair/repair.go:39-40`（保留的两个动作常量）、`:78`（`Result` 仅保留
+  `Quarantined`）、`:91`（`BuildPlan`）、`:169`（`Apply`）
+- `internal/doctor/scanner.go:641`（隔离容器 Warning，提示手动删除）、
+  `:667`（未知目录 Error）、`:702`（live 临时文件 Warning，提示手动删除）
+- `cmd/helpers.go:58`（`reportRecoverSummary`，提示手动删除）
+- `cmd/repair.go:39`（`--action` flag 只剩两个动作）、`:85`（apply 输出隔离明细）
+- `internal/supportbundle/supportbundle.go`（`TransactionTopology.Quarantined` 计数）
+- 文档：`docs/adr/ADR-0006-transaction-residue-self-heal.md`、
+  `docs/05-cli-reference.md`、`docs/09-decision-log.md`
 
 ## 约束遵守
 
@@ -199,5 +259,5 @@ release     release version validation tests passed
   `Quarantined unknown transaction entry "stray-file" as
   transactions/quarantined-2ca7ea809d8e2924`，容器内 `META` 记录
   `original_name="stray-file"`，`payload` 内容原样保留。
-- `doctor` 对隔离容器报 `[WARNING] TRANSACTION_QUARANTINED_PRESENT`；
-  `purge-quarantine` plan/apply 后 `transactions/` 清空。
+- `doctor` 对隔离容器报 `[WARNING] TRANSACTION_QUARANTINED_PRESENT`，提示手动删除；
+  不再提供 `purge-quarantine` 或 `clean-live-temps` 自动动作。
