@@ -21,5 +21,5 @@ xcuserdata/
 .idea/
 bin/
 
-# Per-card scratch summary (not part of the repo history)
+# Local working notes (untracked)
 CARD-P2-DONE.md

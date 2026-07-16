@@ -14,14 +14,14 @@
 Every developer machine accumulates binaries that no package manager tracks: a
 release you grabbed from GitHub, a `go install` build, a binary copied off
 another laptop, something a `curl … | sh` installer dropped into `~/.local/bin`.
-`brew`, `mise`, `npm`, and friends manage what they installed — they are blind
-to everything else. Those files are the ones you forget about, never upgrade,
-and are afraid to overwrite by hand.
+`brew`, `mise`, `npm`, and friends do a fine job with what they installed —
+everything else is out of scope for them. Those files are the ones you forget
+about, never upgrade, and are afraid to overwrite by hand.
 
 hukou (户口, *"household registry"*) is the tool for that gap. It walks your
-`PATH`, attributes every executable to whoever installed it, and gives the
-homeless ones — the strays — a registered upgrade-and-rollback path they never
-had.
+`PATH`, attributes each executable to a known origin — or tells you honestly
+that it is unknown — and gives the strays a registered upgrade-and-rollback
+path they never had.
 
 ```
 topgrade  orchestrates your managers
@@ -47,37 +47,44 @@ warn-and-fall-back-to-transport-trust default. Prefer to see it first? Add
 ## Quick start (30 seconds)
 
 hukou is deliberately trust-first: the commands that *read* come before the
-commands that *write*, and every write can be previewed.
+commands that *write*, and the heavyweight writes can be previewed first —
+`adopt --dry-run`, `upgrade --dry-run`, and `repair plan`. (`rollback` and
+`policy set` have no dry-run; they apply immediately.)
+
+The session below is a real, unedited run in a demo sandbox with one stray
+`rg` on `PATH`.
 
 **1. See who owns what on your `PATH`** (local, read-only, no network):
 
 ```console
 $ hukou scan --unknown-only
-NAME         PATH                       KIND    SOURCE   PACKAGE      VERSION  SHADOWED  EVIDENCE
-orphan-tool  /home/you/.local/bin/orph  MachO   unknown  orphan-tool                     no prior detector matched
+NAME  PATH                    KIND    SOURCE   PACKAGE  VERSION  SHADOWED  EVIDENCE
+rg    /tmp/quickstart/bin/rg  Script  unknown  rg                          no prior detector matched; realpath=/private/tmp/quicksta...
 
-summary: total=1 sources=1 unknown=1 shadowed=0
+summary: total=1 sources=1 unknown=1 shadowed=0 skipped=1
+by source: unknown=1
 ```
 
 **2. Adopt a stray.** Point it at a GitHub repo (or use `--local` for a binary
 with no upstream). hukou preserves the original bytes as an immutable backup:
 
 ```console
-$ hukou adopt rg BurntSushi/ripgrep --tag 13.0.0
-Adopted rg (13.0.0) at /home/you/.local/bin/rg
+$ hukou adopt rg BurntSushi/ripgrep --tag 15.1.0
+Adopted rg (15.1.0) at /tmp/quickstart/bin/rg
 repo: BurntSushi/ripgrep
 ```
 
 **3. Upgrade it.** Preview first — `--dry-run` never touches the file — then
-apply. hukou selects the platform asset, verifies the publisher checksum, and
-replaces the live file with an atomic rename:
+apply. hukou selects the platform asset, verifies the publisher checksum when
+the release publishes one (see [Security model](#security-model)), and replaces
+the live file with an atomic rename:
 
 ```console
 $ hukou upgrade rg --dry-run
-Would upgrade rg: 13.0.0 -> 15.2.0 using asset ripgrep-15.2.0-aarch64-apple-darwin.tar.gz (higher eligible semantic version is available)
+Would upgrade rg: 15.1.0 -> 15.2.0 using asset ripgrep-15.2.0-aarch64-apple-darwin.tar.gz (higher eligible semantic version is available)
 
 $ hukou upgrade rg
-Upgraded rg: 13.0.0 -> 15.2.0
+Upgraded rg: 15.1.0 -> 15.2.0
 ```
 
 **4. Roll back** if the new version misbehaves. hukou retains prior versions
@@ -85,7 +92,7 @@ and the adoption-time original:
 
 ```console
 $ hukou rollback rg
-Rolled back rg to 13.0.0
+Rolled back rg to 15.1.0
 ```
 
 That is the whole loop: `scan → adopt → upgrade → rollback`. `hukou doctor`
@@ -96,15 +103,16 @@ audits the resulting state at any time without writing a byte.
 ## Why not topgrade / mise / eget?
 
 They are good tools. hukou does not replace them — it fills the slot they leave
-open. The other tools manage software **from the moment they install it
-forward**. hukou is the only one that does **retroactive** management: it takes
-over binaries that already exist and have no owner.
+open. Those tools are built around software **from the moment they install it
+forward**; hukou is built for **retroactive adoption at scale** — scan the whole
+`PATH`, attribute provenance with recorded evidence, then give the adopted
+strays lineage-tracked upgrades and rollback.
 
 | Tool | What it manages | The gap hukou fills |
 |---|---|---|
-| **Homebrew / mise / aqua** | Tools *they* installed, going forward | Binaries already on disk that they never installed |
+| **Homebrew / mise / aqua** | Tools *they* installed, going forward | Pre-existing binaries. `mise link` can hand-register one external tool at a time, but there is no `PATH`-wide scan, no provenance attribution, and no lineage-tracked rollback |
 | **topgrade** | Orchestrates other upgraders in one command | Has nothing to hand the strays; hukou plugs in as one custom command |
-| **eget / stew** | Fetching a GitHub release into place | No provenance, no transactional replace, no rollback of what is already there |
+| **eget / stew** | Fetching GitHub releases into place, with checksum verification (and, for stew, a lockfile) | No detection or adoption of binaries *already* on disk, and no activation-lineage rollback of what got replaced |
 | **hukou** | **Existing** unmanaged binaries: attribute → adopt → upgrade → roll back | — |
 
 hukou composes with topgrade rather than competing with it. Register it as a
@@ -122,12 +130,16 @@ for the ownership boundary.
 
 ## Features
 
-- **Provenance by evidence, not guesswork.** A chain of 24 detectors (Homebrew,
-  MacPorts, mise, asdf, rustup, cargo, npm, pnpm, yarn, bun, pipx, uv, pip, gem,
-  nix, volta, deno, dotnet, composer, krew, `curl … | sh` installers, macOS app
-  bundles, local builds) attributes each binary and records *why*. Go binaries
-  are traced straight from their embedded build info, so `adopt` can infer
-  `owner/repo` with no flags. See [`hukou scan`](docs/05-cli-reference.md).
+- **Provenance by evidence, not guesswork.** A chain of 24 source detectors
+  (Homebrew, MacPorts, mise, asdf, rustup, cargo, npm, pnpm, yarn, bun, pipx,
+  uv, pip, gem, nix, volta, deno, dotnet, composer, krew, `curl … | sh`
+  installers, macOS app bundles, local builds, Go build info), closed out by
+  hukou/system/unknown terminal attributions, attributes each binary and
+  records *why*. Go binaries are traced straight from their embedded build
+  info — which also means the go detector claims a `go install`ed binary as
+  owned, so adopting one takes an explicit `--force`, after which `adopt`
+  infers `owner/repo` from the build info with no extra flags.
+  See [`hukou scan`](docs/05-cli-reference.md).
 - **Crash-safe, transactional replacement.** Live binaries are swapped through a
   same-directory temp file plus atomic rename, and a durable write-ahead log
   records before/after state. A process killed mid-upgrade recovers
@@ -139,10 +151,13 @@ for the ownership boundary.
   immutable adoption-time original plus retained versions. `rollback` follows a
   recorded activation lineage — logical parents, not directory timestamps.
   See [ADR-0005](docs/adr/ADR-0005-manifest-v2-history-policy-and-repair.md).
-- **Supply-chain-aware installs.** Missing-checksum-fails-closed, separate
-  hashes for the downloaded asset and the activated binary, and an installer
-  that verifies GitHub build-provenance attestation against an anchored signer
-  identity. See [SECURITY.md](SECURITY.md).
+- **Supply-chain-aware installs.** When a release publishes a checksum asset,
+  a missing, invalid, or mismatched entry for the selected asset fails closed;
+  when the release has no checksum asset at all, hukou warns loudly and records
+  the downloaded asset's SHA-256 rather than pretending it verified anything.
+  Downloaded-asset and activated-binary hashes are tracked separately, and the
+  installer verifies GitHub build-provenance attestation against an anchored
+  signer identity. See [SECURITY.md](SECURITY.md).
 - **Read-only diagnosis you can trust.** `doctor` takes no lock, writes nothing,
   and makes no network call by default. It reports problems; it never silently
   deletes or "repairs" your data. Repair is a separate, explicit `plan → apply`
@@ -165,9 +180,9 @@ for the ownership boundary.
 | `outdated [name…]` | no | yes | Check for newer releases without downloading |
 | `upgrade [name…]` | yes | yes | Verify and replace; `--dry-run` previews, `--all` for every entry |
 | `rollback <name>` | yes | no | Activate a retained version; `--to <tag>` or `--to original` |
-| `policy show/set` | show: no | no | Inspect or atomically change update/rollback policy |
+| `policy show/set` | show: no; set: manifest | no | Inspect or atomically change update/rollback policy |
 | `doctor` | no | no | Audit manifest, store, journal, and live files; `--deep`, `--json` |
-| `repair plan/apply` | plan: writes plan file only | no | Fingerprint-bound recovery of unfinished transactions or a manifest backup |
+| `repair plan/apply` | plan: plan file only; apply: manifest, live binary, transaction state (may quarantine journal residue) | no | Fingerprint-bound recovery of unfinished transactions or a manifest backup |
 | `support bundle` | writes bundle only | no | Redacted, offline diagnostic |
 
 Full flags and side effects: [docs/05-cli-reference.md](docs/05-cli-reference.md).
@@ -177,16 +192,16 @@ Most read-only commands take `--json` for scripting.
 
 | OS | Arch | Status |
 |---|---|---|
-| macOS | arm64 | Primary development target; exercised against a real machine |
-| macOS | amd64 | Cross-compiled; built and unit-tested in CI |
-| Linux | amd64 | Cross-compiled; built and unit-tested in CI (incl. non-root runs) |
-| Linux | arm64 | Cross-compiled; built and unit-tested in CI |
+| macOS | arm64 | Daily-driven primary target; exercised on a real machine |
+| macOS | amd64 | Cross-compiled release build; no runtime testing yet |
+| Linux | amd64 | Cross-compiled release build; release-archive smoke checks |
+| Linux | arm64 | Cross-compiled release build; no runtime testing yet |
 | Windows | — | Not supported |
 
 hukou does not treat "it cross-compiles" as "it is supported." macOS arm64 is
-where it is run daily; the other targets are built and tested in CI, and
-independent verification on real Linux hardware is welcome — please open an
-issue with what you saw.
+where it runs daily; the other targets are cross-compiled release builds, with
+release-archive smoke checks on Linux amd64. Independent verification on real
+hardware is welcome — please open an issue with what you saw.
 
 ## Security model
 
@@ -195,8 +210,10 @@ path handling, archive extraction, credential handling, and crash recovery are
 all part of its security boundary. The design bias is simple: **prefer a visible
 refusal over a clever guess.**
 
-- A missing expected checksum entry fails closed — hukou will not "probably it's
-  fine" its way past a verification gap.
+- When a checksum asset exists, a missing, invalid, or mismatched entry for the
+  selected asset fails closed — hukou will not "probably it's fine" its way past
+  a verification gap. A release with no checksum asset at all proceeds with a
+  loud warning, and the downloaded asset's SHA-256 is recorded either way.
 - Downloaded-asset hashes and activated-binary hashes are tracked separately, so
   a swapped artifact cannot masquerade as a verified one.
 - `adopt`, `upgrade`, and `rollback` re-check the live file under a process lock
@@ -269,9 +286,9 @@ territory.
 
 **Is it safe to point at an important binary?**
 The safety machinery is built for exactly that, but trust is earned: start with
-the read-only commands (`scan`, `explain`, `list`, `doctor`), preview every
-first write with `--dry-run`, and rehearse the loop on a disposable binary
-before you adopt something you care about.
+the read-only commands (`scan`, `explain`, `list`, `doctor`), preview your first
+`adopt` and `upgrade` with `--dry-run`, and rehearse the loop on a disposable
+binary before you adopt something you care about.
 
 **Can it upgrade everything on my machine in one command?**
 Not on its own — and on purpose. Cross-manager orchestration belongs to

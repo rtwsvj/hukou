@@ -13,12 +13,12 @@
 
 每台开发机都会堆积一批没有包管理器负责的二进制：从 GitHub Release 抓来的、
 `go install` 构建的、从另一台机器拷过来的、某个 `curl … | sh` 安装脚本丢进
-`~/.local/bin` 的。`brew`、`mise`、`npm` 这些工具只管自己装过的东西——对其余一切
-视而不见。而恰恰是这些文件，你最容易忘记、从不升级、又不敢手工覆盖。
+`~/.local/bin` 的。`brew`、`mise`、`npm` 这些工具管好它们自己装的东西——其余一切
+不在它们的职责范围内。而恰恰是这些文件，你最容易忘记、从不升级、又不敢手工覆盖。
 
 hukou（户口，*household registry*）就是为这块空白而生。它遍历你的 `PATH`，把每个
-可执行文件归属到"是谁装的"，再给那些无主的——黑户（strays）——一条它们从来没有过
-的、可升级可回滚的注册路径。
+可执行文件溯源到一个已知来源——或者诚实地告诉你：来源不明——再给那些黑户
+（strays）一条它们从来没有过的、可升级可回滚的注册路径。
 
 ```
 topgrade  负责编排你的各个管理器
@@ -42,43 +42,49 @@ build-provenance（Sigstore）attestation，再解包。设置
 
 ## 30 秒上手
 
-hukou 刻意保持 trust-first：*读*命令排在*写*命令之前，而每一次写都能先预览。
+hukou 刻意保持 trust-first：*读*命令排在*写*命令之前，重量级的写操作都能先预
+览——`adopt --dry-run`、`upgrade --dry-run`、`repair plan`。（`rollback` 和
+`policy set` 没有 dry-run，执行即生效。）
+
+下面这段是在一个演示沙箱里真实跑出来、未经修饰的会话，`PATH` 上有一个黑户 `rg`。
 
 **1. 看清 `PATH` 上谁归谁**（纯本地、只读、不联网）：
 
 ```console
 $ hukou scan --unknown-only
-NAME         PATH                       KIND    SOURCE   PACKAGE      VERSION  SHADOWED  EVIDENCE
-orphan-tool  /home/you/.local/bin/orph  MachO   unknown  orphan-tool                     no prior detector matched
+NAME  PATH                    KIND    SOURCE   PACKAGE  VERSION  SHADOWED  EVIDENCE
+rg    /tmp/quickstart/bin/rg  Script  unknown  rg                          no prior detector matched; realpath=/private/tmp/quicksta...
 
-summary: total=1 sources=1 unknown=1 shadowed=0
+summary: total=1 sources=1 unknown=1 shadowed=0 skipped=1
+by source: unknown=1
 ```
 
 **2. 收编一个黑户。** 关联到 GitHub 仓库（无上游的用 `--local`）。hukou 会把原始
 字节作为不可变备份保存下来：
 
 ```console
-$ hukou adopt rg BurntSushi/ripgrep --tag 13.0.0
-Adopted rg (13.0.0) at /home/you/.local/bin/rg
+$ hukou adopt rg BurntSushi/ripgrep --tag 15.1.0
+Adopted rg (15.1.0) at /tmp/quickstart/bin/rg
 repo: BurntSushi/ripgrep
 ```
 
 **3. 升级它。** 先预览——`--dry-run` 绝不碰文件——再应用。hukou 会选择平台资产、
-校验发布方 checksum，并用原子 rename 替换活跃文件：
+在 Release 提供 checksum 时校验发布方 checksum（见[安全模型](#安全模型)），并用
+原子 rename 替换活跃文件：
 
 ```console
 $ hukou upgrade rg --dry-run
-Would upgrade rg: 13.0.0 -> 15.2.0 using asset ripgrep-15.2.0-aarch64-apple-darwin.tar.gz (higher eligible semantic version is available)
+Would upgrade rg: 15.1.0 -> 15.2.0 using asset ripgrep-15.2.0-aarch64-apple-darwin.tar.gz (higher eligible semantic version is available)
 
 $ hukou upgrade rg
-Upgraded rg: 13.0.0 -> 15.2.0
+Upgraded rg: 15.1.0 -> 15.2.0
 ```
 
 **4. 回滚**——新版本出问题就退回去。hukou 保留历史版本和收编时的原件：
 
 ```console
 $ hukou rollback rg
-Rolled back rg to 13.0.0
+Rolled back rg to 15.1.0
 ```
 
 整条闭环就是：`scan → adopt → upgrade → rollback`。任何时候都能用
@@ -88,15 +94,15 @@ Rolled back rg to 13.0.0
 
 ## 为什么不直接用 topgrade / mise / eget？
 
-它们都是好工具。hukou 不替代它们——它补的是它们留下的空位。这些工具管的是**从它们
-安装那一刻起往后**的软件；只有 hukou 做**存量收编**：接管那些早就躺在磁盘上、无人
-认领的二进制。
+它们都是好工具。hukou 不替代它们——它补的是它们留下的空位。这些工具围绕**从它们
+安装那一刻起往后**的软件构建；hukou 为**规模化存量收编**而设计——扫描整条
+`PATH`、带证据地溯源归属，再给收编的黑户提供谱系化的升级与回滚。
 
 | 工具 | 它管什么 | hukou 补的空位 |
 |---|---|---|
-| **Homebrew / mise / aqua** | *它们自己*装的工具，只管往后 | 磁盘上早已存在、它们从没装过的二进制 |
+| **Homebrew / mise / aqua** | *它们自己*装的工具，只管往后 | 存量二进制。`mise link` 可以手动登记单个外部工具，但没有全 `PATH` 扫描、没有溯源归属、没有谱系化回滚 |
 | **topgrade** | 一条命令编排其他升级器 | 没东西可交给黑户；hukou 作为一个 custom command 接进来 |
-| **eget / stew** | 把某个 GitHub Release 拉到位 | 无溯源、无事务化替换、无法回滚已存在的东西 |
+| **eget / stew** | 把 GitHub Release 拉到位，带 checksum 校验（stew 还有 lockfile） | 不探测、不收编磁盘上*已存在*的二进制，也没有针对被替换文件的激活谱系回滚 |
 | **hukou** | **存量**无主二进制：溯源 → 收编 → 升级 → 回滚 | — |
 
 hukou 与 topgrade 是组合关系而非竞争关系。把它注册成 custom command，你那条
@@ -113,11 +119,13 @@ hukou 与 topgrade 是组合关系而非竞争关系。把它注册成 custom co
 
 ## 特性
 
-- **靠证据溯源，不靠猜。** 一条 24 个探测器组成的链（Homebrew、MacPorts、mise、
-  asdf、rustup、cargo、npm、pnpm、yarn、bun、pipx、uv、pip、gem、nix、volta、
-  deno、dotnet、composer、krew、`curl … | sh` 安装器、macOS app bundle、本地
-  构建）为每个二进制归属并记录*理由*。Go 二进制直接从内嵌 build info 溯源，因此
-  `adopt` 无需任何旗标即可推断出 `owner/repo`。见
+- **靠证据溯源，不靠猜。** 一条 24 个来源探测器组成的链（Homebrew、MacPorts、
+  mise、asdf、rustup、cargo、npm、pnpm、yarn、bun、pipx、uv、pip、gem、nix、
+  volta、deno、dotnet、composer、krew、`curl … | sh` 安装器、macOS app bundle、
+  本地构建、Go build info），末端由 hukou/system/unknown 三个终端归属收口，为
+  每个二进制归属并记录*理由*。Go 二进制直接从内嵌 build info 溯源——这也意味着
+  go 探测器会先认领 `go install` 的二进制，收编它需要显式 `--force`；之后
+  `adopt` 无需额外旗标即可从 build info 推断出 `owner/repo`。见
   [`hukou scan`](docs/05-cli-reference.md)。
 - **崩溃安全的事务化替换。** 活跃二进制通过同目录临时文件加原子 rename 切换，一份
   持久化写前日志（WAL）记录 before/after 状态。升级中途被杀的进程可确定性恢复——
@@ -127,7 +135,9 @@ hukou 与 topgrade 是组合关系而非竞争关系。把它注册成 custom co
 - **多版本 store + 真回滚。** 每个收编工具都保留收编时的不可变原件加历史版本。
   `rollback` 沿记录下来的激活谱系（逻辑 parent，而非目录时间戳）前进。见
   [ADR-0005](docs/adr/ADR-0005-manifest-v2-history-policy-and-repair.md)。
-- **供应链感知的安装。** 缺 checksum 即失败关闭；下载资产与激活二进制的 hash
+- **供应链感知的安装。** Release 提供 checksum 资产时，所选资产的条目缺失、
+  无效或不匹配一律失败关闭；Release 完全没有 checksum 资产时，hukou 大声告警
+  并记录下载资产自身的 SHA-256，而不是假装校验过。下载资产与激活二进制的 hash
   分开记录；安装器按锚定的签名者身份验证 GitHub build-provenance attestation。见
   [SECURITY.md](SECURITY.md)。
 - **可信任的只读诊断。** `doctor` 默认不取锁、不写入、不联网。它只报告问题，绝不
@@ -149,9 +159,9 @@ hukou 与 topgrade 是组合关系而非竞争关系。把它注册成 custom co
 | `outdated [name…]` | 否 | 是 | 检查是否有更新版本，不下载 |
 | `upgrade [name…]` | 是 | 是 | 校验并替换；`--dry-run` 预览，`--all` 全部条目 |
 | `rollback <name>` | 是 | 否 | 激活某个保留版本；`--to <tag>` 或 `--to original` |
-| `policy show/set` | show: 否 | 否 | 查看或原子修改更新/回滚策略 |
+| `policy show/set` | show: 否；set: manifest | 否 | 查看或原子修改更新/回滚策略 |
 | `doctor` | 否 | 否 | 审计 manifest、store、journal 与活跃文件；`--deep`、`--json` |
-| `repair plan/apply` | plan: 仅写 plan 文件 | 否 | fingerprint 绑定的未决事务或 manifest 备份恢复 |
+| `repair plan/apply` | plan: 仅写 plan 文件；apply: manifest、活跃二进制、事务状态（可能隔离 journal 残留） | 否 | fingerprint 绑定的未决事务或 manifest 备份恢复 |
 | `support bundle` | 仅写 bundle | 否 | 脱敏、离线诊断 |
 
 完整旗标与副作用：[docs/05-cli-reference.md](docs/05-cli-reference.md)。多数只读
@@ -161,22 +171,24 @@ hukou 与 topgrade 是组合关系而非竞争关系。把它注册成 custom co
 
 | 系统 | 架构 | 状态 |
 |---|---|---|
-| macOS | arm64 | 主开发目标；已在真实机器上实测 |
-| macOS | amd64 | 交叉编译；CI 构建并跑单元测试 |
-| Linux | amd64 | 交叉编译；CI 构建并跑单元测试（含 non-root） |
-| Linux | arm64 | 交叉编译；CI 构建并跑单元测试 |
+| macOS | arm64 | 每日实际使用的主目标；在真实机器上运行 |
+| macOS | amd64 | 交叉编译的发布构建；尚无运行时测试 |
+| Linux | amd64 | 交叉编译的发布构建；有发布归档冒烟检查 |
+| Linux | arm64 | 交叉编译的发布构建；尚无运行时测试 |
 | Windows | — | 不支持 |
 
 hukou 不会把"能交叉编译"当成"已受支持"。macOS arm64 是它每天真正运行的地方；其余
-目标在 CI 里构建并测试，欢迎在真实 Linux 硬件上做独立验证——把你看到的结果开个
-issue 告诉我们。
+目标是交叉编译的发布构建，其中 Linux amd64 另有发布归档冒烟检查。欢迎在真实硬件上
+做独立验证——把你看到的结果开个 issue 告诉我们。
 
 ## 安全模型
 
 hukou 会重写可执行文件并保存回滚材料，因此完整性、路径处理、归档解压、凭据处理和
 崩溃恢复都属于它的安全边界。设计取向很简单：**宁可明确拒绝，也不聪明地猜。**
 
-- 预期存在的 checksum 条目缺失时失败关闭——hukou 不会"应该没事吧"地绕过校验缺口。
+- Release 存在 checksum 资产时，所选资产的条目缺失、无效或不匹配一律失败关闭——
+  hukou 不会"应该没事吧"地绕过校验缺口。Release 完全没有 checksum 资产时会带着
+  醒目告警继续，且两种情况下都会记录下载资产的 SHA-256。
 - 下载资产 hash 与激活二进制 hash 分开记录，被掉包的产物无法冒充已校验的产物。
 - `adopt`、`upgrade`、`rollback` 在替换前持进程锁复核活跃文件；dry-run 计划本身
   永远不是写授权。
@@ -241,8 +253,8 @@ make build
 
 **指向重要二进制安全吗？**
 安全机制正是为此而造，但信任要一步步来：先用只读命令（`scan`、`explain`、`list`、
-`doctor`），每次首写都用 `--dry-run` 预览，并在收编你真正在乎的东西之前，先拿一个
-一次性二进制把整条闭环演练一遍。
+`doctor`），第一次 `adopt` 和 `upgrade` 都用 `--dry-run` 预览，并在收编你真正在乎
+的东西之前，先拿一个一次性二进制把整条闭环演练一遍。
 
 **能一条命令升级我机器上的一切吗？**
 它自己不能——而且是刻意的。跨管理器编排属于
