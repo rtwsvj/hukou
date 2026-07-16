@@ -190,3 +190,10 @@
 - 评审阵容:4×Opus(事务恢复/声称核验/发布工程/命令契约)+ Kimi 盲区 + ocr 双模型;Fable 终审独立复跑 641/21 全绿。
 - Verdict: pass;报告 `verification-reports/2026-07-15-fable-six-lane-refactor-review.md`。
 - RC 分支并入 main(1d37840)。遗留项立卡 A-D,Eric 批准四卡并行(Opus 执行 + Codex 核验)。
+
+### 2026-07-16 四卡加固批次收官(Fable 主持,新分层首战)
+
+- 分层:Fable 设计 → Opus 子代理执行(卡B后段 Kimi 接力)→ Codex(sol,high/xhigh)逐卡核验 → Fable 集成终审。
+- 四卡首轮 Codex 全部否决;总计 11 轮核验、3 次产品裁决(TOCTOU 记录接受/索引方案撤销/卡B缩范围)。
+- 落地:卡A fce6d81(scan warnings/notes+validated-completed 读放宽)、卡C 45268bf(digest threading+调用点批处理,索引撤销)、卡D 552eeb8(归档 attestation 验证+tag-guard+文档收账)、卡B ce510df(安全隔离+fail-closed,破坏性删除动作按产品裁决移除)。
+- 每卡合并前:Codex 通过裁决 + Fable 在固定提交独立复跑 make verify 全绿。
