@@ -93,6 +93,63 @@
   （`cmd/repair_support_test.go:163`，doctor --deep 指引→plan/apply→孤儿删除、
   live 完好→doctor 清净）。
 
+## 第三轮精确修复（2026-07-16）
+
+### P1-1【clean-live-temps 删除锚定】→ 已修复
+
+- **物理目录身份（dev+inode）去重与 live 排除**：新增
+  `collectLiveIdentities`（`internal/repair/repair.go:609`）把 manifest live
+  目录与 live 文件本身都解析为 `(dev,inode)` 集合；plan 只扫描物理上可信的
+  live 父目录，候选若命中 live 文件身份即被排除，不再依赖路径字符串。
+- **fd-anchored 删除**：`applyCleanLiveTemps`
+  （`internal/repair/repair.go:776`）对每个通过重证明的候选调用
+  `os.OpenRoot(parent)` 获得目录 fd，再经 `root.Remove(basename)` 删除，消除
+  路径解析层的替换竞态；`testBeforeCleanLiveTempRemove`
+  （`repair.go:673`）为测试提供确定性注入点。
+- **测试**：`TestCleanLiveTempsRejectsSymlinkLiveDirectory`
+  （`internal/repair/repair_test.go:733`，经 symlink 到达的 live 目录不被信任）
+  与 `TestCleanLiveTempsFdAnchoredRemovalRejectsSymlinkSwap`
+  （`repair_test.go:754`，重证明后把目标换为指向 sentinel 的 symlink，fd
+  锚定删除不跟随 symlink）。
+
+### P1-2【apply 重证明】→ 已修复
+
+- `applyCleanLiveTemps` 不再把 plan 文档自证当作授权依据：每个 target 都经
+  `revalidateLiveTempTarget`（`internal/repair/repair.go:833`）从当前 manifest
+  与目录现实重新证明——① 父目录仍在 manifest 的 live 目录身份集合内；② 路径
+  不是任何 manifest live 路径本体；③ 仍带 `.hukou-txn-*` 前缀；④ kind/权限/
+  size/mtime/dev/inode/SHA-256 前缀（或 symlink 目标）七元组与 plan 一致；⑤
+  mtime 仍低于 `generated_at` 回溯的 1 小时 cutoff；⑥ building/pending 门禁在
+  apply 开头重新检查。任一条件不满足即跳过并记入 `Result.SkippedLiveTemps`。
+- plan 的 `state_fingerprint` 保留，但注释明确其仅为防意外篡改提示
+  （`internal/repair/repair.go:253-259`），不替代逐项目录现实重证明。
+- **测试**：`TestCleanLiveTempsApplySkipsWhenParentNotLiveDir`
+  （`repair_test.go:803`）、`TestCleanLiveTempsApplySkipsWhenTargetBecomesLivePath`
+  （`repair_test.go:843`）、`TestCleanLiveTempsApplyRevalidatesIdentity`
+  （`repair_test.go:898`，覆盖 mode/size/mtime/sha/age/symlink-target 各分支）。
+
+### P1-3【隔离容器识别收紧】→ 已修复
+
+- 新增 `IsValidQuarantineContainer`（`internal/transaction/journal.go:176`）：
+  名字必须精确为 `quarantined-` + 16 位小写 hex；`Lstat` 必须是真实目录而非
+  symlink；内部必须只含 `META`（常规文件）与 `payload` 两个条目。新增
+  `quarantinedHexLen` 常量（`journal.go:30`）与导出的 `QuarantinedPrefix`
+  （`journal.go:168`）。
+- `Inspect`（`journal.go:225`）把验证失败的 `quarantined-*` 归入 `Unknown`；
+  `PurgeQuarantined`（`internal/transaction/recover.go:214`）在删除前再次用同一
+  函数防御性校验，只删通过验证的容器。
+- `doctor` 扫描器（`internal/doctor/scanner.go:640-643`）对有效容器保持
+  `TRANSACTION_QUARANTINED_PRESENT` Warning，对无效容器报
+  `TRANSACTION_QUARANTINED_INVALID` Error，实现 fail-closed。
+- **测试**：`TestInspectRejectsInvalidQuarantineContainers`
+  （`internal/transaction/transaction_test.go:789`）、
+  `TestRecoverQuarantinesInvalidQuarantineFileButFailsClosedOnInvalidDirectory`
+  （`transaction_test.go:855`）、`TestPurgeQuarantineRemovesOnlyValidContainers`
+  （`transaction_test.go:890`）、`TestValidQuarantineContainerIsWarned`
+  （`internal/doctor/doctor_test.go:304`）、
+  `TestInvalidQuarantineContainerIsRejected`
+  （`doctor_test.go:334`）。
+
 ## 其余关键位置
 
 - `internal/transaction/journal.go:28`（`quarantinedPrefix`）、`:134`
