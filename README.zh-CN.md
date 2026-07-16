@@ -74,7 +74,7 @@ build-provenance attestation（签名者身份用锚定的 `--cert-identity-rege
 任（HTTPS + 同源 checksums.txt）。设置 `HUKOU_REQUIRE_ATTESTATION=1`（或
 `true`/`yes`）可把该验证改为强制；留空或 `0`/`false`/`no` 表示不强制（合法默
 认）；其余任何取值一律报错拒绝。当前证据和待办见
-[私有 RC 执行记录](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)。
+[外部审计入口](AUDIT.md)。
 
 ## 安全模型
 
@@ -109,7 +109,7 @@ v0.2.0 提供：
 | Linux | amd64、arm64 |
 
 Windows 当前不受支持。项目不会把“能交叉编译”直接写成“平台已受支持”；实际验证
-证据记录在 [docs/codex/verification-reports](docs/codex/verification-reports/)。
+证据记录在 [docs/audit/](docs/audit/)。
 
 ## 安装 v0.2
 
@@ -253,7 +253,7 @@ packages 的安全关键路径 audit、21 packages 共 641 tests 的 direct unca
 ordinary/race、coverage 72.9% 的完整本地 `release-verify`，以及 non-root
 Linux/arm64 全仓 ordinary/race 与 installer/release-script tests。四目标双构建逐字节
 一致，checksums、归档内容、buildinfo、安装 smoke 和 21 packages / 4 files 的 SPDX
-SBOM 均通过。Codex 团队内部 claims-vs-evidence review 当时记录为未发现
+SBOM 均通过。内部 claims-vs-evidence review 当时记录为未发现
 P0/P1/P2，但没有保留单独原始报告，不能替代外部审计；
 [外部审计交接包](AUDIT.md)已经列出新发现的重点审计线索和证据缺口。
 [Draft PR #6](https://github.com/rtwsvj/hukou/pull/6) 已创建。GitHub-hosted Actions
@@ -286,7 +286,7 @@ P0/P1/P2，但没有保留单独原始报告，不能替代外部审计；
 ## 许可证与来源
 
 hukou 原创内容使用 [Apache License 2.0](LICENSE)，
-Copyright 2026 Eric (rtwsvj)。
+Copyright (c) 2026 rtwsvj。
 
 改编代码和依赖继续遵循各自许可证。详情见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、

@@ -1,15 +1,15 @@
-# 开发环境
+# Development Environment
 
-## 前置条件
+## Prerequisites
 
-- Go：最低工具链版本以根 `go.mod` 为准；本地可使用兼容的更新 patch，CI 由 `go-version-file` 解析该声明。
-- Git。
-- GNU tar：只有运行可重复发布脚本时需要；macOS 可使用 `gtar`。
-- GitHub CLI：只由 release workflow 发布资产时使用。
+- Go: the minimum toolchain version is authoritative in the root `go.mod`; locally you may use a compatible newer patch release, and CI resolves the declared version via `go-version-file`.
+- Git.
+- GNU tar: needed only when running the reproducible release script; on macOS you can use `gtar`.
+- GitHub CLI: used only by the release workflow when publishing assets.
 
-本机协作约定：所有 shell 命令经 `rtk` 前缀执行。GitHub Actions runner 不安装 RTK，workflow 直接运行标准命令。
+Local collaboration convention: all shell commands are run with the `rtk` prefix. GitHub Actions runners do not install RTK; workflows run standard commands directly.
 
-## 构建与验证
+## Build and verification
 
 ```bash
 make build
@@ -27,45 +27,48 @@ make verify
 make release-verify
 ```
 
-| Target | 含义 |
+| Target | Meaning |
 |---|---|
-| `build` | `-trimpath` 构建到 `bin/hukou` |
-| `build-release` | 单平台快速构建到 `bin/hukou`，经 `scripts/build_flags.sh` 注入 version/commit/date（与 `scripts/release.sh` 同一 ldflags 来源）；供公开后本地自装 |
-| `test` | 全仓库单测与隔离 mock e2e |
-| `race` | 全仓 race detector |
-| `coverage` | 生成被忽略的 `coverage.out` 并打印函数摘要 |
+| `build` | builds to `bin/hukou` with `-trimpath` |
+| `build-release` | single-platform fast build to `bin/hukou`, injecting version/commit/date via `scripts/build_flags.sh` (the same ldflags source as `scripts/release.sh`); for local self-install after going public |
+| `test` | repo-wide unit tests and isolated mock e2e tests |
+| `race` | repo-wide race detector |
+| `coverage` | generates a gitignored `coverage.out` and prints a per-function summary |
 | `vet` | `go vet ./...` |
-| `fmt-check` | 只检查 gofmt，不改文件 |
-| `license-check` | 检查根许可证、notices、来源/依赖许可证与 release 打包接线 |
-| `install-test` | 在临时 fixture 上验证安装、dry-run、force、严格 SemVer 2.0.0（不接受 build metadata）、checksum、URL 协议边界 |
-| `release-test` | 以合法/非法矩阵验证发布脚本的严格 SemVer 2.0.0 边界，使用本地假构建器，不创建真实发布物 |
-| `shellcheck` | `shellcheck scripts/*.sh`；需要本机安装 shellcheck |
-| `vulncheck` | 固定运行 `govulncheck@v1.5.0 ./...`；需要可访问 Go module/vulnerability 数据源 |
-| `verify` | fmt、module verify、vet、test、race、coverage、build、license、installer 与 release-version matrix 的常规门禁 |
-| `release-verify` | `verify` 加 shellcheck 与 govulncheck 的发布专用门禁 |
-| `release` | 先运行 `release-verify`，再调用 `scripts/release.sh` |
-| `demo` | build 后在临时目录运行只读/隔离 demo，不应触碰真实 hukou 状态 |
+| `fmt-check` | checks gofmt only, without modifying files |
+| `license-check` | checks the root license, notices, source/dependency licenses, and release packaging wiring |
+| `install-test` | validates install, dry-run, force, strict SemVer 2.0.0 (build metadata not accepted), checksum, and URL scheme boundaries against a temporary fixture |
+| `release-test` | validates the release script's strict SemVer 2.0.0 boundaries against a valid/invalid matrix, using a local fake builder and without creating real release artifacts |
+| `shellcheck` | `shellcheck scripts/*.sh`; requires shellcheck installed locally |
+| `vulncheck` | runs a pinned `govulncheck@v1.5.0 ./...`; requires access to the Go module/vulnerability data sources |
+| `verify` | the standard gate covering fmt, module verify, vet, test, race, coverage, build, license, installer, and the release-version matrix |
+| `release-verify` | `verify` plus shellcheck and govulncheck, the release-specific gate |
+| `release` | runs `release-verify` first, then invokes `scripts/release.sh` |
+| `demo` | after building, runs a read-only/isolated demo in a temporary directory; it should never touch real hukou state |
 
-### 版本注入的单一来源与语义差异
+### Single source for version injection, and the semantic difference
 
-`scripts/build_flags.sh` 是 buildinfo `-X` ldflags 的唯一拼装点，
-`scripts/release.sh` 与 `make build-release` 都调用它，两条构建路径不会漂移。
-两者的**版本语义**是有意不同的：
+`scripts/build_flags.sh` is the only assembly point for the buildinfo `-X`
+ldflags; both `scripts/release.sh` and `make build-release` call it, so the two
+build paths never drift. Their **version semantics** are intentionally
+different:
 
-- `make release`（经 `scripts/release.sh`）要求严格 SemVer 2.0.0（校验在调用
-  build_flags 之前完成），且默认拒绝脏工作树。
-- `make build-release` 面向本地开发/自装：`VERSION=` 可传任意字符串；不传时回退
-  `git describe --tags --always --dirty`，允许出现 `-dirty` 后缀。
+- `make release` (via `scripts/release.sh`) requires strict SemVer 2.0.0
+  (validated before build_flags is called) and refuses a dirty working tree by
+  default.
+- `make build-release` targets local development/self-install: `VERSION=` may be
+  any string; when omitted it falls back to `git describe --tags --always
+  --dirty`, allowing a `-dirty` suffix.
 
 ```bash
-make build-release                    # git describe 版本
-make build-release VERSION=v0.3.0    # 显式版本
-./bin/hukou version                   # 验证注入
+make build-release                    # git describe version
+make build-release VERSION=v0.3.0    # explicit version
+./bin/hukou version                   # verify injection
 ```
 
-## 安全的本地 CLI 试验
+## Safe local CLI experimentation
 
-不得对真实用户数据做开发 smoke。始终建立临时根：
+Never run development smoke tests against real user data. Always set up a temporary root:
 
 ```bash
 tmp="$(mktemp -d)"
@@ -76,48 +79,54 @@ PATH="$tmp/bin" \
 ./bin/hukou scan
 ```
 
-需要 upgrade/rollback 时，测试二进制也必须位于该临时 PATH。结束后删除整个临时目录。
+When testing upgrade/rollback, the test binary must also live on this temporary PATH. Delete the entire temporary directory when finished.
 
-## V0.3 安装器开发契约
+## V0.3 installer development contract
 
-`scripts/install.sh` 支持 Darwin/Linux × amd64/arm64，默认写入
-`$HOME/.local/bin/hukou`，不使用 sudo、不修改 shell rc。它先下载
-`checksums.txt` 与目标 archive；检测到已认证的 gh CLI 时对**下载的 archive**
-（attestation 的真实 subject，checksums.txt 不是）执行 `gh attestation verify
---repo rtwsvj/hukou --cert-identity-regex
+`scripts/install.sh` supports Darwin/Linux × amd64/arm64, writing by default to
+`$HOME/.local/bin/hukou`, without using sudo or modifying shell rc files. It first downloads
+`checksums.txt` and the target archive; when an authenticated gh CLI is detected, it runs
+`gh attestation verify --repo rtwsvj/hukou --cert-identity-regex
 '^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*$'`
-（锚定正则钉死证书 SAN；不用 `--signer-workflow`，它是未转义、未锚定的前缀正则），
-失败即终止（发生在任何 tar 检查/解压之前）；gh 缺失或未认证时打印警告并回退
-仅传输信任。随后要求唯一精确 SHA-256 条目，再检查 archive root，
-只解出 regular executable 并通过同目录临时文件替换目标。
+against the **downloaded archive** (the actual subject of the attestation — checksums.txt is not)
+(the anchored regex pins down the certificate SAN; `--signer-workflow` is not used, since it is
+an unescaped, unanchored prefix regex), terminating on failure (this happens before any tar
+inspection/extraction); when gh is missing or unauthenticated, it prints a warning and falls back
+to transport trust only. It then requires a single, exact SHA-256 entry, checks the archive root,
+extracts only the regular executable, and replaces the target via a same-directory temp file.
 
-- 生产/mirror URL 必须是 HTTPS；HTTP 永远拒绝。
-- `file://` 只供隔离测试，并且必须显式设置 `HUKOU_ALLOW_FILE_URL=1`。
-- 已有目标默认拒绝，只有 `--force` 会替换。
-- non-force 同时把 dangling symlink 视为“目标已存在”；下载后用目标目录内 hard
-  link 做原子 no-replace commit，若竞争者在预检后创建任意节点则失败且不覆盖。
-- `--force` 是用户显式授权替换，使用同目录临时文件后 `mv -f` 激活。
-- `--dry-run` 不联网、不创建 prefix，只打印 version/platform/checksum URL/
-  attestation 意图/destination。
-- `HUKOU_REQUIRE_ATTESTATION` 大小写不敏感：`1/true/yes` 强制 attestation（gh
-  缺失/未认证也 fail closed）；空或 `0/false/no` 允许传输信任回退；**其余任何取
-  值直接失败**，拼写错误不允许静默降级。
-- `scripts/install_test.sh` 用严格校验实参的 gh mock（子命令、subject 为存在的
-  archive、`--repo` 与锚定 `--cert-identity-regex` 值）与 tar spy 覆盖
-  pass/fail/missing 三态、require 矩阵和"失败必须先于解压/安装"断言。
-- 安装器已进入私有 V0.3 分支，但没有 v0.3 发布端点，不能把脚本存在写成公开安装渠道已上线。
+- Production/mirror URLs must be HTTPS; HTTP is always rejected.
+- `file://` is only for isolated testing, and requires explicitly setting `HUKOU_ALLOW_FILE_URL=1`.
+- An existing target is rejected by default; only `--force` will replace it.
+- In non-force mode, a dangling symlink is also treated as "target already exists"; after
+  downloading, an atomic no-replace commit is done via a hard link inside the target directory —
+  if a competing process creates any node after the precheck, the operation fails without overwriting.
+- `--force` is the user's explicit authorization to replace; it activates via a same-directory
+  temp file followed by `mv -f`.
+- `--dry-run` makes no network access and creates no prefix; it only prints the
+  version/platform/checksum URL/attestation intent/destination.
+- `HUKOU_REQUIRE_ATTESTATION` is case-insensitive: `1/true/yes` forces attestation (fails closed
+  even if gh is missing/unauthenticated); empty or `0/false/no` allows falling back to transport
+  trust; **any other value fails immediately** — a typo is never allowed to silently downgrade
+  the guarantee.
+- `scripts/install_test.sh` covers the pass/fail/missing tri-state, the require matrix, and the
+  "failure must happen before extraction/install" assertion, using a gh mock that strictly
+  validates its actual arguments (subcommand, subject being an existing archive, `--repo`, and
+  the anchored `--cert-identity-regex` value) together with a tar spy.
+- The installer has landed on the private V0.3 branch, but there is no v0.3 release endpoint yet;
+  the existence of the script must not be written up as if a public install channel were already live.
 
-## 生成物
+## Generated artifacts
 
-- `bin/`：本机构建
-- `dist/`：发布归档
-- `coverage.out`、`*.coverprofile`：覆盖率
+- `bin/`: local builds
+- `dist/`: release archives
+- `coverage.out`, `*.coverprofile`: coverage data
 
-这些文件全部被忽略，不应提交。`coverage.out` 的历史跟踪副本属于 Phase 1 旧产物，应从 Git 索引移除。
+All of these files are gitignored and should not be committed. The historically tracked copy of `coverage.out` is a Phase 1 legacy artifact and should be removed from the Git index.
 
-## 修改文档的同步规则
+## Documentation sync rules for changes
 
-- CLI 变化：根 README、CLI reference、测试文档。
-- manifest/store 变化：data/API、requirements、风险文档。
-- 安全语义变化：规格、ADR、失败注入测试。
-- 发布变化：Makefile、release script、workflow、release 文档。
+- CLI changes: root README, CLI reference, test documentation.
+- manifest/store changes: data/API, requirements, risk documentation.
+- Security semantics changes: spec, ADR, failure-injection tests.
+- Release changes: Makefile, release script, workflow, release documentation.

@@ -1,66 +1,76 @@
-# hukou 文档入口
+# hukou documentation entry point
 
-## 用途
+## Purpose
 
-本目录是项目当前事实、长期决策和 Codex 操作证据的统一入口。阅读者不应从某一份历史 `*-DONE.md` 推断当前行为；历史记录只证明当时声称完成过什么。
+This directory is the single entry point for the project's current facts and
+its long-lived decisions. A reader should not infer current behavior from any
+one historical record; a past claim only proves what was claimed complete at
+the time.
 
-## 当前状态
+## Current status
 
-| 领域 | 状态 | 当前证据入口 |
+| Area | Status | Current evidence entry |
 |---|---|---|
-| Phase 1：PATH 扫描与溯源 | 已实现 | `specs/phase1-scan.md`、`records/` |
-| Phase 2：收编、升级、回滚、清单 | 已实现 | `specs/phase2-adopt-upgrade.md`、`records/` |
-| H1 安全硬化 | 已交付；GitHub-hosted runner 计费例外已记录 | `codex/verification-reports/2026-07-13-hukou-hardening-local.md` |
-| 首个 SemVer 发布 | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) 已发布 | `codex/verification-reports/2026-07-13-v0.1.0-release.md` |
-| H2 恢复与诊断基础 | 已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布并完成验证；后续边界见路线图 | `codex/verification-reports/2026-07-14-h2-recovery-doctor.md`、`codex/verification-reports/2026-07-14-v0.2.0-release.md` |
-| V0.3 private RC | subject `1fa45a0` 有内部 local/private RC readiness 记录；外部审计待完成；hosted gate 因 billing infrastructure-blocked；未合并、未发布、未公开 | `audit/README.md`、`specs/v0.3-private-rc.md`、`codex/verification-reports/2026-07-14-v0.3-private-rc.md` |
-| 公共 fixture、公共安装渠道、跨管理器执行、Windows | 未实现/不在本 RC | `02-roadmap.md`、`integrations/topgrade.md` |
+| Phase 1: PATH scan and attribution | Implemented | `specs/phase1-scan.md` |
+| Phase 2: adopt, upgrade, rollback, manifest | Implemented | `specs/phase2-adopt-upgrade.md` |
+| H1 safety hardening | Delivered; GitHub-hosted-runner billing exception recorded | `audit/`, `08-risk-and-debt.md` |
+| First SemVer release | [`v0.1.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0) published | GitHub Releases |
+| H2 recovery and doctor foundation | Released and verified with [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0); further boundaries in the roadmap | `02-roadmap.md`, GitHub Releases |
+| V0.3 private RC | Local/private RC readiness recorded for subject `1fa45a0`; external audit pending; the hosted gate is infrastructure-blocked by billing; unmerged, unreleased, not public | `../AUDIT.md`, `audit/`, `specs/v0.3-private-rc.md` |
+| Public fixtures, public install channel, cross-manager execution, Windows | Not implemented / out of this RC | `02-roadmap.md`, `integrations/topgrade.md` |
 
-任何“通过”结论必须同时给出提交号和 `codex/verification-reports/` 中的报告。当前执行报告不等于验证报告。
+Any "pass" conclusion must come with a commit SHA and the corresponding
+evidence under `audit/`. An execution report is not a verification report.
 
-V0.3 固定提交证据：安全关键路径 audit 321 tests / 6 packages；direct uncached 全仓
-ordinary/race 各 641 tests / 21 packages；完整本地 `release-verify` 在命令级 GOPROXY
-mirror 下 exit 0、coverage 72.9%、govuln 无已知漏洞；non-root Linux/arm64、四目标
-双构建、installer/release tests 与 21 packages/4 files 的 SPDX SBOM 通过。最终边界、
-产物哈希、远端 billing exception 与内部 review 见本轮 verification report；该
-review 没有单独 raw report，第三方应从 [`audit/`](audit/) 重新核验。
+The V0.3 fixed-commit evidence: the security-critical path audits 321 tests /
+6 packages; a direct uncached full-repo run is 641 tests / 21 packages for both
+ordinary and race modes; a full local `release-verify` under a command-scoped
+GOPROXY mirror exits 0, with 72.9% coverage and no known vulnerabilities from
+govulncheck; a non-root Linux/arm64 run, the four-target dual build, the
+installer/release tests, and the 21-package / 4-file SPDX SBOM all pass. The
+final boundaries, artifact hashes, remote billing exception, and the internal
+review are recorded in the audit package; that review kept no standalone raw
+report, so a third party should re-verify from [`audit/`](audit/).
 
-## 事实源优先级
+## Source-of-truth priority
 
-1. 用户行为：根 `README.md`、`05-cli-reference.md`（命令真相最终以当前代码为准）。
-2. 需求与安全不变量：`01-requirements.md`、已批准规格、ADR。
-3. 架构与数据：`03-architecture.md`、`04-data-and-api.md`。
-4. 验证与发布：`07-testing-and-verification.md`、`09-release.md`。
-5. 当前进度：`02-roadmap.md`、Codex change/verification records。
-6. 历史材料：`pinhaoma-report.md`、`records/*-DONE.md`。
+1. User behavior: root `README.md`, `05-cli-reference.md` (the final truth of a
+   command is the current code).
+2. Requirements and safety invariants: `01-requirements.md`, approved specs, ADRs.
+3. Architecture and data: `03-architecture.md`, `04-data-and-api.md`.
+4. Verification and release: `07-testing-and-verification.md`, `09-release.md`.
+5. Current progress: `02-roadmap.md`, the audit evidence map.
 
-出现矛盾时，不静默选择其中一份：在 `09-decision-log.md` 记录裁决，并同步更新受影响的规格与用户文档。
+On a contradiction, do not silently pick one document: record the ruling in
+`09-decision-log.md` and update the affected specs and user docs.
 
-## 文档地图
+## Document map
 
-- [`00-project-brief.md`](00-project-brief.md)：目标、用户和边界
-- [`01-requirements.md`](01-requirements.md)：功能需求与安全不变量
-- [`02-roadmap.md`](02-roadmap.md)：阶段进度和未完成项
-- [`03-architecture.md`](03-architecture.md)：模块与关键流程
-- [`04-data-and-api.md`](04-data-and-api.md)：manifest、store、环境变量和外部 API
-- [`05-cli-reference.md`](05-cli-reference.md)：命令、旗标与副作用
-- [`06-dev-setup.md`](06-dev-setup.md)：开发、构建和本地隔离
-- [`07-testing-and-verification.md`](07-testing-and-verification.md)：验证分层与证据规则
-- [`08-risk-and-debt.md`](08-risk-and-debt.md)：风险、限制和技术债
-- [`09-decision-log.md`](09-decision-log.md)：重要决策索引
-- [`09-release.md`](09-release.md)：版本与发布流程
-- [`10-glossary.md`](10-glossary.md)：术语
-- [`pinhaoma-sources.md`](pinhaoma-sources.md)：历史调研来源、许可证与复用边界
-- [`integrations/topgrade.md`](integrations/topgrade.md)：跨管理器编排边界与 custom command 配置
-- [`audit/`](audit/)：V0.3 外部审计交接、复现命令、证据映射与已知 hypotheses
-- [`adr/`](adr/)：不可轻易反转的技术决策
-- [`codex/`](codex/)：执行、改动和验证记录
-- [`records/`](records/)：历史阶段完成记录
-- [`specs/`](specs/)：阶段规格
+- [`00-project-brief.md`](00-project-brief.md): goals, users, and boundaries
+- [`01-requirements.md`](01-requirements.md): functional requirements and safety invariants
+- [`02-roadmap.md`](02-roadmap.md): phase progress and open items
+- [`03-architecture.md`](03-architecture.md): modules and key flows
+- [`04-data-and-api.md`](04-data-and-api.md): manifest, store, environment variables, and external API
+- [`05-cli-reference.md`](05-cli-reference.md): commands, flags, and side effects
+- [`06-dev-setup.md`](06-dev-setup.md): development, build, and local isolation
+- [`07-testing-and-verification.md`](07-testing-and-verification.md): verification layers and evidence rules
+- [`08-risk-and-debt.md`](08-risk-and-debt.md): risks, limits, and technical debt
+- [`09-decision-log.md`](09-decision-log.md): index of important decisions
+- [`09-release.md`](09-release.md): versioning and release process
+- [`10-glossary.md`](10-glossary.md): terminology
+- [`VENDORED.md`](VENDORED.md): vendored/adapted code, upstream sources, licenses, and reuse boundaries
+- [`integrations/topgrade.md`](integrations/topgrade.md): cross-manager orchestration boundary and custom-command configuration
+- [`audit/`](audit/): V0.3 external-audit handoff, reproduction commands, evidence map, and known hypotheses
+- [`adr/`](adr/): technical decisions that are not easily reversed
+- [`specs/`](specs/): phase specifications
 
-## 维护时机
+## When to maintain
 
-- 命令、旗标、环境变量变化：更新根 README、CLI reference、dev setup。
-- 数据模型或安全语义变化：更新 requirements、data/API、风险文档和 ADR。
-- 阶段状态变化：更新 roadmap；只有验证报告完成后才能标记“已验证”。
-- 每次 Codex 修改：先有 execution report，后有 change record，验收后补 verification report。
+- Command, flag, or environment-variable changes: update the root README, CLI
+  reference, and dev setup.
+- Data-model or safety-semantics changes: update requirements, data/API, the
+  risk document, and the ADR.
+- Phase-status changes: update the roadmap; mark something "verified" only after
+  the verification evidence is complete.
+- Any significant change: record the ruling in `09-decision-log.md`, and add or
+  supersede an ADR when the decision is long-lived.

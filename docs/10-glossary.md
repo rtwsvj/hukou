@@ -1,28 +1,28 @@
-# 术语
+# Glossary
 
-| 术语 | 含义 |
+| Term | Meaning |
 |---|---|
-| 户口 / manifest | hukou 管理条目的 JSON 清单 |
-| 收编 / adopt | 登记现有二进制并保存 original 备份 |
-| active binary | 用户 PATH 中当前执行到的常规文件；旧版 symlink 只作为兼容输入 |
-| asset | GitHub Release 中下载的归档或裸文件 |
-| asset hash | 下载资产本体的 SHA-256 |
-| active hash | 解压并激活后二进制的 SHA-256 |
-| original | 收编时保留的原始二进制版本 |
-| store | `<dataRoot>/store` 下的版本目录 |
-| shadowed | PATH 中同名但优先级低、不会被 shell 首先执行的文件 |
-| fail closed | 证据缺失或校验异常时停止，不降级为继续安装 |
-| 补偿 | 激活后后续步骤失败时恢复旧路径与 manifest 状态 |
-| H1 | 2026-07-13 安全硬化与首个 SemVer 发布里程碑 |
-| WAL / transaction journal | 改变用户状态前持久化的 before/after 恢复记录与 COMMIT 决策 |
-| PREPARED | journal 已 durable，但事务尚未作出不可逆提交决定；恢复方向为 before |
-| COMMITTED | durable COMMIT 已存在；恢复方向为 after |
-| doctor | 默认零写、零网络的 hukou 本地状态审计命令 |
-| UNCLASSIFIABLE | manifest 证据无效，无法安全判断 store 内容是否 orphan |
-| activation event | manifest v2 中一次 adopt/upgrade/rollback/repair 激活的不可变记录 |
-| lineage / parent | 当前版本可证明的逻辑回滚链；不是按时间或 store mtime 排序 |
-| update policy | entry 的 SemVer/GitHub-latest、stable/prerelease 与 exact pin 选择规则 |
-| rollback depth | retention 要保护的最近逻辑 ancestor 数；current/original/pin 另行保护 |
-| state fingerprint | repair plan 对 data-root identity、前置条件和相关状态内容的绑定摘要 |
-| support bundle | 离线生成的脱敏 JSON 诊断摘要；不包含原始路径/repo/env/WAL payload，不上传 |
-| private RC | 代码已实现并正在私有分支验收；不等于 tag、Release、公开仓库或稳定公共接口 |
+| household register / manifest | The JSON list of entries hukou manages |
+| adopt | Registers an existing binary and saves an original backup |
+| active binary | The regular file currently executed from the user's PATH; the older symlink form is retained only as a compatible input |
+| asset | The archive or bare file downloaded from a GitHub Release |
+| asset hash | The SHA-256 of the downloaded asset itself |
+| active hash | The SHA-256 of the binary after extraction and activation |
+| original | The original binary version preserved at adoption time |
+| store | The version directory under `<dataRoot>/store` |
+| shadowed | A same-named file on PATH with lower priority that the shell will not execute first |
+| fail closed | Stop when evidence is missing or verification is abnormal, rather than degrading to continue installing |
+| compensation | Restoring the old path and manifest state when a step after activation fails |
+| H1 | The 2026-07-13 security-hardening and first SemVer release milestone |
+| WAL / transaction journal | The before/after recovery record and COMMIT decision persisted before changing user state |
+| PREPARED | The journal is durable, but the transaction has not yet made an irrevocable commit decision; recovery direction is before |
+| COMMITTED | A durable COMMIT already exists; recovery direction is after |
+| doctor | The hukou local-state audit command that performs zero writes and zero network access by default |
+| UNCLASSIFIABLE | Manifest evidence is invalid, so whether store content is orphaned cannot be safely determined |
+| activation event | The immutable record of a single adopt/upgrade/rollback/repair activation in manifest v2 |
+| lineage / parent | The provable logical rollback chain for the current version; not ordered by time or store mtime |
+| update policy | An entry's selection rules for SemVer/GitHub-latest, stable/prerelease, and exact pin |
+| rollback depth | The number of most recent logical ancestors retention protects; current/original/pin are protected separately |
+| state fingerprint | The binding digest a repair plan uses over data-root identity, preconditions, and related state content |
+| support bundle | An offline-generated, redacted JSON diagnostic summary; excludes raw paths/repos/env/WAL payloads and is never uploaded |
+| private RC | Code that has been implemented and is under acceptance review on a private branch; not equivalent to a tag, Release, public repository, or a stable public interface |

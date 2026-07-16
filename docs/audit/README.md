@@ -3,7 +3,7 @@
 ## Purpose
 
 This directory lets a third-party reviewer audit V0.3 without relying on the
-author's Codex conversation or local machine. It deliberately separates
+author's private working sessions or local machine. It deliberately separates
 claims, reproducible evidence, recorded-but-not-portable evidence, and known
 gaps.
 
@@ -15,8 +15,8 @@ gaps.
 | Code subject | `1fa45a0d8473446e3208490f037aef924abea181` |
 | Original evidence-docs commit | `2cd0467098700b899b8b87ee627eb2b75412f397` |
 | Audit-package content baseline | `b60e890a6a5b9bbb9ad8f18bd96c8fbdf7b6139e` |
-| Review-time documentation head | Capture `origin/codex/hukou-v0.3-private-rc` after fetching and record its full SHA |
-| Branch | `codex/hukou-v0.3-private-rc` |
+| Review-time documentation head | Capture the head of the v0.3 RC review branch (draft PR #6) after fetching and record its full SHA |
+| Branch | The v0.3 RC review branch (see draft PR #6) |
 | Draft PR | <https://github.com/rtwsvj/hukou/pull/6> |
 | Official release | `v0.2.0` |
 | V0.3 tag/Release | None |
@@ -35,8 +35,6 @@ The branch is only a transport. Pin every review result to a full commit SHA.
   recorded hashes, availability, native-run/build distinctions, and toolchain caveats.
 - [`external-finding-template.md`](external-finding-template.md): copyable
   finding and final-report structure.
-- [`../codex/verification-reports/2026-07-14-v0.3-private-rc.md`](../codex/verification-reports/2026-07-14-v0.3-private-rc.md):
-  original execution evidence; useful context, not independent proof.
 - [`../specs/v0.3-private-rc.md`](../specs/v0.3-private-rc.md): intended V0.3 contract.
 - [`../03-architecture.md`](../03-architecture.md) and
   [`../04-data-and-api.md`](../04-data-and-api.md): implementation and state boundaries.
@@ -58,11 +56,12 @@ The branch is only a transport. Pin every review result to a full commit SHA.
 2. Independent reproduction output.
 3. Git/GitHub immutable objects and refreshed hosted state.
 4. Maintained specifications and ADRs.
-5. Original Codex change and verification records.
-6. Historical `docs/records/*-DONE.md` files.
+5. The author's original internal change, verification, and phase records
+   (not retained in the public tree; treat any citation of them as a claim).
 
 If two sources disagree, report the disagreement instead of silently choosing
 the more favorable one.
 
-The original `pinhaoma-review` was performed inside the Codex execution team
-and has no standalone raw finding log. It is not an independent external audit.
+The original multi-round review was performed inside the author's own execution
+team and has no standalone raw finding log. It is not an independent external
+audit.

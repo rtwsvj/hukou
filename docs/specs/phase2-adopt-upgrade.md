@@ -1,16 +1,21 @@
-# Phase 2 规格：adopt / upgrade / rollback / doctor
+# Phase 2 Spec: adopt / upgrade / rollback / doctor
 
-状态：主体与 H2 崩溃恢复/只读诊断基础已随 `v0.2.0` 实现并验证。本文件保留
-v0.2 历史契约；V0.3 私有分支已实现窄版 repair、激活历史与可配置保留，但完整
-RC 验收 pending，公共 fixture smoke 仍后置。当前行为变化见
-[`v0.3-private-rc.md`](v0.3-private-rc.md)，最终通过以对应 commit 的 verification
-report 为准。
+Status: the core functionality and the H2 crash-recovery/read-only-diagnostics
+foundation were implemented and verified as of `v0.2.0`. This document
+preserves the historical v0.2 contract; the V0.3 private branch has
+implemented a narrow-scope repair, activation history, and configurable
+retention, but full RC acceptance is still pending and public fixture
+smoke tests remain deferred. Current behavioral changes are documented in
+[`v0.3-private-rc.md`](v0.3-private-rc.md); the final source of truth is
+the verification report for the corresponding commit.
 
-## 目标
+## Goal
 
-把 scan 找出的无主二进制**收编**进 hukou 管理，提供 GitHub release **升级**、**回滚**、协作事务崩溃恢复与只读状态诊断。
+**Adopt** ownerless binaries found by scan into hukou management, and
+provide GitHub release **upgrade**, **rollback**, cooperative-transaction
+crash recovery, and read-only status diagnostics.
 
-## 命令
+## Commands
 
 ```
 hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force] [--dry-run] [--json]
@@ -20,84 +25,195 @@ hukou list
 hukou doctor [--json] [--deep]
 ```
 
-- **adopt**:登记一个已存在的二进制。repo 推导:Go 二进制经 buildinfo 的 ModulePath(github.com/owner/repo 前缀直接取);其余必须显式给 owner/repo。二进制已被其他管理器认领(scan 归属非 unknown/curl-installer/local-project)时拒绝,`--force` 才放行。登记时记录当前 sha256 并把原始二进制**备份**进 store(original/)。
-- **adopt --local <name|path>**:无上游登记(Eric 自有脚本等):manifest 条目 repo 留空、tag="local",照常 sha256+备份;upgrade 对 local 条目自动跳过并在输出中注明。
-- **upgrade**:仅对已收编工具。查最新 release → 比较 tag(字符串不等即视为可升级,不做 semver 猜测)→ 选资产 → 下载到 store → 校验 → 原子替换。`--dry-run` 只报告不动手。
-- **rollback**:把 store 中上一个(或 --to 指定)版本原子复制到活跃常规文件。
-- **list**:收编清单(名称/版本/repo/路径/store 版本数)。
-- **doctor**：默认零写、零网络审计 manifest/backup、live、store、transaction 与临时残留；`--deep` 扩大只读检查范围，不自动修复。
+- **adopt**: registers an existing binary. Repo derivation: for Go
+  binaries, the ModulePath from buildinfo is used (a
+  github.com/owner/repo prefix is taken directly); everything else must
+  explicitly supply owner/repo. If the binary is already claimed by
+  another manager (scan attribution other than unknown/curl-installer/
+  local-project), adopt is refused unless `--force` is given. On
+  registration, the current sha256 is recorded and the original binary is
+  **backed up** into the store (original/).
+- **adopt --local <name|path>**: registration with no upstream (e.g. the
+  maintainer's own scripts): the manifest entry leaves repo blank and sets
+  tag="local"; sha256+backup proceed as normal; upgrade automatically
+  skips local entries and notes this in its output.
+- **upgrade**: applies only to already-adopted tools. Queries the latest
+  release → compares tags (any string inequality is treated as
+  upgradeable; no semver guessing) → selects an asset → downloads to the
+  store → verifies → atomically replaces. `--dry-run` only reports,
+  without acting.
+- **rollback**: atomically copies the previous version (or the one
+  specified via `--to`) from the store to the active regular file.
+- **list**: the adopted inventory (name/version/repo/path/number of store
+  versions).
+- **doctor**: by default performs a zero-write, zero-network audit of the
+  manifest/backup, live files, store, transactions, and temporary
+  residue; `--deep` widens the read-only check scope; it never
+  auto-repairs.
 
-## 数据布局(XDG)
+## Data Layout (XDG)
 
 ```
-~/.local/share/hukou/manifest.json          # 户口清单,schema_version=1
-~/.local/share/hukou/manifest.json.bak      # 上一份可解析且 schema 受支持的 manifest
-~/.local/share/hukou/state.lock             # 写命令进程互斥
-~/.local/share/hukou/transactions/          # 持久化 before/after WAL
-~/.local/share/hukou/store/.tmp/            # 下载/解包临时目录
-~/.local/share/hukou/store/<name>/<tag>/<bin>   # 各版本
-~/.local/share/hukou/store/<name>/original/<bin> # 收编时的原件备份
+~/.local/share/hukou/manifest.json          # adoption manifest, schema_version=1
+~/.local/share/hukou/manifest.json.bak      # the last manifest that parsed and had a supported schema
+~/.local/share/hukou/state.lock             # mutual exclusion for write commands
+~/.local/share/hukou/transactions/          # persisted before/after WAL
+~/.local/share/hukou/store/.tmp/            # download/unpack temp directory
+~/.local/share/hukou/store/<name>/<tag>/<bin>   # each version
+~/.local/share/hukou/store/<name>/original/<bin> # the original file backed up at adoption time
 ```
 
-manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active binary), adopted_at, updated_at, upstream(如 go module path), asset_name, asset_sha256(下载归档), checksum_asset, checksum_verified。H1 新增审计字段可选，保持 schema v1 向后兼容。写入必须原子(临时文件+rename)。
+Manifest entry fields: name, path (location on PATH), repo (owner/repo),
+tag, sha256 (active binary), adopted_at, updated_at, upstream (e.g. go
+module path), asset_name, asset_sha256 (downloaded archive),
+checksum_asset, checksum_verified. H1 added optional audit fields, keeping
+schema v1 backward compatible. Writes must be atomic (temp file + rename).
 
-数据根优先使用 `HUKOU_DATA_DIR`，否则 `${XDG_DATA_HOME}/hukou`，默认 `~/.local/share/hukou`。adopt、真实 upgrade、rollback 非阻塞获取 `<dataRoot>/state.lock`；锁已占用时立即报错。scan、list、doctor 和纯 dry-run 不持写锁。
+The data root prefers `HUKOU_DATA_DIR`, otherwise
+`${XDG_DATA_HOME}/hukou`, defaulting to `~/.local/share/hukou`. adopt,
+real upgrade, and rollback acquire `<dataRoot>/state.lock` non-blockingly;
+if the lock is already held, they fail immediately. scan, list, doctor,
+and pure dry-runs do not hold the write lock.
 
-**替换模型**：original 与各版本在 store 中保持不可变副本。升级/回滚把目标版本复制为 PATH 位置同目录的完整临时常规文件，设置 mode、`fsync`、close 后 rename 覆盖活跃文件，并同步父目录。新激活不交换 symlink inode；旧版遗留 symlink 作为兼容输入，首次成功激活后迁移为常规文件。
+**Replacement model**: original and each version in the store are kept as
+immutable copies. Upgrade/rollback copy the target version into a
+complete temporary regular file in the same directory as the PATH
+location, set its mode, `fsync`, close, and rename over the active file,
+syncing the parent directory too. Newly activated files never swap
+symlink inodes; a legacy symlink is accepted as compatible input and is
+migrated to a regular file after its first successful activation.
 
-**崩溃模型**：adopt/upgrade/rollback 在改变 original/live/manifest 前发布包含精确 before/after payload 的 PREPARED transaction。只有所有目标资源 durable 后才写 durable COMMIT。恢复无 COMMIT 的 transaction 到 before，有 COMMIT 的 transaction 到 after；预检或写入前复核发现第三种外部状态时不覆盖并保留证据。非协作 writer 在最终复核与系统调用之间的窄 TOCTOU 窗口属于明确边界。
+**Crash model**: adopt/upgrade/rollback publish a PREPARED transaction
+containing the exact before/after payload before touching original/live/
+manifest. Only after all target resources are durable is a durable COMMIT
+written. Recovery restores a transaction without a COMMIT to its "before"
+state, and a transaction with a COMMIT to its "after" state; if the
+pre-check or pre-write re-verification finds a third, external state, it
+does not overwrite and preserves the evidence instead. The narrow TOCTOU
+window between a non-cooperating writer's final re-verification and the
+actual system call is an explicitly accepted boundary.
 
-## 网络层(internal/ghrelease)
+## Network Layer (internal/ghrelease)
 
-- 仅 net/http;GITHUB_TOKEN/GH_TOKEN 自动携带(Authorization: Bearer)
-- CLI upgrade 使用 GET /repos/{owner}/{repo}/releases/latest；库级 `ghrelease.ByTag` 支持 `/releases/tags/{tag}`，当前 CLI 不暴露 `--tag`
-- 指数退避重试 3 次(429/5xx/网络错误);403+RateLimit-Remaining:0 时报清晰错误(含 reset 时间)
-- 下载资产用 browser_download_url,流式写临时文件,不整读内存
+- net/http only; GITHUB_TOKEN/GH_TOKEN are carried automatically
+  (Authorization: Bearer)
+- CLI upgrade uses GET /repos/{owner}/{repo}/releases/latest; the
+  library-level `ghrelease.ByTag` supports `/releases/tags/{tag}`, though
+  the CLI does not currently expose `--tag`
+- Exponential backoff, 3 retries (429/5xx/network errors); on
+  403+RateLimit-Remaining:0, reports a clear error including the reset
+  time
+- Downloads assets via browser_download_url, streaming to a temp file
+  rather than reading the whole thing into memory
 
-## 资产选择(internal/assetpick)
+## Asset Selection (internal/assetpick)
 
-- 基底:vendor 自 eget detect.go(MIT,已在 LICENSES/)——OS/Arch 正则表 + 四级优先级瀑布
-- 增补决胜规则(移植 ubi 思想,不搬 Rust 代码):
-  1. 预过滤扩展名黑名单:.sha256/.sha256sum/.sig/.asc/.pem/.sbom/.txt/.md/.deb/.rpm/.apk/.msi/.exe(darwin 上)
-  2. 版本号伪扩展名识别(foo-1.3.5.tar.gz 的 .5 不是扩展名)
-  3. darwin/arm64:优先 arm64/universal,无则回退 amd64(Rosetta)
-  4. 64 位平台剔除 32 位资产
-  5. 归档格式偏好:.tar.gz/.tgz > .zip > .gz > 裸二进制;tar.xz/txz 与已知不支持容器格式当前不可选
-  6. 仍多候选:按名字典序稳定列出候选并失败，要求用户使用 `--asset` 缩小范围
-- 无交互模式:多候选无法决出且无 --asset 时报错并列出全部资产名(不做 stdin 交互)
+- Base: vendored from eget's detect.go (MIT, already in LICENSES/) — an
+  OS/Arch regex table + a four-tier priority waterfall
+- Additional tie-breaking rules (porting ubi's approach, not its Rust
+  code):
+  1. Extension blacklist pre-filter: .sha256/.sha256sum/.sig/.asc/.pem/
+     .sbom/.txt/.md/.deb/.rpm/.apk/.msi/.exe (on darwin)
+  2. Version-number-as-pseudo-extension recognition (the `.5` in
+     foo-1.3.5.tar.gz is not an extension)
+  3. darwin/arm64: prefers arm64/universal, falling back to amd64
+     (Rosetta) if absent
+  4. On 64-bit platforms, 32-bit assets are excluded
+  5. Archive format preference: .tar.gz/.tgz > .zip > .gz > bare binary;
+     tar.xz/txz and other known-but-unsupported container formats are not
+     currently selectable
+  6. If multiple candidates still remain: list the candidates in stable
+     lexical order and fail, asking the user to narrow the choice with
+     `--asset`
+- Non-interactive mode: if multiple candidates cannot be resolved and
+  `--asset` was not given, an error is reported listing every asset name
+  (no stdin interaction)
 
-## 解压与校验(internal/archive 复用/扩展 + internal/verify)
+## Extraction and Verification (internal/archive reused/extended + internal/verify)
 
-- Phase 2 支持:tar.gz/tgz、zip、单文件 gz、裸二进制;tar.xz 及其他已知识别但不支持的容器格式明确拒绝,不得退化为裸二进制;未知后缀若走裸文件路径,仍必须识别为当前支持的 ELF/Mach-O/shebang 可执行文件;解压防 `../` 路径穿越
-- 从归档定位二进制:精确名 → 可执行位启发式(参考 eget BinaryChooser 思路)
-- 校验:release 带 `<asset>.sha256`/`checksums.txt` 时强制校验。通用清单接受 GNU/BSD 命名格式；精确 sidecar 可只含一个 64 位摘要。checksum 文件缺少所选资产、条目格式无效或 hash 不匹配都必须失败关闭。不带 checksum 仍计算 `asset_sha256`,但不得设置 `checksum_verified=true`;任何校验失败中止且不动现有安装。
+- Phase 2 supports: tar.gz/tgz, zip, single-file gz, bare binaries;
+  tar.xz and other known-but-unsupported container formats are explicitly
+  rejected and must not silently degrade to a bare binary; if an unknown
+  extension falls through to the bare-file path, it must still be
+  recognized as a currently supported ELF/Mach-O/shebang executable;
+  extraction guards against `../` path traversal
+- Locating the binary within an archive: exact name match → executable-bit
+  heuristic (following eget's BinaryChooser approach)
+- Verification: when the release ships an `<asset>.sha256`/
+  `checksums.txt`, verification is mandatory. The generic manifest format
+  accepts both GNU and BSD naming conventions; an exact sidecar file may
+  contain just a single 64-bit digest. If the checksum file is missing an
+  entry for the chosen asset, has an invalid entry format, or the hash
+  does not match, this must fail closed. When there is no checksum, the
+  `asset_sha256` is still computed, but `checksum_verified=true` must not
+  be set; any verification failure aborts the operation without touching
+  the existing installation.
 
-## 安全红线
+## Security Red Lines
 
-- 永不触碰未收编的二进制;upgrade/rollback 前验证 manifest 中 sha256 与磁盘现状一致,upgrade 在下载/解压后、激活前再次验证,不一致(被外部改过)时中止并提示
-- 所有文件替换原子化；下载/解压临时文件统一放 store/.tmp/、写命令启动恢复后清理；激活临时常规文件放在 live path 同目录的隐藏名，完成写入、mode、file sync、close、rename 与 parent sync。普通错误与进程中断都由同一 transaction before/after 收敛规则处理。
-- `hukou doctor` 默认只读检查 manifest、backup、live、store 与 transaction；没有显式、可枚举 repair action 时不得修改现场。
-- scan 保持纯只读,不受 Phase 2 影响
-- `upgrade --dry-run` 只读取 manifest 与 GitHub release metadata:不得创建 data root、不得获取写锁、不得 GC、不得下载资产。
+- Never touch a binary that has not been adopted; upgrade/rollback verify
+  that the manifest's sha256 matches the on-disk state before proceeding,
+  and upgrade re-verifies again after download/extraction but before
+  activation — a mismatch (externally modified) aborts with a warning
+- All file replacements are atomic; download/extraction temp files always
+  live under store/.tmp/, which write commands clean up on startup after
+  recovery; the activation temp regular file lives under a hidden name in
+  the same directory as the live path, with write, mode, file sync,
+  close, rename, and parent sync all completed. Both ordinary errors and
+  process interruption are handled by the same transaction before/after
+  convergence rule.
+- `hukou doctor` performs a read-only check of the manifest, backup, live
+  files, store, and transactions by default; without an explicit,
+  enumerable repair action, it must not modify the current state
+- scan remains purely read-only and is unaffected by Phase 2
+- `upgrade --dry-run` only reads the manifest and GitHub release
+  metadata: it must not create the data root, must not acquire the write
+  lock, must not run GC, and must not download any asset
 
-## 验收
+## Acceptance
 
-1. `make verify` 全绿，覆盖 fmt、module verify、vet、test、race、coverage 与 build
-2. 网络层/升级流程用 httptest 假 GitHub API 全覆盖:latest/指定 tag/429 退避/资产 404/校验失败中止
-3. assetpick 表驱动测试:用 fzf、gh、lazygit、ripgrep、uv 真实 release 的资产名清单做用例,darwin/arm64 下全部选中正确资产
-4. L6 真实公共 fixture repo E2E 当前后置且未记录为通过：后续应在临时目录完成 adopt → upgrade dry-run → upgrade → rollback，全程不触碰真实 PATH 文件
-5. 无新第三方依赖(仍仅 cobra);gobin.go/detect.go vendor 文件不改核心逻辑
-6. 失败注入覆盖 checksum 缺条目、manifest 保存失败补偿、锁竞争、adopt 同名冲突与纯 dry-run 无写入
-7. 发布前在临时 HOME/PATH/HUKOU_DATA_DIR 完成 CLI smoke;不得触碰真实用户二进制与真实 manifest
-8. PREPARED/COMMITTED crash matrix、真实子进程 kill、unknown drift、doctor 零写/确定性与 Linux 目录同步路径通过定向验证
+1. `make verify` all green, covering fmt, module verify, vet, test, race,
+   coverage, and build
+2. The network layer/upgrade flow has full httptest fake-GitHub-API
+   coverage: latest/specific tag/429 backoff/asset 404/verification
+   failure abort
+3. assetpick has table-driven tests: using real release asset-name lists
+   from fzf, gh, lazygit, ripgrep, and uv as cases, all select the
+   correct asset on darwin/arm64
+4. The L6 real public fixture-repo E2E is currently deferred and not
+   recorded as passing: it should eventually perform adopt → upgrade
+   dry-run → upgrade → rollback in a temp directory, never touching real
+   PATH files
+5. No new third-party dependencies (still cobra only); the vendored
+   gobin.go/detect.go files have their core logic unchanged
+6. Failure-injection coverage: missing checksum entry, manifest save
+   failure compensation, lock contention, adopt name collision, and pure
+   dry-run producing no writes
+7. Before release, a CLI smoke test is run against a temporary
+   HOME/PATH/HUKOU_DATA_DIR; it must not touch the real user's binaries
+   or the real manifest
+8. The PREPARED/COMMITTED crash matrix, real subprocess kill, unknown
+   drift, doctor zero-write/determinism, and the Linux directory-sync
+   path all pass targeted verification
 
-## 禁止事项
+## Prohibited
 
-- 禁抄 GPL 项目代码(topgrade/pacaptr/mpm)
-- 探测器与 scan 路径保持无网络;网络只存在于 ghrelease
-- 不做 self-update、不做 Homebrew/npm 等他人地盘的升级代理
+- Copying code from GPL projects (topgrade/pacaptr/mpm) is prohibited
+- Detectors and the scan path must remain network-free; networking exists
+  only in ghrelease
+- No self-update, and no acting as an upgrade proxy for territory owned
+  by other tools such as Homebrew/npm
 
-## 已知限制(实现期追加)
+## Known Limitations (added during implementation)
 
-- **tar.xz 暂不支持**:Go 标准库无 xz 解码器,与"零第三方依赖"约束冲突;主流 release 均有 tar.gz/zip 资产。遇到 xz-only 的上游时再评估引入依赖。
-- **setuid/setgid/sticky 位不经事务保留**:事务的 before/after 状态只记录常规文件字节与 rwx 权限位(`internal/transaction` 的 `validateState` 用 `mode&^0o777` 拒绝任何超出 rwx 的模式),激活/回滚复制不还原 setuid/setgid/sticky。adopt 会拒绝带这些特殊权限位的源文件而非静默降级,所以受管二进制不应依赖它们。
+- **tar.xz is not yet supported**: the Go standard library has no xz
+  decoder, which conflicts with the "zero third-party dependencies"
+  constraint; most upstream releases ship tar.gz/zip assets as well.
+  Revisit adding a dependency if an xz-only upstream is encountered.
+- **setuid/setgid/sticky bits are not preserved across transactions**:
+  the transaction's before/after state only records regular-file bytes
+  and rwx permission bits (`internal/transaction`'s `validateState` uses
+  `mode&^0o777` to reject any mode beyond rwx); activation/rollback
+  copies do not restore setuid/setgid/sticky. adopt refuses source files
+  that carry these special permission bits rather than silently
+  downgrading them, so managed binaries should not depend on them.

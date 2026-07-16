@@ -14,9 +14,8 @@ orchestrate them and add hukou as one custom command.
 Use this configuration only with a V0.3 RC build that actually provides
 `hukou outdated` and policy-aware `upgrade --all`; the current official v0.2.0
 release does not contain the full trust-first interface. First inspect the
-[private RC verification report](../codex/verification-reports/2026-07-14-v0.3-private-rc.md)
-and [external audit handoff](../../AUDIT.md). The former is recorded internal
-evidence, not an external clearance.
+[external audit handoff](../../AUDIT.md), which records the internal evidence
+and known gaps; it is not an external clearance.
 
 Review the hukou-owned scope without changing local state:
 

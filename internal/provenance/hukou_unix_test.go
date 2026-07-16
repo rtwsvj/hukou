@@ -14,7 +14,7 @@ import (
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
-// Card A rework: while another writer's REAL Begin is in flight (held
+// While another writer's REAL Begin is in flight (held
 // mid-capture on a writerless FIFO behind a symlink), its .building-* window
 // must degrade the hukou detector exactly like pending residue. A single
 // point-in-time check cannot cover the scan's read cycle, so an active

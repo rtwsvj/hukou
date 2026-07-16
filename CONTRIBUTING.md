@@ -114,7 +114,7 @@ When third-party code is added or materially adapted, update all applicable
 items in the same pull request:
 
 - the source-file attribution header;
-- [docs/pinhaoma-sources.md](docs/pinhaoma-sources.md);
+- [docs/VENDORED.md](docs/VENDORED.md);
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md);
 - the applicable text under [LICENSES/](LICENSES/);
 - release packaging and license checks.

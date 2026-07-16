@@ -352,7 +352,7 @@ func mkResidue(t *testing.T, root, name string) {
 	}
 }
 
-// Card A: the write path stays strictly fail-closed. Begin must refuse to open
+// The write path stays strictly fail-closed. Begin must refuse to open
 // a new transaction while any residue class is present so recovery runs first
 // under the state lock. This is the regression guard for the unchanged strict
 // check.
@@ -419,7 +419,7 @@ func makeVerifiedCompletedResidue(t *testing.T, root string) (livePath, complete
 	return live, completedDir
 }
 
-// Card A rework: CheckReadable on clean or missing data roots is a strictly
+// CheckReadable on clean or missing data roots is a strictly
 // read-only no-op with no notes.
 func TestCheckReadableCleanRoots(t *testing.T) {
 	t.Run("clean", func(t *testing.T) {
@@ -444,7 +444,7 @@ func TestCheckReadableCleanRoots(t *testing.T) {
 	})
 }
 
-// Card A rework: the ONLY tolerated residue class. A genuine committed and
+// The ONLY tolerated residue class. A genuine committed and
 // converged journal (real lifecycle, cleanup forced to fail) yields a
 // non-fatal note; the write path (Begin) still refuses it.
 func TestCheckReadableAllowsVerifiedCompletedResidue(t *testing.T) {
@@ -474,7 +474,7 @@ func TestCheckReadableAllowsVerifiedCompletedResidue(t *testing.T) {
 	}
 }
 
-// Card A rework: everything that is not a VERIFIED completed-* journal fails
+// Everything that is not a VERIFIED completed-* journal fails
 // closed. Malformed and adversarial entries are hand-crafted on purpose: name
 // forgery is exactly the input class this check must reject.
 func TestCheckReadableFailsClosedOnUnverifiedResidue(t *testing.T) {

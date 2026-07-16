@@ -17,8 +17,9 @@ import (
 
 // TestUpgradeRejectsStoreArtifactTamperedAfterStorePut drives the real
 // upgrade flow end to end (adopt, fake GitHub release server, doUpgrade) and
-// tampers with the immutable store artifact inside the exact window card C
-// stopped re-hashing: after store.PutWithDigest committed the new version and
+// tampers with the immutable store artifact inside the exact window the
+// digest-threading change stopped re-hashing: after store.PutWithDigest
+// committed the new version and
 // returned its digest, before the transaction journal captures the activation
 // source. Injection is deterministic via upgradeTestHookAfterStoreNewVersion,
 // which fires at the top of that window; nothing re-reads the artifact until

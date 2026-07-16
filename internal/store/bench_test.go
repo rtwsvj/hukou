@@ -17,7 +17,7 @@ import (
 // SHA256File/op metric is the measured count of whole-file passes the segment
 // performs (excluding the necessary edge-hash the copy itself computes).
 func benchStoreVersionHashPasses(b *testing.B, dedup bool) {
-	data := bytes.Repeat([]byte("hukou-card-c-benchmark-payload\n"), 150000) // ~4.5 MiB
+	data := bytes.Repeat([]byte("hukou-store-benchmark-payload\n"), 150000) // ~4.5 MiB
 
 	b.ResetTimer()
 	start := sha256FileCalls.Load()

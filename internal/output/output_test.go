@@ -84,7 +84,7 @@ func TestWriteTable_summary(t *testing.T) {
 	}
 }
 
-// Card A: WriteTable renders Report.Warnings and Report.Notes after the
+// WriteTable renders Report.Warnings and Report.Notes after the
 // summary so degraded detectors (warnings) and non-fatal advisories (notes)
 // are visible in the default table, not only in --json. The two channels keep
 // distinct prefixes.
@@ -125,7 +125,7 @@ func TestWriteTable_rendersWarningsAndNotes(t *testing.T) {
 	}
 }
 
-// Card A: warning and note text is sanitized like other free-text columns so
+// Warning and note text is sanitized like other free-text columns so
 // control chars / ANSI cannot corrupt the terminal.
 func TestWriteTable_sanitizesWarningsAndNotes(t *testing.T) {
 	r := Report{
@@ -150,7 +150,7 @@ func TestWriteTable_sanitizesWarningsAndNotes(t *testing.T) {
 	}
 }
 
-// Card A rework: the render loops must not swallow writer failures; the first
+// The render loops must not swallow writer failures; the first
 // write error is returned to the caller.
 func TestWriteTable_propagatesWriteErrors(t *testing.T) {
 	r := Report{
@@ -226,7 +226,7 @@ func TestWriteJSON_roundtrip(t *testing.T) {
 	if len(decoded.Warnings) != 1 {
 		t.Fatalf("warnings=%v", decoded.Warnings)
 	}
-	// Card A rework: notes travel on their own JSON field, apart from warnings.
+	// Notes travel on their own JSON field, apart from warnings.
 	if len(decoded.Notes) != 1 || !strings.Contains(decoded.Notes[0], "stale journal residue") {
 		t.Fatalf("notes=%v", decoded.Notes)
 	}

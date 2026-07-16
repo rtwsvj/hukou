@@ -1,109 +1,156 @@
-# 路线图
+# Roadmap
 
-## 已交付
+## Delivered
 
-### Phase 1：scan
+### Phase 1: scan
 
-- PATH 遍历、类型识别、shadowed 处理。
-- Tier 1 来源探测责任链。
-- 表格/JSON 输出和错误/警告报告。
-- macOS 本机探测器补丁。
+- PATH traversal, type detection, shadowed handling.
+- Tier 1 source-detection chain of responsibility.
+- Table/JSON output and error/warning reporting.
+- macOS native detector patches.
 
-### Phase 2：adopt / upgrade / rollback / list
+### Phase 2: adopt / upgrade / rollback / list
 
-- manifest 与版本 store。
-- GitHub Releases 客户端、资产选择、归档解压与 checksum 解析。
-- 命令层 mock e2e。
-- 第一轮下载、路径与重定向安全加固。
+- manifest and version store.
+- GitHub Releases client, asset selection, archive extraction, and checksum
+  parsing.
+- Command-layer mock e2e tests.
+- First round of download, path, and redirect security hardening.
 
-“已交付”表示实现存在；当前 HEAD 是否通过以最新 verification report 为准。
+"Delivered" means the implementation exists; whether current HEAD passes is
+determined by the latest verification report.
 
-## H1：安全硬化与首个 SemVer 发布
+## H1: Security Hardening and First SemVer Release
 
-状态：**`v0.1.0` 已发布；GitHub-hosted runner 计费调度例外已记录**。
+Status: **`v0.1.0` released; GitHub-hosted runner billing/scheduling exception
+recorded**.
 
-- [x] checksum 缺条目 fail closed
-- [x] 下载资产 hash 与 active binary hash 分离
-- [x] upgrade/rollback 可观测失败补偿
-- [x] manifest/store 进程锁
-- [x] 纯本地 dry-run
-- [x] adopt 同名冲突保护
-- [x] hukou 来源完整性提示
-- [x] 当前文档事实源与 Codex 记录链
-- [x] Linux/macOS CI workflow（最新调度因账户 payment/spending limit 在 0 step 前被 GitHub 拒绝；不得解读为代码通过或失败）
-- [x] 四平台可重复打包与 checksums
-- [x] 全量验证与发布报告
+- [x] checksum missing-entry fails closed
+- [x] downloaded asset hash kept separate from active binary hash
+- [x] observable failure compensation for upgrade/rollback
+- [x] manifest/store process lock
+- [x] purely local dry-run
+- [x] adopt same-name conflict protection
+- [x] hukou source integrity prompts
+- [x] current documentation source of truth and internal review record chain
+- [x] Linux/macOS CI workflow (the most recent run was rejected by GitHub
+      before 0 steps due to account payment/spending limits; must not be
+      interpreted as a code pass or fail)
+- [x] four-platform reproducible packaging and checksums
+- [x] full verification and release report
 - [x] [`v0.1.0` GitHub Release](https://github.com/rtwsvj/hukou/releases/tag/v0.1.0)
 
-代码、本地全量/race/对抗压力、隔离 Linux 双构建、四平台产物、远端重新下载与 Release 均有证据。GitHub-hosted runner gate 因账户计费限制未执行，属于明确基础设施例外；恢复计费后应重跑，不补写为历史通过。
+There is evidence for the code, local full/race/adversarial stress testing,
+isolated dual Linux builds, four-platform artifacts, remote re-download, and
+the Release. The GitHub-hosted runner gate did not execute due to account
+billing limits, which is an explicit infrastructure exception; it should be
+rerun once billing is restored, and must not be retroactively recorded as a
+historical pass.
 
-## H2：运维与崩溃恢复
+## H2: Operations and Crash Recovery
 
-状态：**恢复与只读诊断基础已随 [`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0) 发布；repair/历史策略已进入未发布的 V0.3 分支，公共网络 smoke 尚未完成**。
+Status: **Recovery and read-only diagnostics foundation shipped with
+[`v0.2.0`](https://github.com/rtwsvj/hukou/releases/tag/v0.2.0); repair/history
+policy has moved into the unreleased V0.3 branch, and public-network smoke
+testing is not yet complete**.
 
-- [x] adopt/upgrade/rollback 单全局 WAL：PREPARED 回滚、COMMITTED 前滚、unknown drift 失败关闭
-- [x] manifest、store、live、事务 payload 的文件与父目录持久化
-- [x] 上一份可解析且 schema 受支持的 `manifest.json.bak`
-- [x] 默认零写、零网络的 `doctor` 文本/JSON审计与 orphan/unclassifiable 区分
-- [x] macOS + 原生 Linux 全量/race、崩溃/持久化压力、四平台可重复资产与远端下载复核
-- [x] 显式枚举、state fingerprint 绑定的两类窄 repair 动作（V0.3 subject 已实现并完成内部 local/private RC 验收；尚未发布）
-- [x] 激活历史与可配置版本保留策略（V0.3 subject 已实现 manifest v2 并完成内部 local/private RC 验收；尚未发布）
-- [ ] 真实公共 fixture repo 的定时 smoke
+- [x] adopt/upgrade/rollback single global WAL: PREPARED rollback, COMMITTED
+      roll-forward, fail-closed on unknown drift
+- [x] file and parent-directory durability for manifest, store, live, and
+      transaction payloads
+- [x] a previous, parseable, schema-supported `manifest.json.bak`
+- [x] zero-write, zero-network-by-default `doctor` text/JSON audit with
+      orphan/unclassifiable distinction
+- [x] macOS + native Linux full/race testing, crash/durability stress
+      testing, four-platform reproducible assets, and remote-download
+      re-verification
+- [x] two explicitly enumerated, state-fingerprint-bound narrow repair
+      actions (implemented in the V0.3 subject and passed internal
+      local/private RC acceptance; not yet released)
+- [x] activation history and configurable version-retention policy (manifest
+      v2 implemented in the V0.3 subject and passed internal local/private RC
+      acceptance; not yet released)
+- [ ] scheduled smoke testing against a real public fixture repo
 
-## V0.3：Trust-first 私有 Release Candidate
+## V0.3: Trust-First Private Release Candidate
 
-状态：**subject commit `1fa45a0` 已完成 local/private RC readiness 验收并进入
-[draft PR #6](https://github.com/rtwsvj/hukou/pull/6)；GitHub-hosted CI 因 billing 在
-0 steps 前 infrastructure-blocked。未合并、未打 tag、未发布、仓库仍 private**。
+Status: **subject commit `1fa45a0` has passed local/private RC readiness
+acceptance and is in [draft PR #6](https://github.com/rtwsvj/hukou/pull/6);
+GitHub-hosted CI was infrastructure-blocked by billing before 0 steps. Not
+merged, not tagged, not released; the repository remains private**.
 
-- [x] `explain`、`adopt --dry-run --json`、共享 inventory
-- [x] `outdated` 与 upgrade dry-run/真实升级共享 policy-aware checker
-- [x] `policy show/set`：SemVer/GitHub-latest、channel、exact pin、rollback depth
-- [x] manifest schema v2、v0/v1 deterministic migration、strict validation
-- [x] activation lineage、parent-based rollback、history-aware prune plan
-- [x] fingerprint-bound `repair plan/apply` 两类动作
+- [x] `explain`, `adopt --dry-run --json`, shared inventory
+- [x] `outdated` and upgrade dry-run/real upgrade share a policy-aware
+      checker
+- [x] `policy show/set`: SemVer/GitHub-latest, channel, exact pin, rollback
+      depth
+- [x] manifest schema v2, v0/v1 deterministic migration, strict validation
+- [x] activation lineage, parent-based rollback, history-aware prune plan
+- [x] fingerprint-bound `repair plan/apply`, two action types
 - [x] offline redacted `support bundle`
-- [x] 英文默认 CLI、双语 README、Apache-2.0、notices、community health 文件
-- [x] checksum 安装器、license/install/shell gates、SBOM 与 public-only attest/CodeQL 配置
-- [x] Topgrade custom command 集成文档；`upgrade --all` 继续只管 hukou entries
-- [x] uncached 全仓 ordinary/race/coverage/vet/build 最终绿灯并固化 commit
-- [x] macOS/Linux、四目标 build、双构建可重复性与 release snapshot/SBOM 内容验收
-- [x] Codex 团队内部 `pinhaoma-review` claims-vs-evidence 复核（当时记录 P0/P1/P2 = 0；无单独 raw report）
-- [ ] 第三方外部安全/可靠性审计；交接包已建立，重点 hypotheses 尚待确认或排除
-- [x] 推送私有分支并创建 draft private PR；hosted gate 的 billing 阻断已记录为 external gate
+- [x] English-default CLI, bilingual README, Apache-2.0, notices, community
+      health files
+- [x] checksum installer, license/install/shell gates, SBOM, and public-only
+      attest/CodeQL configuration
+- [x] Topgrade custom command integration docs; `upgrade --all` continues to
+      manage only hukou entries
+- [x] uncached whole-repo ordinary/race/coverage/vet/build final green, and
+      commit pinned
+- [x] macOS/Linux, four-target build, dual-build reproducibility, and release
+      snapshot/SBOM content acceptance
+- [x] internal claims-vs-evidence review (P0/P1/P2 = 0 recorded at the time;
+      no standalone raw report retained)
+- [ ] third-party external security/reliability audit; a handoff package has
+      been established, with key hypotheses still to be confirmed or ruled
+      out
+- [x] pushed the private branch and created a draft private PR; the hosted
+      gate's billing block has been recorded as an external gate
 
-最终固定提交证据：
+Evidence for the final pinned commit:
 
-- 安全关键路径定向 audit：321 tests / 6 packages。
-- direct uncached 全仓 ordinary/race：各 641 tests / 21 packages，零失败。
-- `GOPROXY=https://goproxy.cn,direct make release-verify`：exit 0，coverage 72.9%，
-  govuln `No vulnerabilities found`；默认 `proxy.golang.org` IPv6 timeout 另行保留。
-- installer link(2)/rename(2)、重复 member、symlink/竞争与 strict shell SemVer；
-  manifest schema-specific/legacy-smuggling、activation safe-tag/tag-SHA、list original
-  完整性等定向矩阵：pass。
-- actionlint/Ruby YAML、68 Markdown/89 relative targets、production 汉字 sweep、
-  official Action tag pin 对账、secret scan 与 `git diff --check`：pass。
-- non-root Linux/arm64（UID 65534、source/module cache read-only、`GOPROXY=off`）
-  全仓 ordinary/race 与 GNU tar 1.34 installer/release tests：pass。
-- 四目标双构建逐字节一致，4/4 checksums、archive 内容/mode、buildinfo、installer
-  smoke：pass。Syft 1.46.0 SBOM 为 SPDX 2.3、21 packages/4 files。
-- Draft PR #6 的 CI run `29352308455` 五个 job 均 `steps=[]`，billing annotation
-  明确为账户基础设施阻断；CodeQL private skip 不记 pass。
+- Targeted audit of security-critical paths: 321 tests / 6 packages.
+- direct uncached whole-repo ordinary/race: 641 tests / 21 packages each,
+  zero failures.
+- `GOPROXY=https://goproxy.cn,direct make release-verify`: exit 0, coverage
+  72.9%, govuln `No vulnerabilities found`; the default `proxy.golang.org`
+  IPv6 timeout remains separately noted.
+- installer link(2)/rename(2), duplicate member, symlink/race, and strict
+  shell SemVer; manifest schema-specific/legacy-smuggling, activation
+  safe-tag/tag-SHA, list original integrity, and other targeted matrices:
+  pass.
+- actionlint/Ruby YAML, 68 Markdown/89 relative targets, production
+  CJK-character sweep, official Action tag pin reconciliation, secret scan,
+  and `git diff --check`: pass.
+- non-root Linux/arm64 (UID 65534, source/module cache read-only,
+  `GOPROXY=off`): whole-repo ordinary/race and GNU tar 1.34
+  installer/release tests: pass.
+- four-target dual builds are byte-for-byte identical, 4/4 checksums,
+  archive content/mode, buildinfo, and installer smoke: pass. The Syft
+  1.46.0 SBOM is SPDX 2.3, 21 packages/4 files.
+- Draft PR #6's CI run `29352308455` had all five jobs report `steps=[]`;
+  the billing annotation clearly indicates an account infrastructure block.
+  The CodeQL private skip is not recorded as a pass.
 
-这些结果只记录 V0.3 内部 local/private RC readiness。交接阶段已发现下载/归档
-资源预算、WAL intent trust anchor、private→public attestation 时序、toolchain 差异等
-高优先级审计 hypotheses；在外部审计确认或排除前，不得把原内部 P0/P1/P2 记录解释
-为外部 clean bill。合并、tag、Release、public visibility 与公开配套仓库仍需独立
-Go/No-Go。
+These results record only V0.3's internal local/private RC readiness. The
+handoff phase has surfaced high-priority audit hypotheses covering
+download/archive resource budgets, the WAL intent trust anchor,
+private-to-public attestation timing, and toolchain differences; until an
+external audit confirms or rules them out, the original internal P0/P1/P2
+record must not be interpreted as an external clean bill. Merging, tagging,
+releasing, public visibility, and the public companion repository still
+require an independent Go/No-Go decision.
 
-## V0.3 之后
+## After V0.3
 
-- 版本快照、changelog diff、风险提示。
-- mise/Brewfile 导出。
-- 非 Go 二进制自动 repo 匹配。
-- tar.xz 支持决策。
-- Windows 设计与测试。
-- 公共 fixture repo、定时真实网络 smoke、Homebrew Tap 与公开 beta Go/No-Go。
-- 若未来需要跨管理器控制平面，另立 ADR；V0.3 只让 Topgrade 负责外层编排。
-- Defense-in-depth backlog：duplicate JSON key rejection、GitHub API body cap、
-  installer 总解压体积/member 数预算、`openat`/目录 fd 路径锚定。
+- Version snapshots, changelog diffs, risk warnings.
+- mise/Brewfile export.
+- Automatic repo matching for non-Go binaries.
+- tar.xz support decision.
+- Windows design and testing.
+- Public fixture repo, scheduled real-network smoke testing, Homebrew Tap,
+  and public beta Go/No-Go.
+- If a cross-manager control plane is needed in the future, file a separate
+  ADR; V0.3 leaves outer-layer orchestration to Topgrade alone.
+- Defense-in-depth backlog: duplicate JSON key rejection, GitHub API body
+  cap, installer total-extraction-size/member-count budget,
+  `openat`/directory-fd path anchoring.

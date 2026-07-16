@@ -68,7 +68,7 @@ func waitForBuildingJournal(t *testing.T, root string) {
 	}
 }
 
-// Card A rework: the race rationale for keeping building-* fail-closed on the
+// The race rationale for keeping building-* fail-closed on the
 // read path, exercised with a genuinely ACTIVE Begin held mid-capture in a
 // goroutine. A point-in-time check cannot cover the caller's read cycle, so
 // the .building-* window of a live writer must never be reported as harmless.
@@ -102,7 +102,7 @@ func TestCheckReadableFailsClosedDuringActiveBegin(t *testing.T) {
 	}
 }
 
-// Card A rework: a REAL Begin killed mid-flight (SIGKILL, so its cleanup defer
+// A REAL Begin killed mid-flight (SIGKILL, so its cleanup defer
 // never runs) leaves .building-* residue; the read path must stay fail-closed
 // on it because such residue is indistinguishable from an active writer.
 func TestCheckReadableFailsClosedAfterBeginCrash(t *testing.T) {

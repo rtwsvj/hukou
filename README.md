@@ -93,8 +93,8 @@ transport trust (HTTPS plus the release's checksums.txt). Set
 `HUKOU_REQUIRE_ATTESTATION=1` (or `true`/`yes`) to make that verification
 mandatory instead of best-effort; leaving it empty or setting `0`/`false`/`no`
 keeps the fallback allowed, and any other value is rejected. The
-[private RC execution record](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)
-tracks what is verified and what remains pending.
+[external audit entry point](AUDIT.md) tracks what is verified and what
+remains pending.
 
 ## Safety model
 
@@ -136,7 +136,7 @@ v0.2.0 publishes archives for:
 
 Windows is not currently supported. A cross-compiled artifact alone is not
 treated as platform support; the project records actual verification evidence
-under [docs/codex/verification-reports](docs/codex/verification-reports/).
+under [docs/audit/](docs/audit/).
 
 ## Install v0.2
 
@@ -291,7 +291,7 @@ ordinary and race runs of 641 tests across 21 packages, the complete local
 `release-verify` target at 72.9% coverage, and non-root Linux/arm64 ordinary,
 race, installer, and release-script tests. Two four-target release builds were
 byte-identical; checksums, archive contents, build information, installer
-smoke, and a 21-package/4-file SPDX SBOM passed inspection. An internal Codex
+smoke, and a 21-package/4-file SPDX SBOM passed inspection. An internal
 claim-to-evidence review recorded no P0/P1/P2 finding, but retained no
 standalone raw report and is not an external clearance. The
 [external audit handoff](AUDIT.md) lists newly identified review leads and
@@ -329,7 +329,7 @@ repository names, tokens, and details about private tools.
 ## License and attribution
 
 Original hukou work is licensed under the
-[Apache License 2.0](LICENSE), Copyright 2026 Eric (rtwsvj).
+[Apache License 2.0](LICENSE), Copyright (c) 2026 rtwsvj.
 
 Adapted code and dependencies remain under their respective licenses. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),

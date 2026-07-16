@@ -1,82 +1,99 @@
-# 架构
+# Architecture
 
-## 模块地图
+## Module Map
 
-| 模块 | 职责 | 关键边界 |
+| Module | Responsibility | Key Boundaries |
 |---|---|---|
-| `main.go`, `cmd/` | Cobra 命令编排 | 不把业务安全规则只留在帮助文案 |
-| `internal/scan` | PATH 遍历、类型识别、shadowed | 只读文件系统，不联网 |
-| `internal/provenance` | 来源责任链 | 首个匹配生效，hukou 自有登记优先 |
-| `internal/output` | 表格与 JSON | 表格清理控制字符，JSON 保留完整错误 |
-| `internal/manifest` | schema v2、v0/v1 migration、严格语义验证与原子保存 | future/未知字段/不完整 lineage 失败关闭；写入由命令层锁保护 |
-| `internal/activation` | 不可变 activation lineage 与逻辑 rollback cursor | parent/reverts 必须指向此前 event；不读取时钟或文件系统 |
-| `internal/versionpolicy` | SemVer/GitHub-latest、channel、pin 的纯选择逻辑 | 不联网、不写入，默认拒绝隐式降级 |
-| `internal/updatecheck` | outdated、dry-run 与真实 upgrade 的共享检查层 | drift 先于网络；metadata only；不包含下载能力 |
-| `internal/store` | original/版本目录、激活、两阶段 Prune、GC | name/tag/目标限制，同目录常规文件原子替换；保护集不使用 mtime |
-| `internal/durablefs` | 文件与目录持久化原语 | file sync、same-dir rename/link/remove 后 parent sync |
-| `internal/transaction` | 单全局 before/after WAL 与恢复 | PREPARED 回滚、COMMITTED 前滚、预检可见的 unknown drift 零覆盖 |
-| `internal/doctor` | 只读状态审计与稳定报告 | 无写入/网络；损坏 manifest 下不猜测 orphan |
-| `internal/repair` | 两类 fingerprint-bound repair plan/apply | plan 只读 hukou 状态；apply 持锁重检；无 repair-all |
-| `internal/supportbundle` | 匿名 doctor/manifest/history/transaction/store 摘要 | 离线、无原始路径/repo/env/WAL payload、无自动上传 |
-| `internal/ghrelease` | GitHub API 与下载 | host 白名单、token 隔离、超时、大小限制 |
-| `internal/assetpick` | 平台资产选择 | 无交互、结果确定性 |
-| `internal/archive` | tar.gz/zip/gz/裸文件解包 | 防路径穿越与解压炸弹；不支持容器不得退化成可激活裸文件，裸资产还需可执行格式识别 |
-| `internal/verify` | checksum 解析和校验 | checksum 存在但缺条目时由调用方 fail closed |
-| `internal/buildinfo` | 发布版本元数据 | 由 release ldflags 注入 |
+| `main.go`, `cmd/` | Cobra command orchestration | Business safety rules must not live only in help text |
+| `internal/scan` | PATH traversal, type identification, shadowed detection | Read-only filesystem access, no network |
+| `internal/provenance` | Provenance chain of responsibility | First match wins; hukou's own registration takes priority |
+| `internal/output` | Table and JSON rendering | Table output strips control characters; JSON preserves full errors |
+| `internal/manifest` | schema v2, v0/v1 migration, strict semantic validation, and atomic save | Fails closed on future/unknown fields or incomplete lineage; writes are protected by a command-layer lock |
+| `internal/activation` | Immutable activation lineage and logical rollback cursor | parent/reverts must point to a prior event; does not read the clock or filesystem |
+| `internal/versionpolicy` | Pure selection logic for SemVer/GitHub-latest, channel, and pin | No network, no writes; rejects implicit downgrades by default |
+| `internal/updatecheck` | Shared check layer for outdated, dry-run, and real upgrade | Drift check precedes network access; metadata only; no download capability |
+| `internal/store` | original/version directories, activation, two-phase Prune, GC | name/tag/target restrictions; atomic same-directory regular-file replacement; the protected set does not use mtime |
+| `internal/durablefs` | File and directory durability primitives | file sync; parent sync after same-dir rename/link/remove |
+| `internal/transaction` | Single global before/after WAL and recovery | PREPARED rolls back, COMMITTED rolls forward; zero overwrite of unknown drift visible at preflight |
+| `internal/doctor` | Read-only state audit and stable report | No writes/network; does not guess orphans under a corrupted manifest |
+| `internal/repair` | Two fingerprint-bound repair plan/apply kinds | plan reads hukou state read-only; apply re-verifies under lock; no repair-all |
+| `internal/supportbundle` | Anonymized doctor/manifest/history/transaction/store summary | Offline; no raw paths/repo/env/WAL payload; no automatic upload |
+| `internal/ghrelease` | GitHub API and downloads | host allowlist, token isolation, timeouts, size limits |
+| `internal/assetpick` | Platform asset selection | No interaction, deterministic result |
+| `internal/archive` | tar.gz/zip/gz/bare-file unpacking | Guards against path traversal and decompression bombs; an unsupported container must not degrade into an activatable bare file, and bare assets still require executable-format identification |
+| `internal/verify` | Checksum parsing and verification | When a checksum exists but the entry is missing, the caller fails closed |
+| `internal/buildinfo` | Release version metadata | Injected via release ldflags |
 
-`internal/manifest.Decode` 是 transaction command、doctor 与 repair 共用的 strict
-schema boundary；任何调用者都不能先用宽松结构体解析绕过 unknown-field、policy、
-checksum evidence 或 lineage 验证。
+`internal/manifest.Decode` is the strict schema boundary shared by the
+transaction command, doctor, and repair; no caller may first parse with a
+loose struct to bypass unknown-field, policy, checksum evidence, or lineage
+validation.
 
-## scan 流程
+## scan Flow
 
 ```text
 PATH + --dir
   -> scan.Walk
   -> provenance.DefaultRunner.Load
-  -> 每个 Binary 走责任链
+  -> each Binary goes through the chain of responsibility
   -> output.Report
-  -> table 或 JSON
+  -> table or JSON
 ```
 
-责任链首位读取 hukou manifest；随后依次判断系统包管理器、版本管理器、语言包管理器、curl/local 路径、Go build info、system，最后 unknown。
+The chain of responsibility first reads the hukou manifest; it then checks,
+in order, system package manager, version manager, language package manager,
+curl/local path, Go build info, system, and finally unknown.
 
-## adopt 流程
+## adopt Flow
 
 ```text
-定位文件 -> 校验 regular/executable -> 推导或读取 repo/tag
--> 来源安全闸（探测器加载失败也拒绝）-> 冲突检查 -> SHA-256
--> dry-run: 输出 plan，零 hukou 写入
--> real: 获取写锁并从头重检 -> original + root activation + schema v2 manifest 事务提交
+locate file -> validate regular/executable -> derive or read repo/tag
+-> provenance safety gate (rejects even on detector load failure) -> conflict check -> SHA-256
+-> dry-run: emit plan, zero hukou writes
+-> real: acquire write lock and re-verify from scratch -> original + root activation + schema v2 manifest transaction commit
 ```
 
-## upgrade 流程
+## upgrade Flow
 
 ```text
-选目标 -> dry-run/outdated 使用共享 checker，或真实路径获取写锁并重检
--> 当前 SHA 闸门 -> policy-aware GitHub release metadata -> assetpick -> 有界下载
--> checksum fail-closed -> 有界解压 -> store.Put
--> 激活前再次核对当前 SHA -> 捕获旧路径/manifest 状态
--> activation.RecordUpgrade -> Activate -> history/current 同一 after-manifest
--> 失败则补偿；成功且 transaction clean 后 PlanPrune -> ApplyPrunePlan
+select target -> dry-run/outdated uses the shared checker, or the real path acquires a write lock and re-verifies
+-> current SHA gate -> policy-aware GitHub release metadata -> assetpick -> bounded download
+-> checksum fail-closed -> bounded extraction -> store.Put
+-> re-check current SHA again before activation -> capture old path/manifest state
+-> activation.RecordUpgrade -> Activate -> history/current share the same after-manifest
+-> compensate on failure; after success and a clean transaction, PlanPrune -> ApplyPrunePlan
 ```
 
-网络只允许出现在 `internal/ghrelease`。真实升级前后的路径拓扑和 manifest 是一个持久化逻辑事务：取得 state lock 后先恢复旧 journal，业务资源改变前发布 PREPARED，live/manifest durable 后写 COMMIT，再进入 cleanup-only 状态。
+Network access is only allowed inside `internal/ghrelease`. The path
+topology and manifest before and after a real upgrade form a single durable
+logical transaction: after acquiring the state lock, any old journal is
+recovered first; PREPARED is published before business resources change;
+COMMIT is written once live/manifest are durable; the transaction then enters
+a cleanup-only state.
 
-活跃路径保持为常规文件：`Activate` 把不可变 store 版本复制到活跃目录内的完整临时文件，设置 mode、`fsync`、关闭后再 rename。这样读者始终打开旧或新 regular inode，避免 macOS/APFS 在并发替换 symlink inode 时出现瞬时 `EINVAL`。旧版本遗留 symlink 仍可被事务快照恢复，首次成功激活会迁移为常规文件。
+The active path is kept as a regular file: `Activate` copies the immutable
+store version into a full temporary file inside the active directory, sets
+its mode, `fsync`s it, and renames it after closing. This way readers always
+open either the old or the new regular inode, avoiding the transient
+`EINVAL` that macOS/APFS can produce when a symlink inode is replaced
+concurrently. A symlink left over from an older version can still be
+restored by a transaction snapshot, and migrates to a regular file on its
+first successful activation.
 
-## rollback 流程
+## rollback Flow
 
 ```text
-获取写锁 -> 当前 SHA 闸门 -> activation.Previous 或显式 ancestor/original
--> 捕获旧状态 -> RecordRollback/RecordRestoreOriginal
--> Activate -> 重算 active SHA -> history/current 同一 after-manifest
--> 失败补偿旧状态
+acquire write lock -> current SHA gate -> activation.Previous or explicit ancestor/original
+-> capture old state -> RecordRollback/RecordRestoreOriginal
+-> Activate -> recompute active SHA -> history/current share the same after-manifest
+-> compensate old state on failure
 ```
 
-默认 rollback 沿 active event 的 `parent_id` 前进，`A→B→C→B→A` 不读取目录
-mtime。显式 `--to <tag>` 只在当前 lineage ancestors 中查找；显式 original
-允许恢复不可变收编原件，但新 event 不再声明可猜测 parent。
+The default rollback follows the active event's `parent_id`; `A→B→C→B→A`
+does not read directory mtime. An explicit `--to <tag>` searches only the
+current lineage's ancestors; an explicit original restore lets you recover
+the immutable adopted original, but the new event no longer declares a
+guessable parent.
 
 ## policy / repair / support
 
@@ -91,20 +108,22 @@ support bundle -> doctor + anonymous manifest/history/topology summaries
                -> stdout JSON, or one explicitly requested 0600 file
 ```
 
-policy set 不调用自动 WAL recovery，因为 recovery 会改变 live；存在未决事务时直接
-失败关闭。repair 是唯一能显式请求 transaction recovery 的新入口，但 action 数量固定
-为两个。support 不读取 WAL payload、不上传，也不把 manifest name/path/repo/tag 复制到
-报告中。
+policy set does not invoke automatic WAL recovery, because recovery would
+change live state; it fails closed immediately when a transaction is
+pending. repair is the only entry point that can explicitly request
+transaction recovery, but the number of actions is fixed at two. support
+does not read the WAL payload, does not upload anything, and does not copy
+manifest name/path/repo/tag into the report.
 
-## 并发模型
+## Concurrency Model
 
-- scan 可并发执行，因为不写数据。
-- adopt/upgrade/rollback、policy set 与 repair apply 对同一 data root 使用进程级锁。
-- explain/outdated/policy show/doctor/support collect/adopt dry-run 不获得写锁；repair plan 只写用户显式指定的 plan 文件，建议放在 data root 外以免改变自己的 fingerprint。
-- manifest 内部数据结构不承诺跨进程并发；命令层负责串行化。
-- release 构建使用固定 commit、固定 Go 版本和固定归档时间戳。
+- scan can run concurrently because it writes no data.
+- adopt/upgrade/rollback, policy set, and repair apply use a process-level lock on the same data root.
+- explain/outdated/policy show/doctor/support collect/adopt dry-run do not acquire a write lock; repair plan only writes the plan file the user explicitly specified, and it's recommended to place it outside the data root so it doesn't alter its own fingerprint.
+- The manifest's internal data structures make no cross-process concurrency guarantees; the command layer is responsible for serialization.
+- Release builds use a fixed commit, a fixed Go version, and a fixed archive timestamp.
 
-## 崩溃恢复状态机
+## Crash Recovery State Machine
 
 ```text
 .building-* --payload + intent durable--> pending-* (PREPARED)
@@ -116,17 +135,24 @@ Recover(COMMITTED) -> all resources converge to after
 preflight drift    -> no writes, keep pending evidence
 ```
 
-`upgrade --dry-run`、list、scan 的 hukou detector 和 doctor 只执行 transaction inventory，不自动恢复；普通写命令在锁内恢复。
+`upgrade --dry-run`, list, scan's hukou detector, and doctor only perform a
+transaction inventory and do not auto-recover; ordinary write commands
+recover while holding the lock.
 
-恢复会先分类全部参与者，并在每次替换/删除前再次复核当前状态。该机制保护 hukou 协作写入和检查时已可见的外部漂移；不合作的外部进程若恰在最后一次复核与 rename/remove 系统调用之间改写同一路径，仍存在不可消除的窄 TOCTOU 窗口。
+Recovery first classifies all participants and re-verifies the current
+state before each replace/remove. This mechanism protects hukou's
+cooperative writes and any external drift that was already visible at check
+time; if an uncooperative external process rewrites the same path exactly
+between the last re-verification and the rename/remove syscall, a narrow,
+unavoidable TOCTOU window still remains.
 
-## doctor 流程
+## doctor Flow
 
 ```text
-只读 lstat/read/hash
+read-only lstat/read/hash
 -> manifest syntax + semantic audit
 -> live/store/backup/transaction cross-check
--> orphan 或 UNCLASSIFIABLE 分类
+-> orphan or UNCLASSIFIABLE classification
 -> stable Report
--> text 或 JSON renderer
+-> text or JSON renderer
 ```

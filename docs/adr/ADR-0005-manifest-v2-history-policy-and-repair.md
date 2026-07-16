@@ -1,45 +1,49 @@
-# ADR-0005：Manifest v2、激活历史、策略与窄版 repair
+# ADR-0005: Manifest v2, Activation History, Policy, and Narrow-Scope repair
 
 - Status: Accepted
 - Date: 2026-07-14
 - Implementation: fixed subject `1fa45a0` passed the recorded local/private RC gate;
   external audit and hosted execution remain pending
 
-## 背景
+## Background
 
-schema v1 只记录当前状态。默认 rollback 依赖 store 目录 mtime，连续操作会在最近目录之间来回；固定保留数量不知道哪些 artifact 是真实历史目标；upgrade 只比较 tag 字符串；doctor 虽能报告异常，但没有可验证、可重放边界明确的修复协议。
+schema v1 only records the current state. Default rollback relies on store directory mtime, and consecutive operations bounce back and forth between the most recent directories; a fixed retention count does not know which artifacts are genuine historical targets; upgrade only compares tag strings; and although doctor can report anomalies, there is no verifiable, replayable repair protocol with clearly defined boundaries.
 
-## 决策
+## Decision
 
-1. Manifest 提升到 schema v2，在 entry 内记录 activation lineage 和 update/retention policy。
-2. schema 0/1 迁移只为当前状态生成 synthetic root，不猜测旧历史。
-3. history 与当前 entry 进入同一 after-manifest，由现有 before/after WAL 一起提交。
-4. 默认 rollback 走 parent lineage；retention 根据 lineage、pin 和 transaction references 构造保护集，不使用 mtime。
-5. 更新策略显式区分 SemVer 与 legacy GitHub latest；支持 stable/prerelease 和 exact pin，默认不降级。
-6. doctor 保持只读。repair 使用 `plan → apply`，绑定现场 fingerprint；V0.3 只开放 transaction recovery 与 manifest backup restore。
-7. support bundle 默认脱敏、无网络、不自动上传。
+1. The manifest is upgraded to schema v2, recording activation lineage and update/retention policy within each entry.
+2. schema 0/1 migration only generates a synthetic root for the current state, without guessing old history.
+3. History and the current entry go into the same after-manifest, and are committed together by the existing before/after WAL.
+4. Default rollback follows parent lineage; retention builds a protection set from lineage, pin, and transaction references, without using mtime.
+5. The update policy explicitly distinguishes SemVer from legacy GitHub latest; it supports stable/prerelease and exact pin, and does not downgrade by default.
+6. doctor remains read-only. repair uses `plan → apply`, bound to a live-state fingerprint; V0.3 only exposes transaction recovery and manifest backup restore.
+7. The support bundle is anonymized by default, has no network access, and is not auto-uploaded.
 
-## 当前落实
+## Current Implementation
 
-- schema 0/1 在内存中迁移为 synthetic legacy root；schema 2 load/save 对未知字段、
-  policy、retention、digest/time/path 和 lineage 做严格验证。V0.2 拒绝 schema 2。
-- 新 entry 默认 `semver/stable`；legacy migration 使用
-  `github-latest/stable`。SemVer 比较使用锁定并记录许可证的
-  `golang.org/x/mod/semver`。显式切换 semver 时会拒绝 local 或当前 tag 非严格
-  SemVer 的 entry，避免 policy 保存后才发现没有可排序基线。
-- rollback 走 parent lineage；显式 original restore 创建无 parent event，避免对
-  legacy lineage 猜测。Prune 两阶段绑定 tag+SHA，并在 transaction 不 clean 时跳过。
-- repair 只实现 `recover-transaction` 与 `restore-manifest-backup`；plan 写入用户显式
-  指定的 0600 文件，apply 持锁重算 identity/fingerprint/preconditions。
-- support report 使用匿名 entry 序号、枚举和计数，不复制 path/repo/name/tag、环境
-  变量、用户名、二进制或 WAL payload。
+- schema 0/1 is migrated in memory into a synthetic legacy root; schema 2 load/save
+  performs strict validation of unknown fields, policy, retention, digest/time/path,
+  and lineage. V0.2 rejects schema 2.
+- New entries default to `semver/stable`; legacy migration uses
+  `github-latest/stable`. SemVer comparison uses the locked and
+  license-recorded `golang.org/x/mod/semver`. When explicitly switching to
+  semver, entries whose local or current tag is not strict SemVer are rejected,
+  to avoid discovering only after the policy is saved that there is no
+  sortable baseline.
+- rollback follows parent lineage; an explicit original restore creates a
+  parent-less event, avoiding guessing at legacy lineage. Prune's two phases are
+  bound to tag+SHA, and it skips when the transaction is not clean.
+- repair only implements `recover-transaction` and `restore-manifest-backup`;
+  the plan is written to a 0600 file explicitly specified by the user, and apply
+  holds the lock while recomputing identity/fingerprint/preconditions.
+- The support report uses anonymized entry ordinals, enums, and counts, and
+  does not copy path/repo/name/tag, environment variables, usernames,
+  binaries, or WAL payloads.
 
-这些实现已有固定提交的全仓、容器与 release snapshot 内部验收记录；外部审计和
-GitHub-hosted gate 尚未关闭。ADR Accepted 只表示设计决定已采纳，不等于外部审计
-通过或公开发布。
+These implementations already have internal acceptance records from the fixed-commit whole-repo, container, and release snapshot testing; external audit and the GitHub-hosted gate remain unclosed. ADR Accepted only means the design decision has been adopted; it does not mean external audit has passed or that the project has been publicly released.
 
-## 后果
+## Consequences
 
-- V0.2 会拒绝 schema v2；这是防止旧版本静默丢字段的刻意兼容门禁。
-- migration、history、policy、retention 和 repair 都成为安全关键路径，必须进入 crash/fault matrix。
-- repair-all、目录 quarantine、历史压缩和自助上传留给后续版本。
+- V0.2 rejects schema v2; this is a deliberate compatibility gate to prevent old versions from silently dropping fields.
+- migration, history, policy, retention, and repair all become safety-critical paths, and must be included in the crash/fault matrix.
+- repair-all, directory quarantine, history compression, and self-service upload are left for future versions.
