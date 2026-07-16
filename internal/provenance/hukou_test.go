@@ -232,7 +232,7 @@ func TestHukouDetectorRejectsPendingTransactionState(t *testing.T) {
 	}
 }
 
-// Card A rework: ONLY a verified completed-* journal (real lifecycle, cleanup
+// ONLY a verified completed-* journal (real lifecycle, cleanup
 // forced to fail) leaves adopted binaries consistent with the manifest; the
 // detector keeps attributing and records a non-fatal advisory note.
 func TestHukouDetectorToleratesVerifiedCompletedResidue(t *testing.T) {
@@ -259,7 +259,7 @@ func TestHukouDetectorToleratesVerifiedCompletedResidue(t *testing.T) {
 	}
 }
 
-// Card A rework: unknown residue is adversarial input (hand-crafted name
+// Unknown residue is adversarial input (hand-crafted name
 // forgery is the legitimate way to test it) and must degrade the detector,
 // not produce a note.
 func TestHukouDetectorDegradesOnUnknownResidue(t *testing.T) {
@@ -277,7 +277,7 @@ func TestHukouDetectorDegradesOnUnknownResidue(t *testing.T) {
 	}
 }
 
-// Card A rework: the runner surfaces a still-loaded detector's advisories on
+// The runner surfaces a still-loaded detector's advisories on
 // the dedicated NOTES channel — never as warnings — without dropping the
 // detector from the chain. Security gates key on warnings, so this separation
 // is what keeps a routine advisory from vetoing adopt.

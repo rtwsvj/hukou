@@ -53,8 +53,9 @@ Important, long-lived, or hard-to-reverse decisions are written to
   recovery; they are moved into a `quarantined-<16hex>` container (META records
   the original name) and preserved as evidence; unknown directories stay
   fail-closed (they may be a newer version's journal).
-- 2026-07-16: A product decision narrowed the scope of card B, removing the two
-  destructive repair actions `purge-quarantine` and `clean-live-temps`;
+- 2026-07-16: A product decision narrowed the scope of the residue self-heal
+  change, removing the two destructive repair actions `purge-quarantine` and
+  `clean-live-temps`;
   quarantine and orphaned temp files are handled as read-only diagnosis plus
   manual user deletion — the program performs no automatic deletion.
 
