@@ -86,7 +86,7 @@ func doAdoptDryRun(stdout io.Writer, target, repoArg string, local bool, tag str
 }
 
 func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local bool, tag string, force bool, securityGate func(string) (*provenance.Attribution, error), save func(*manifest.Manifest) error) error {
-	lock, err := acquireMutationLock()
+	lock, err := acquireMutationLock(stderr)
 	if err != nil {
 		return fail(fmt.Errorf("acquire state lock: %w", err))
 	}
@@ -192,7 +192,7 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 		m.Remove(name)
 		return fail(abortStateTransaction(tx, fmt.Errorf("save manifest: %w", err)))
 	}
-	if err := commitStateTransaction(tx); err != nil {
+	if err := commitStateTransaction(tx, stderr); err != nil {
 		return fail(fmt.Errorf("commit adoption transaction: %w", err))
 	}
 	finalizeStateTransaction(tx, stderr, name, "adoption")

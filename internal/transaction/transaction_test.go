@@ -2,6 +2,7 @@ package transaction
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,7 +56,7 @@ func TestRecoverPreparedCrashStateMatrix(t *testing.T) {
 				mustApply(t, fixture.tx, "manifest")
 			}
 
-			if err := Recover(fixture.root); err != nil {
+			if _, err := Recover(fixture.root); err != nil {
 				t.Fatal(err)
 			}
 			assertFile(t, fixture.live, "live-before", 0o755)
@@ -90,7 +91,7 @@ func TestRecoverCommittedCrashStateMatrix(t *testing.T) {
 				mustConvergeForTest(t, fixture.tx, "manifest", false)
 			}
 
-			if err := Recover(fixture.root); err != nil {
+			if _, err := Recover(fixture.root); err != nil {
 				t.Fatal(err)
 			}
 			assertFile(t, fixture.live, "live-after", 0o755)
@@ -105,7 +106,7 @@ func TestRecoverUnknownDriftFailsClosedBeforeAnyWrite(t *testing.T) {
 	mustApply(t, fixture.tx, "manifest")
 	mustWrite(t, fixture.live, "external-change", 0o755)
 
-	err := Recover(fixture.root)
+	_, err := Recover(fixture.root)
 	if err == nil || !strings.Contains(err.Error(), "unknown drift") {
 		t.Fatalf("expected unknown drift error, got %v", err)
 	}
@@ -223,7 +224,7 @@ func TestMatchedMutableStatesReassertDurability(t *testing.T) {
 		syncMatchedParent = oldParentSync
 	})
 
-	if err := Recover(root); err != nil {
+	if _, err := Recover(root); err != nil {
 		t.Fatal(err)
 	}
 	if fileSyncs[regular] != 1 || parentSyncs[regular] != 1 {
@@ -257,7 +258,7 @@ func TestMatchedAbsentSyncFailureRetainsPendingEvidence(t *testing.T) {
 	}
 	t.Cleanup(func() { syncMatchedParent = oldParentSync })
 
-	err = Recover(root)
+	_, err = Recover(root)
 	if !errors.Is(err, injected) {
 		t.Fatalf("expected durability error, got %v", err)
 	}
@@ -296,7 +297,7 @@ func TestPreparedRecoveryRestoresLegacySymlinkTopology(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustApply(t, tx, "live")
-	if err := Recover(root); err != nil {
+	if _, err := Recover(root); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(live)
@@ -315,7 +316,7 @@ func TestInvalidCommitMarkerFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixture.tx.dir, commitFileName), []byte("torn"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Recover(fixture.root)
+	_, err := Recover(fixture.root)
 	if err == nil || !strings.Contains(err.Error(), "invalid COMMIT") {
 		t.Fatalf("expected invalid COMMIT error, got %v", err)
 	}
@@ -607,7 +608,7 @@ func TestSubprocessSIGKILLRecovery(t *testing.T) {
 			if !errors.As(err, &exitErr) {
 				t.Fatalf("helper was not killed: %v", err)
 			}
-			if err := Recover(root); err != nil {
+			if _, err := Recover(root); err != nil {
 				t.Fatal(err)
 			}
 			if stage == "prepared" {
@@ -665,6 +666,491 @@ func TestTransactionCrashHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {}
+}
+
+func TestRecoverQuarantinesUnknownEntriesAndRecoversKnown(t *testing.T) {
+	fixture := newMatrixFixture(t)
+	// Advance the live participant to its after state; the prepared (uncommitted)
+	// transaction must still roll every participant back to before.
+	mustApply(t, fixture.tx, "live")
+
+	txRoot := filepath.Join(fixture.root, transactionsDirName)
+	buildingDir := filepath.Join(txRoot, buildingPrefix+strings.Repeat("a", 32))
+	completedDir := filepath.Join(txRoot, completedPrefix+strings.Repeat("b", 32))
+	if err := os.Mkdir(buildingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(completedDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Two unknown non-directory entries: a stray file and a stray symlink. Both
+	// carry data that must be preserved, never deleted.
+	strayFile := filepath.Join(txRoot, "stray-note.txt")
+	if err := os.WriteFile(strayFile, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	strayLink := filepath.Join(txRoot, "stray-link")
+	if err := os.Symlink("dangling-target", strayLink); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := Recover(fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pending transaction rolled back and the stray journals were cleaned.
+	assertFile(t, fixture.live, "live-before", 0o755)
+	assertFile(t, fixture.manifest, "manifest-before", 0o600)
+	if _, err := os.Lstat(buildingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("building journal not cleaned: %v", err)
+	}
+	if _, err := os.Lstat(completedDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed journal not cleaned: %v", err)
+	}
+
+	// Both unknown entries were quarantined, not deleted, and their data survives.
+	if len(summary.Quarantined) != 2 {
+		t.Fatalf("summary.Quarantined = %+v, want 2 records", summary.Quarantined)
+	}
+	byOriginal := map[string]QuarantineRecord{}
+	for _, record := range summary.Quarantined {
+		byOriginal[record.Original] = record
+		if !strings.HasPrefix(record.Quarantined, quarantinedPrefix) {
+			t.Fatalf("quarantined name lacks prefix: %q", record.Quarantined)
+		}
+		if len(record.Quarantined) != len(quarantinedPrefix)+16 {
+			t.Fatalf("quarantined name is not length-controlled: %q", record.Quarantined)
+		}
+		if _, err := os.Lstat(filepath.Join(txRoot, record.Original)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("original entry %q still present: %v", record.Original, err)
+		}
+		meta, err := os.ReadFile(filepath.Join(txRoot, record.Quarantined, quarantineMetaFileName))
+		if err != nil || !strings.Contains(string(meta), fmt.Sprintf("original_name=%q", record.Original)) {
+			t.Fatalf("META does not record the original name: meta=%q err=%v", meta, err)
+		}
+	}
+	fileRecord, ok := byOriginal["stray-note.txt"]
+	if !ok {
+		t.Fatalf("stray file not quarantined: %+v", byOriginal)
+	}
+	if data, err := os.ReadFile(filepath.Join(txRoot, fileRecord.Quarantined, quarantinePayloadName)); err != nil || string(data) != "evidence" {
+		t.Fatalf("quarantined payload corrupted: data=%q err=%v", data, err)
+	}
+	linkRecord, ok := byOriginal["stray-link"]
+	if !ok {
+		t.Fatalf("stray symlink not quarantined: %+v", byOriginal)
+	}
+	if target, err := os.Readlink(filepath.Join(txRoot, linkRecord.Quarantined, quarantinePayloadName)); err != nil || target != "dangling-target" {
+		t.Fatalf("quarantined symlink corrupted: target=%q err=%v", target, err)
+	}
+
+	status, err := Inspect(fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 2 {
+		t.Fatalf("Inspect quarantined = %v, want 2", status.Quarantined)
+	}
+	if status.NeedsRecovery() {
+		t.Fatalf("quarantined-only state must not need recovery: %+v", status)
+	}
+}
+
+func TestRecoverFailsClosedOnUnknownDirectory(t *testing.T) {
+	fixture := newMatrixFixture(t)
+	mustApply(t, fixture.tx, "live")
+
+	txRoot := filepath.Join(fixture.root, transactionsDirName)
+	// A stray file is junk and gets isolated; an unknown directory may be a
+	// journal layout from a newer hukou and must wedge recovery instead of
+	// being demoted to quarantine.
+	strayFile := filepath.Join(txRoot, "stray-note.txt")
+	if err := os.WriteFile(strayFile, []byte("evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	futureDir := filepath.Join(txRoot, "future-journal")
+	if err := os.Mkdir(futureDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "evidence"), []byte("keep-me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := Recover(fixture.root)
+	if err == nil || !strings.Contains(err.Error(), "unknown directories") || !strings.Contains(err.Error(), "hukou doctor") {
+		t.Fatalf("expected fail-closed unknown-directory error, got %v", err)
+	}
+	if len(summary.Quarantined) != 1 || summary.Quarantined[0].Original != "stray-note.txt" {
+		t.Fatalf("non-directory junk not isolated first: %+v", summary.Quarantined)
+	}
+	// The unknown directory and its contents are untouched.
+	if data, readErr := os.ReadFile(filepath.Join(futureDir, "evidence")); readErr != nil || string(data) != "keep-me" {
+		t.Fatalf("unknown directory was modified: data=%q err=%v", data, readErr)
+	}
+	// Fail-closed means no journal was recovered: live keeps the half-applied
+	// after state and the pending journal remains as evidence.
+	assertFile(t, fixture.live, "live-after", 0o755)
+	status, inspectErr := Inspect(fixture.root)
+	if inspectErr != nil || len(status.Pending) != 1 {
+		t.Fatalf("pending evidence not retained: status=%+v err=%v", status, inspectErr)
+	}
+}
+
+func TestQuarantineUnblocksBeginNewTransaction(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(txRoot, "leftover-garbage"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Before quarantine, the unknown entry blocks new transactions.
+	if _, err := Begin(root, "upgrade", "tool", []Spec{{
+		Role: "live", Path: filepath.Join(t.TempDir(), "tool"), After: RegularBytes([]byte("x"), 0o755),
+	}}); err == nil {
+		t.Fatal("expected the unknown entry to block Begin before quarantine")
+	}
+
+	summary, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Quarantined) != 1 {
+		t.Fatalf("summary.Quarantined = %+v", summary.Quarantined)
+	}
+
+	status, err := Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.NeedsRecovery() {
+		t.Fatalf("quarantined state must not need recovery: %+v", status)
+	}
+
+	// A fresh transaction now begins and completes normally alongside the
+	// quarantined evidence.
+	dest := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(dest, []byte("before"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := Begin(root, "upgrade", "tool", []Spec{{
+		Role: "live", Path: dest, After: RegularBytes([]byte("after"), 0o755),
+	}})
+	if err != nil {
+		t.Fatalf("Begin after quarantine: %v", err)
+	}
+	mustApply(t, tx, "live")
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, dest, "after", 0o755)
+}
+
+func TestRecoverQuarantineIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(txRoot, "mystery"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Quarantined) != 1 {
+		t.Fatalf("first pass quarantined = %+v", first.Quarantined)
+	}
+	quarantinedName := first.Quarantined[0].Quarantined
+
+	// A recovery interrupted after quarantine and retried must be a no-op: the
+	// already-quarantined entry keeps its name and is never wrapped again.
+	second, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Quarantined) != 0 {
+		t.Fatalf("second pass re-quarantined: %+v", second.Quarantined)
+	}
+	status, err := Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 1 || status.Quarantined[0] != quarantinedName {
+		t.Fatalf("quarantine set drifted across retries: %+v", status.Quarantined)
+	}
+	if data, err := os.ReadFile(filepath.Join(txRoot, quarantinedName, quarantinePayloadName)); err != nil || string(data) != "data" {
+		t.Fatalf("quarantined payload changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestQuarantineNameBoundaries(t *testing.T) {
+	longName := strings.Repeat("n", 200) + ".junk"
+	backslashName := `stray\entry`
+	for _, name := range []string{longName, backslashName} {
+		t.Run(fmt.Sprintf("len=%d", len(name)), func(t *testing.T) {
+			root := t.TempDir()
+			txRoot := filepath.Join(root, transactionsDirName)
+			if err := os.MkdirAll(txRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(txRoot, name), []byte("payload"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			summary, err := Recover(root)
+			if err != nil {
+				t.Fatalf("boundary name wedged quarantine: %v", err)
+			}
+			if len(summary.Quarantined) != 1 || summary.Quarantined[0].Original != name {
+				t.Fatalf("summary = %+v", summary.Quarantined)
+			}
+			container := summary.Quarantined[0].Quarantined
+			// The container name is length-controlled regardless of the original.
+			if len(container) != len(quarantinedPrefix)+16 {
+				t.Fatalf("container name not length-controlled: %q", container)
+			}
+			meta, err := os.ReadFile(filepath.Join(txRoot, container, quarantineMetaFileName))
+			if err != nil || !strings.Contains(string(meta), fmt.Sprintf("original_name=%q", name)) {
+				t.Fatalf("META lost the original name: meta=%q err=%v", meta, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(txRoot, container, quarantinePayloadName)); err != nil || string(data) != "payload" {
+				t.Fatalf("payload lost: data=%q err=%v", data, err)
+			}
+		})
+	}
+}
+
+func TestQuarantineCollisionRetriesWithoutOverwriting(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(txRoot, "stray"), []byte("new-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-create a valid container whose name the first random draw will collide
+	// with. It holds existing evidence that must never be overwritten.
+	collide := strings.Repeat("c", 16)
+	fresh := strings.Repeat("f", 16)
+	existing := filepath.Join(txRoot, quarantinedPrefix+collide)
+	if err := os.Mkdir(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, quarantineMetaFileName), []byte("old-meta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, quarantinePayloadName), []byte("old-evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldSuffix := quarantineNameSuffix
+	calls := 0
+	quarantineNameSuffix = func() (string, error) {
+		calls++
+		if calls == 1 {
+			return collide, nil
+		}
+		return fresh, nil
+	}
+	t.Cleanup(func() { quarantineNameSuffix = oldSuffix })
+
+	summary, err := Recover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("collision was not retried: calls=%d", calls)
+	}
+	if len(summary.Quarantined) != 1 || summary.Quarantined[0].Quarantined != quarantinedPrefix+fresh {
+		t.Fatalf("summary = %+v", summary.Quarantined)
+	}
+	// The colliding container is untouched and the new container has the data.
+	if data, err := os.ReadFile(filepath.Join(existing, quarantinePayloadName)); err != nil || string(data) != "old-evidence" {
+		t.Fatalf("existing container was overwritten: data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(txRoot, quarantinedPrefix+fresh, quarantinePayloadName)); err != nil || string(data) != "new-data" {
+		t.Fatalf("new container payload wrong: data=%q err=%v", data, err)
+	}
+}
+
+func TestSubprocessSIGKILLRecoveryWithStrayEntry(t *testing.T) {
+	for _, stage := range []string{"prepared", "committed"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			live := filepath.Join(t.TempDir(), "tool")
+			manifest := filepath.Join(root, "manifest.json")
+			mustWrite(t, live, "live-before", 0o755)
+			mustWrite(t, manifest, "manifest-before", 0o600)
+			cmd := exec.Command(os.Args[0], "-test.run=^TestTransactionCrashHelper$")
+			cmd.Env = append(os.Environ(),
+				"HUKOU_TXN_CRASH_HELPER=1",
+				"HUKOU_TXN_CRASH_STAGE="+stage,
+				"HUKOU_TXN_CRASH_ROOT="+root,
+				"HUKOU_TXN_CRASH_LIVE="+live,
+				"HUKOU_TXN_CRASH_MANIFEST="+manifest,
+			)
+			err := cmd.Run()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("helper was not killed: %v", err)
+			}
+			// The crash left a real journal from a real Begin (+ Commit for the
+			// committed stage). Drop stray junk next to it, as an interrupted or
+			// misbehaving process would.
+			txRoot := filepath.Join(root, transactionsDirName)
+			if err := os.WriteFile(filepath.Join(txRoot, "crash-debris"), []byte("junk"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			summary, err := Recover(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(summary.Quarantined) != 1 || summary.Quarantined[0].Original != "crash-debris" {
+				t.Fatalf("stray junk not quarantined: %+v", summary.Quarantined)
+			}
+			if stage == "prepared" {
+				assertFile(t, live, "live-before", 0o755)
+				assertFile(t, manifest, "manifest-before", 0o600)
+			} else {
+				assertFile(t, live, "live-after", 0o755)
+				assertFile(t, manifest, "manifest-after", 0o600)
+			}
+			assertJournalClean(t, root)
+		})
+	}
+}
+
+func TestInspectRejectsInvalidQuarantineContainers(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	valid := filepath.Join(txRoot, "quarantined-"+strings.Repeat("a", 16))
+	if err := os.Mkdir(valid, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(valid, quarantineMetaFileName), []byte("meta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(valid, quarantinePayloadName), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := []string{
+		"quarantined-" + strings.Repeat("b", 15),            // too short
+		"quarantined-" + strings.Repeat("c", 17),            // too long
+		"quarantined-" + strings.Repeat("d", 32),            // wrong length
+		"quarantined-" + strings.Repeat("E", 16),            // uppercase hex
+		"quarantined-" + strings.Repeat("f", 16) + "-extra", // extra suffix
+		"quarantined-" + strings.Repeat("g", 16),            // non-hex
+	}
+	for _, name := range invalid {
+		if err := os.Mkdir(filepath.Join(txRoot, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A directory symlink with a valid-looking name is not a real directory.
+	linkName := "quarantined-" + strings.Repeat("b", 16)
+	if err := os.Symlink(valid, filepath.Join(txRoot, linkName)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A valid name with an untrusted layout (extra entry) is also Unknown.
+	untrusted := filepath.Join(txRoot, "quarantined-"+strings.Repeat("c", 16))
+	if err := os.Mkdir(untrusted, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(untrusted, quarantineMetaFileName), []byte("meta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(untrusted, quarantinePayloadName), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(untrusted, "extra"), []byte("extra"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A payload that is a directory is not a valid quarantine container.
+	payloadDir := filepath.Join(txRoot, "quarantined-"+strings.Repeat("d", 16))
+	if err := os.Mkdir(payloadDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(payloadDir, quarantineMetaFileName), []byte("meta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(payloadDir, quarantinePayloadName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// A META that is a symlink is not a valid quarantine container.
+	metaSymlink := filepath.Join(txRoot, "quarantined-"+strings.Repeat("h", 16))
+	if err := os.Mkdir(metaSymlink, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("somewhere", filepath.Join(metaSymlink, quarantineMetaFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(metaSymlink, quarantinePayloadName), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 1 || status.Quarantined[0] != filepath.Base(valid) {
+		t.Fatalf("want only valid container quarantined, got %+v", status)
+	}
+	wantUnknown := len(invalid) + 4 // invalid names + symlink + untrusted layout + payload-dir + META-symlink
+	if len(status.Unknown) != wantUnknown {
+		t.Fatalf("want %d unknown entries, got %+v", wantUnknown, status.Unknown)
+	}
+}
+
+func TestRecoverQuarantinesInvalidQuarantineFileButFailsClosedOnInvalidDirectory(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// An invalid quarantined-like file is treated as unknown non-directory junk
+	// and wrapped into a fresh valid container.
+	badFile := filepath.Join(txRoot, "quarantined-notahex")
+	if err := os.WriteFile(badFile, []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// An invalid quarantined-like directory is fail-closed: it blocks recovery.
+	badDir := filepath.Join(txRoot, "quarantined-"+strings.Repeat("d", 16)+"-extra")
+	if err := os.Mkdir(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "evidence"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := Recover(root)
+	if err == nil || !strings.Contains(err.Error(), "unknown directories") {
+		t.Fatalf("expected fail-closed on invalid quarantine directory, got %v", err)
+	}
+	if len(summary.Quarantined) != 1 || summary.Quarantined[0].Original != "quarantined-notahex" {
+		t.Fatalf("expected the invalid quarantine file to be quarantined, got %+v", summary.Quarantined)
+	}
+	if _, err := os.Lstat(badDir); err != nil {
+		t.Fatalf("invalid quarantine directory was modified: %v", err)
+	}
 }
 
 func mustApply(t *testing.T, tx *Transaction, role string) {

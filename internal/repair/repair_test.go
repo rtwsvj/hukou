@@ -40,7 +40,7 @@ func TestRestoreManifestBackupPlanAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(root, plan); err != nil {
+	if _, err := Apply(root, plan); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(mainPath)
@@ -69,7 +69,7 @@ func TestRestoreManifestBackupRejectsStalePlanWithoutBusinessWrite(t *testing.T)
 	}
 	wantBackup, _ := os.ReadFile(backupPath)
 	wantLive, _ := os.ReadFile(livePath)
-	err = Apply(root, plan)
+	_, err = Apply(root, plan)
 	if !errors.Is(err, ErrStateChanged) {
 		t.Fatalf("error = %v, want ErrStateChanged", err)
 	}
@@ -102,7 +102,7 @@ func TestRestoreManifestBackupDoesNotAutoRecoverBeforeFingerprintCheck(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err = Apply(root, plan)
+	_, err = Apply(root, plan)
 	if !errors.Is(err, ErrStateChanged) {
 		t.Fatalf("error = %v, want ErrStateChanged", err)
 	}
@@ -222,7 +222,7 @@ func TestRecoverTransactionPlanAndApply(t *testing.T) {
 	if after := snapshotTree(t, root, "state.lock"); !reflect.DeepEqual(before, after) {
 		t.Fatalf("recovery planning changed state")
 	}
-	if err := Apply(root, plan); err != nil {
+	if _, err := Apply(root, plan); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(live); string(got) != "before" {
@@ -257,7 +257,7 @@ func TestRecoverTransactionSupportsCapturedSymlinkState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(root, plan); err != nil {
+	if _, err := Apply(root, plan); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Lstat(live)
@@ -291,7 +291,7 @@ func TestRecoverTransactionStalePlanDoesNotRecover(t *testing.T) {
 	if err := tx.Apply("live"); err != nil {
 		t.Fatal(err)
 	}
-	err = Apply(root, plan)
+	_, err = Apply(root, plan)
 	if !errors.Is(err, ErrStateChanged) {
 		t.Fatalf("error = %v, want ErrStateChanged", err)
 	}
@@ -339,10 +339,91 @@ func TestPlanRoundTripUsesOwnerOnlyFile(t *testing.T) {
 	}
 }
 
+func TestRecoverTransactionRepairQuarantinesUnknownEntry(t *testing.T) {
+	root := t.TempDir()
+	live := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(live, []byte("before"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := statejournal.Begin(root, "test", "tool", []statejournal.Spec{
+		{Role: "live", Path: live, After: statejournal.RegularBytes([]byte("after"), 0o755)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Apply("live"); err != nil {
+		t.Fatal(err)
+	}
+	// A stray unknown file that previously wedged the recover-transaction action.
+	txRoot := filepath.Join(root, "transactions")
+	if err := os.WriteFile(filepath.Join(txRoot, "stray"), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := BuildPlan(root, ActionRecoverTransaction, time.Now())
+	if err != nil {
+		t.Fatalf("recover-transaction plan wedged on unknown entry: %v", err)
+	}
+	result, err := Apply(root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Quarantined) != 1 || result.Quarantined[0].Original != "stray" {
+		t.Fatalf("apply result does not surface the quarantine: %+v", result)
+	}
+	if got, _ := os.ReadFile(live); string(got) != "before" {
+		t.Fatalf("recovery did not roll back: %q", got)
+	}
+	status, err := statejournal.Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Quarantined) != 1 {
+		t.Fatalf("unknown entry not quarantined: %+v", status)
+	}
+	if status.NeedsRecovery() {
+		t.Fatalf("state still needs recovery: %+v", status)
+	}
+}
+
+func TestRecoverTransactionPlanFailsClosedOnUnknownDirectory(t *testing.T) {
+	root := t.TempDir()
+	live := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(live, []byte("before"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := statejournal.Begin(root, "test", "tool", []statejournal.Spec{
+		{Role: "live", Path: live, After: statejournal.RegularBytes([]byte("after"), 0o755)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An unknown directory may be a journal from a newer hukou; the repair
+	// action must refuse to plan around it instead of demoting it.
+	unknownDir := filepath.Join(root, "transactions", "future-journal")
+	if err := os.Mkdir(unknownDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unknownDir, "evidence"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildPlan(root, ActionRecoverTransaction, time.Now()); !errors.Is(err, ErrNotRepairable) {
+		t.Fatalf("error = %v, want ErrNotRepairable", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(unknownDir, "evidence")); err != nil || string(data) != "keep" {
+		t.Fatalf("planning touched the unknown directory: data=%q err=%v", data, err)
+	}
+}
+
 func manifestBackupFixture(t *testing.T) (root, mainPath, backupPath, livePath string) {
 	t.Helper()
-	root = t.TempDir()
 	livePath = filepath.Join(t.TempDir(), "fixture-tool")
+	root, mainPath, backupPath = manifestFixtureWithLive(t, livePath)
+	return root, mainPath, backupPath, livePath
+}
+
+func manifestFixtureWithLive(t *testing.T, livePath string) (root, mainPath, backupPath string) {
+	t.Helper()
+	root = t.TempDir()
 	if err := os.WriteFile(livePath, []byte("fixture-v1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +459,7 @@ func manifestBackupFixture(t *testing.T) (root, mainPath, backupPath, livePath s
 		t.Fatal(err)
 	}
 	backupPath = mainPath + ".bak"
-	return root, mainPath, backupPath, livePath
+	return root, mainPath, backupPath
 }
 
 type snapshotEntry struct {

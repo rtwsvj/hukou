@@ -13,6 +13,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/store"
+	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
 const maxManifestSize = 16 << 20
@@ -635,6 +636,14 @@ func scanTransactions(report *Report, root string) {
 	pending := 0
 	for _, entry := range entries {
 		entryPath := filepath.Join(path, entry.Name())
+		if strings.HasPrefix(entry.Name(), statejournal.QuarantinedPrefix()) {
+			if statejournal.IsValidQuarantineContainer(path, entry.Name()) {
+				report.add(SeverityWarning, "TRANSACTION_QUARANTINED_PRESENT", "transaction", entry.Name(), entryPath, "quarantined transaction entry is retained for diagnosis; inspect it, then remove it manually when you are satisfied it is no longer needed")
+			} else {
+				report.add(SeverityError, "TRANSACTION_QUARANTINED_INVALID", "transaction", entry.Name(), entryPath, "quarantined-like entry failed layout validation; inspect it manually before recovery can proceed")
+			}
+			continue
+		}
 		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 			report.add(SeverityError, "TRANSACTION_ENTRY_INVALID", "transaction", entry.Name(), entryPath, "transaction entry must be a real directory")
 			if strings.HasPrefix(entry.Name(), "pending-") {
@@ -655,7 +664,7 @@ func scanTransactions(report *Report, root string) {
 		case strings.HasPrefix(entry.Name(), "completed-"):
 			report.add(SeverityWarning, "TRANSACTION_COMPLETED_PRESENT", "transaction", entry.Name(), entryPath, "completed transaction record awaits cleanup by a locked mutating command")
 		default:
-			report.add(SeverityWarning, "TRANSACTION_ENTRY_UNKNOWN", "transaction", entry.Name(), entryPath, "unrecognized transaction directory entry")
+			report.add(SeverityError, "TRANSACTION_ENTRY_UNKNOWN", "transaction", entry.Name(), entryPath, "unrecognized transaction directory entry; inspect it manually or upgrade hukou before recovery can proceed")
 		}
 	}
 	if pending > 1 {
@@ -690,7 +699,7 @@ func scanLiveTemps(report *Report, entries []manifest.Entry) {
 			case strings.HasPrefix(entry.Name(), ".hukou-rollback-"):
 				report.add(SeverityWarning, "LIVE_ROLLBACK_SNAPSHOT_PRESENT", "live", entry.Name(), path, "rollback snapshot is present and may be recovery evidence; doctor will not remove it")
 			case strings.HasPrefix(entry.Name(), ".hukou-txn-"):
-				report.add(SeverityWarning, "LIVE_TRANSACTION_TEMP_PRESENT", "live", entry.Name(), path, "transaction recovery temporary name is present; doctor will not remove it")
+				report.add(SeverityWarning, "LIVE_TRANSACTION_TEMP_PRESENT", "live", entry.Name(), path, "transaction recovery temporary name is present; doctor is read-only and will not remove it. If no transaction is active, delete it manually")
 			}
 		}
 	}

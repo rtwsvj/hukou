@@ -43,7 +43,7 @@ func doRollbackWithSave(stdout, stderr io.Writer, name, to string, save func(*ma
 }
 
 func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*manifest.Manifest) error, snapshotLive func(string) (*store.LiveSnapshot, error)) error {
-	lock, err := acquireMutationLock()
+	lock, err := acquireMutationLock(stderr)
 	if err != nil {
 		return fail(fmt.Errorf("acquire state lock: %w", err))
 	}
@@ -165,7 +165,7 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 		m.Put(oldEntry)
 		return fail(abortStateTransaction(tx, fmt.Errorf("save manifest: %w", err)))
 	}
-	if err := commitStateTransaction(tx); err != nil {
+	if err := commitStateTransaction(tx, stderr); err != nil {
 		refreshErr := refreshManifest(m)
 		if current := m.Get(name); current != nil {
 			*e = *current

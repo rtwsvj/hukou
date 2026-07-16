@@ -117,6 +117,7 @@ hukou doctor [--json] [--deep]
 - 默认检查 manifest/backup、entry、live SHA/类型/权限、original/current tag、store 拓扑与 transaction inventory。
 - `--deep` 额外 hash retained versions，并检查已登记 live parent 的 hukou 临时文件前缀。
 - manifest 无效时，manifest 外 store tool 标为 `UNCLASSIFIABLE`，不会猜成可删除 orphan。
+- `transactions/` 里的合法 `quarantined-*` 容器以 Warning（`TRANSACTION_QUARANTINED_PRESENT`）上报，提示用户检查后在确认无价值时手动删除；未知真实目录以 Error（`TRANSACTION_ENTRY_UNKNOWN`）上报，要求用户手动处置或升级 hukou；`--deep` 发现的 `.hukou-txn-*` 孤儿临时文件（`LIVE_TRANSACTION_TEMP_PRESENT`）同样仅提示用户确认无活跃事务后手动删除。
 - warning/error 会输出完整报告并返回非零；JSON stdout 始终是同一 Report 模型。
 
 副作用：无。当前正式版本 v0.2.0 没有 repair；V0.3 分支也没有 repair-all。
@@ -151,8 +152,9 @@ hukou repair apply --plan <plan.json>
 
 - `plan` 只读 hukou data root，并只写用户明确指定的 `0600` plan 文件；父目录必须已存在。
 - `apply` 持 state lock，重算 data-root identity、state fingerprint 和前置条件；plan stale 时零业务状态写入失败。apply 可能创建/使用 lock 文件，所以这不是“绝对零文件写入”。
-- transaction recovery 只接受可完整分类的未决 journal；backup restore 只接受主文件缺失/无效、backup 语义有效、transaction clean 且所有 live SHA 匹配的状态。
-- 没有 repair-all、orphan 删除、quarantine 或 manifest merge。
+- `recover-transaction` 收敛未决 journal；未知**非目录**条目（垃圾文件/符号链接）会被移入 `quarantined-<16hex>` 容器（原名以 `%q` 记录在容器内 `META`，数据保留为 `payload`）后继续，不再楔死；未知**目录**可能是更新版本的 journal 布局，保持 fail-closed，需人工处置或升级 hukou。apply 输出会列出隔离明细，写命令的自动恢复也会把隔离记录打到 stderr。
+- `restore-manifest-backup` 只接受主文件缺失/无效、backup 语义有效、transaction clean 且所有 live SHA 匹配的状态。
+- **没有** `purge-quarantine`、`clean-live-temps`、repair-all、orphan 删除或 manifest merge；隔离本身由 `recover-transaction` 自动完成，隔离区与孤儿临时文件须由用户在确认安全后手动删除。
 
 建议把 plan 写在 hukou data root 之外；把 plan 放入被 fingerprint 覆盖的状态树可能会让它在 apply 前自行变 stale。
 

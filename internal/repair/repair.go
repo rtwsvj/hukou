@@ -14,7 +14,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +40,15 @@ const (
 	ActionRestoreManifestBackup Action = "restore-manifest-backup"
 )
 
+func isSupportedAction(action Action) bool {
+	switch action {
+	case ActionRecoverTransaction, ActionRestoreManifestBackup:
+		return true
+	default:
+		return false
+	}
+}
+
 var (
 	ErrInvalidPlan   = errors.New("invalid repair plan")
 	ErrNotRepairable = errors.New("requested state is not safely repairable")
@@ -65,6 +73,12 @@ type Plan struct {
 	GeneratedAt      string         `json:"generated_at"`
 }
 
+// Result reports what an applied plan actually changed so the caller can
+// surface it instead of discarding recovery evidence silently.
+type Result struct {
+	Quarantined []statejournal.QuarantineRecord
+}
+
 type evaluation struct {
 	fingerprint   string
 	preconditions []Precondition
@@ -83,7 +97,7 @@ func BuildPlan(dataRoot string, action Action, now time.Time) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	eval, err := evaluate(root, action)
+	eval, err := evaluate(root, action, now)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -151,22 +165,23 @@ func LoadPlan(path string) (Plan, error) {
 
 // Apply obtains the mutation lock without invoking automatic recovery,
 // re-evaluates the plan under that lock, and only then performs its one action.
-func Apply(dataRoot string, plan Plan) (retErr error) {
+// The returned Result reports what actually changed.
+func Apply(dataRoot string, plan Plan) (result Result, retErr error) {
 	if err := validatePlan(plan); err != nil {
-		return err
+		return result, err
 	}
 	root, err := existingDataRoot(dataRoot)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrStateChanged, err)
+		return result, fmt.Errorf("%w: %v", ErrStateChanged, err)
 	}
 	// Reaffirm the existing root's durability, but do not call the normal
 	// mutation helper: that helper recovers the WAL before fingerprint checking.
 	if err := durablefs.MkdirAll(root, 0o755); err != nil {
-		return err
+		return result, err
 	}
 	lock, err := state.Acquire(filepath.Join(root, "state.lock"))
 	if err != nil {
-		return err
+		return result, err
 	}
 	defer func() {
 		retErr = errors.Join(retErr, lock.Release())
@@ -174,30 +189,40 @@ func Apply(dataRoot string, plan Plan) (retErr error) {
 
 	identity, err := dataRootIdentity(root)
 	if err != nil {
-		return fmt.Errorf("%w: identify data root: %v", ErrStateChanged, err)
+		return result, fmt.Errorf("%w: identify data root: %v", ErrStateChanged, err)
 	}
 	if identity != plan.DataRootIdentity {
-		return fmt.Errorf("%w: data root identity mismatch", ErrStateChanged)
+		return result, fmt.Errorf("%w: data root identity mismatch", ErrStateChanged)
 	}
-	current, err := evaluate(root, plan.Action)
+	// generated_at is validated as RFC3339Nano by validatePlan; it is reused as
+	// the deterministic reference clock for any age-bound action so Apply and the
+	// original plan compute an identical fingerprint.
+	planTime, err := time.Parse(time.RFC3339Nano, plan.GeneratedAt)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrStateChanged, err)
+		return result, fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
 	}
-	if current.fingerprint != plan.StateFingerprint || !reflect.DeepEqual(current.preconditions, plan.Preconditions) {
-		return fmt.Errorf("%w: fingerprint or preconditions mismatch", ErrStateChanged)
+
+	current, err := evaluate(root, plan.Action, planTime)
+	if err != nil {
+		return result, fmt.Errorf("%w: %v", ErrStateChanged, err)
+	}
+	if current.fingerprint != plan.StateFingerprint || !slicesEqual(current.preconditions, plan.Preconditions) {
+		return result, fmt.Errorf("%w: fingerprint or preconditions mismatch", ErrStateChanged)
 	}
 
 	switch plan.Action {
 	case ActionRecoverTransaction:
-		return statejournal.Recover(root)
+		summary, recoverErr := statejournal.Recover(root)
+		result.Quarantined = summary.Quarantined
+		return result, recoverErr
 	case ActionRestoreManifestBackup:
-		return durablefs.AtomicWriteFile(filepath.Join(root, "manifest.json"), current.backup, 0o600)
+		return result, durablefs.AtomicWriteFile(filepath.Join(root, "manifest.json"), current.backup, 0o600)
 	default:
-		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
+		return result, fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
 	}
 }
 
-func evaluate(root string, action Action) (evaluation, error) {
+func evaluate(root string, action Action, now time.Time) (evaluation, error) {
 	switch action {
 	case ActionRecoverTransaction:
 		return evaluateRecoverTransaction(root)
@@ -223,13 +248,26 @@ func evaluateRecoverTransaction(root string) (evaluation, error) {
 	if !status.NeedsRecovery() {
 		return evaluation{}, fmt.Errorf("%w: no unfinished transaction state exists", ErrNotRepairable)
 	}
-	if len(status.Unknown) != 0 {
-		return evaluation{}, fmt.Errorf("%w: transaction root contains unknown entries", ErrNotRepairable)
+	txRoot := filepath.Join(root, "transactions")
+	// Unknown non-directory entries no longer block recovery: Apply routes
+	// through statejournal.Recover, which quarantines each of them (preserving
+	// the data) before converging the known journals. Unknown directories stay
+	// fail-closed exactly like Recover itself: they may be journal layouts from
+	// a newer hukou. The full transaction tree is still captured in the
+	// fingerprint below, so any change to those entries between planning and
+	// apply fails closed.
+	for _, name := range status.Unknown {
+		info, err := os.Lstat(filepath.Join(txRoot, name))
+		if err != nil {
+			return evaluation{}, fmt.Errorf("%w: inspect unknown transaction entry: %v", ErrNotRepairable, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+			return evaluation{}, fmt.Errorf("%w: transaction root contains unknown directory %q; it may be a journal from a newer hukou and must be inspected manually", ErrNotRepairable, name)
+		}
 	}
 	if len(status.Pending) > 1 {
 		return evaluation{}, fmt.Errorf("%w: multiple pending transactions are ambiguous", ErrNotRepairable)
 	}
-	txRoot := filepath.Join(root, "transactions")
 	nodes, err := observeTree(txRoot)
 	if err != nil {
 		return evaluation{}, fmt.Errorf("%w: inspect transaction tree: %v", ErrNotRepairable, err)
@@ -391,67 +429,6 @@ func evaluateRestoreManifestBackup(root string) (evaluation, error) {
 		},
 		backup: append([]byte(nil), backupRaw...),
 	}, nil
-}
-
-func existingDataRoot(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("data root is required")
-	}
-	root, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	root = filepath.Clean(root)
-	info, err := os.Stat(root)
-	if err != nil {
-		return "", fmt.Errorf("data root must already exist: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("data root is not a directory")
-	}
-	return root, nil
-}
-
-func dataRootIdentity(root string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", err
-	}
-	resolved, err = filepath.Abs(resolved)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte("hukou-repair-data-root-v1\x00" + filepath.Clean(root) + "\x00" + filepath.Clean(resolved)))
-	return hex.EncodeToString(sum[:]), nil
-}
-
-func validatePlan(plan Plan) error {
-	if plan.SchemaVersion != PlanSchemaVersion {
-		return fmt.Errorf("%w: unsupported schema_version %d", ErrInvalidPlan, plan.SchemaVersion)
-	}
-	if plan.Action != ActionRecoverTransaction && plan.Action != ActionRestoreManifestBackup {
-		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
-	}
-	if !validSHA256(plan.DataRootIdentity) || !validSHA256(plan.StateFingerprint) {
-		return fmt.Errorf("%w: identity and fingerprint must be SHA-256 digests", ErrInvalidPlan)
-	}
-	if _, err := time.Parse(time.RFC3339Nano, plan.GeneratedAt); err != nil {
-		return fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
-	}
-	if len(plan.Preconditions) == 0 {
-		return fmt.Errorf("%w: preconditions are required", ErrInvalidPlan)
-	}
-	seen := make(map[string]struct{}, len(plan.Preconditions))
-	for _, condition := range plan.Preconditions {
-		if condition.Code == "" || !condition.Satisfied {
-			return fmt.Errorf("%w: every precondition must be named and satisfied", ErrInvalidPlan)
-		}
-		if _, exists := seen[condition.Code]; exists {
-			return fmt.Errorf("%w: duplicate precondition %q", ErrInvalidPlan, condition.Code)
-		}
-		seen[condition.Code] = struct{}{}
-	}
-	return nil
 }
 
 func encodePlan(plan Plan) ([]byte, error) {
@@ -836,4 +813,77 @@ func validSHA256(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func existingDataRoot(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("data root is required")
+	}
+	root, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	root = filepath.Clean(root)
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("data root must already exist: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("data root is not a directory")
+	}
+	return root, nil
+}
+
+func dataRootIdentity(root string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte("hukou-repair-data-root-v1\x00" + filepath.Clean(root) + "\x00" + filepath.Clean(resolved)))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func validatePlan(plan Plan) error {
+	if plan.SchemaVersion != PlanSchemaVersion {
+		return fmt.Errorf("%w: unsupported schema_version %d", ErrInvalidPlan, plan.SchemaVersion)
+	}
+	if !isSupportedAction(plan.Action) {
+		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
+	}
+	if !validSHA256(plan.DataRootIdentity) || !validSHA256(plan.StateFingerprint) {
+		return fmt.Errorf("%w: identity and fingerprint must be SHA-256 digests", ErrInvalidPlan)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, plan.GeneratedAt); err != nil {
+		return fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
+	}
+	if len(plan.Preconditions) == 0 {
+		return fmt.Errorf("%w: preconditions are required", ErrInvalidPlan)
+	}
+	seen := make(map[string]struct{}, len(plan.Preconditions))
+	for _, condition := range plan.Preconditions {
+		if condition.Code == "" || !condition.Satisfied {
+			return fmt.Errorf("%w: every precondition must be named and satisfied", ErrInvalidPlan)
+		}
+		if _, exists := seen[condition.Code]; exists {
+			return fmt.Errorf("%w: duplicate precondition %q", ErrInvalidPlan, condition.Code)
+		}
+		seen[condition.Code] = struct{}{}
+	}
+	return nil
+}
+
+func slicesEqual(a, b []Precondition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

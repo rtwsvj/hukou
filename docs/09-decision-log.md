@@ -9,6 +9,7 @@
 | [`ADR-0003`](adr/ADR-0003-crash-recovery-and-doctor.md) | Accepted | H2 使用持久化事务决策恢复；doctor 默认只读且不猜测修复 |
 | [`ADR-0004`](adr/ADR-0004-trust-first-and-manager-boundaries.md) | Accepted / implemented in private RC | trust-first CLI；`upgrade --all` 只管 hukou；Topgrade 仅外层编排 |
 | [`ADR-0005`](adr/ADR-0005-manifest-v2-history-policy-and-repair.md) | Accepted / implemented in private RC | schema v2 lineage/policy/retention、窄版 repair 与脱敏 support |
+| [`ADR-0006`](adr/ADR-0006-transaction-residue-self-heal.md) | Accepted | 未知非目录事务条目安全隔离（仅移动，不删除）；未知目录保持 fail-closed；隔离容器只读诊断；不自动删除任何用户文件 |
 
 ## 历史决策摘要
 
@@ -23,5 +24,7 @@
 - 2026-07-14：V0.3 先解释/预览再修改；跨管理器升级不进入 hukou，Topgrade 只负责串联各自独立的 manager。
 - 2026-07-14：manifest 提升到 v2，rollback/retention 只依据显式 lineage；repair 只开放 fingerprint 绑定的两个 action。
 - 2026-07-15：读路径事务残留检查（`transaction.CheckReadable`，卡 A）的两层 TOCTOU——①三重验证与调用方后续读取之间无原子性；②验证三步（名字/Lstat/COMMIT）彼此间可被并发替换——裁决为**记录接受**，不加读锁（Fable 裁决，Codex 复审引用）。理由：读路径是同用户诊断视图，不是安全边界，能与该检查竞态的写入者本就可写事务根、直接掌控状态；hukou 探测器对每个命中条目独立做 sha256 复核，归属结论不依赖该检查的时点正确性；写路径（`Begin`）保持全类别 fail-closed 且持 mutation lock。
+- 2026-07-15：未知**非目录**事务条目不再楔死恢复，移入 `quarantined-<16hex>` 容器（META 记录原名）并保留证据；未知目录保持 fail-closed（可能是新版本 journal）。
+- 2026-07-16：产品决策缩窄卡 B 范围，移除 `purge-quarantine` 与 `clean-live-temps` 两个破坏性 repair 动作；隔离与孤儿临时文件改为只读诊断 + 用户手动删除，程序不做任何自动删除。
 
 决策发生变化时，应新增 ADR 或把旧 ADR 标成 Superseded，不静默改写历史理由。
