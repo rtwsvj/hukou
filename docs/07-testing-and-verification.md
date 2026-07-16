@@ -9,7 +9,7 @@
 | L3 全仓 | test、race、vet、build、coverage | 当前提交的工程基线 |
 | L4 隔离 smoke | 临时 HOME/PATH/data root 的 CLI 流程 | 命令接线与文件系统行为 |
 | L5 发布验证 | 四平台 archive、checksums、版本注入 | 发布链路 |
-| L6 真实网络 smoke | 受控公共 fixture repo | GitHub API/CDN 集成；当前后置 |
+| L6 真实网络 smoke | 受控公共 fixture repo | GitHub API/CDN 集成；已通过（2026-07-16） |
 
 历史 DONE 文档只记录当时声称的结果。新的“通过”结论必须写入 `docs/codex/verification-reports/`，并包含提交 SHA、命令、退出状态和关键输出。
 
@@ -33,11 +33,11 @@ govulncheck；各 target 仍可单独运行。
 - release 脚本静态检查与 snapshot 打包
 - Linux amd64 archive 解包并执行 `hukou version`
 
-## L6 真实网络 smoke（后置，opt-in）
+## L6 真实网络 smoke（opt-in，已通过 2026-07-16）
 
-L6（受控公共 fixture repo 的真实 GitHub API/CDN 集成）当前仍**后置**，不在 `make
-verify`/`make release-verify` 与 CI 的默认门禁内，也未记录为通过。占位入口是
-`make verify-network`：
+L6（受控公共 fixture repo 的真实 GitHub API/CDN 集成）**已在 2026-07-16 真实运行并
+通过**。它仍是 opt-in，故意不在 `make verify`/`make release-verify` 与 CI 的默认门禁
+内——默认门禁保持零网络。入口是 `make verify-network`：
 
 ```bash
 make verify-network
@@ -50,11 +50,33 @@ make verify-network
 - 即使带标签编译，测试也会在 `HUKOU_NETWORK_E2E=1` 未设置时 `t.Skip`；缺
   `GITHUB_TOKEN`/`GH_TOKEN` 时同样跳过。
 
-当前骨架对固定 fixture repo（默认 `rtwsvj/hukou`，可用
-`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO` 覆盖）走一次真实
-`ghrelease.Client.Latest` 元数据请求，验证 GitHub release API 集成。后续可在此
-入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，且不触碰真实
-PATH 文件；在真实运行并记录进 `docs/codex/verification-reports/` 前，L6 不得标绿。
+冒烟对固定 fixture repo（默认 `cli/cli` 的 gh CLI——发布节奏稳、资产命名可预测，可用
+`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO` 覆盖，例如 `junegunn/fzf`）走一次
+真实 `ghrelease.Client.Latest` 元数据请求，再把返回的资产名喂给真实的
+`assetpick.Pick`，断言在固定的 `linux/amd64` 目标上解析出唯一可下载归档；它**不下载
+任何资产**，只验证 API + 资产选择两段真实集成。之前默认指向 `rtwsvj/hukou` 无法运行，
+因为该私有仓尚无公开 release；改用外部稳定 fixture 后 L6 才可真实关闸。
+
+### 真跑记录（2026-07-16）
+
+- Commit: `f79951e953832ca99fcd09095c7898b2348f7dab`（worktree `p3-public-20260716`）
+- 平台 / 工具链: macOS 27.0 arm64 / Go 1.26.5
+- 命令: `HUKOU_NETWORK_E2E=1 GH_TOKEN=$(gh auth token) go test -tags network_e2e -run Network ./cmd/ -v -count=1`
+- 退出状态: `0`（`ok github.com/rtwsvj/hukou/cmd`）
+
+关键输出：
+
+```
+--- PASS: TestNetworkE2E_LatestRelease
+    latest cli/cli release: tag=v2.96.0 assets=22
+    assetpick.Pick(linux/amd64) -> gh_2.96.0_linux_amd64.tar.gz (tiebreak note "")
+    assetpick.Pick(host darwin/arm64) -> gh_2.96.0_macOS_arm64.zip (tiebreak note "")
+```
+
+完整证据记录在
+[`docs/codex/verification-reports/2026-07-16-l6-network-smoke.md`](codex/verification-reports/2026-07-16-l6-network-smoke.md)。
+后续仍可在此入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，且不
+触碰真实 PATH 文件；该扩展是增量，不改变 L6 当前已绿的元数据 + 资产选择契约。
 
 ## CI
 
