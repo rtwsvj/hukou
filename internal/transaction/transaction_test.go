@@ -805,12 +805,12 @@ func TestInspectRejectsInvalidQuarantineContainers(t *testing.T) {
 	}
 
 	invalid := []string{
-		"quarantined-" + strings.Repeat("b", 15),                // too short
-		"quarantined-" + strings.Repeat("c", 17),                // too long
-		"quarantined-" + strings.Repeat("d", 32),                // wrong length
-		"quarantined-" + strings.Repeat("E", 16),                // uppercase hex
-		"quarantined-" + strings.Repeat("f", 16) + "-extra",     // extra suffix
-		"quarantined-" + strings.Repeat("g", 16),                // non-hex
+		"quarantined-" + strings.Repeat("b", 15),            // too short
+		"quarantined-" + strings.Repeat("c", 17),            // too long
+		"quarantined-" + strings.Repeat("d", 32),            // wrong length
+		"quarantined-" + strings.Repeat("E", 16),            // uppercase hex
+		"quarantined-" + strings.Repeat("f", 16) + "-extra", // extra suffix
+		"quarantined-" + strings.Repeat("g", 16),            // non-hex
 	}
 	for _, name := range invalid {
 		if err := os.Mkdir(filepath.Join(txRoot, name), 0o700); err != nil {
