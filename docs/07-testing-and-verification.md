@@ -67,8 +67,9 @@ GH_TOKEN=$(gh auth token) make verify-network
 不在 L6 当前声明范围内，仍由隔离 `httptest` 单测覆盖。之前默认指向 `rtwsvj/hukou`
 无法运行，因为该私有仓尚无公开 release；改用外部稳定 fixture 后 L6 才可真实关闸。
 
-真跑证据（含 subject commit SHA、平台/工具链、命令、退出状态与关键输出）绑定固定
-提交记录在 [`docs/audit/2026-07-16-l6-network-smoke.md`](audit/2026-07-16-l6-network-smoke.md)。
+真跑证据绑定 subject 提交 `a668ef49d2d7be41c990664ada130df31cb7c92f`（含平台/
+工具链、命令、退出状态与关键输出），记录在
+[`docs/audit/2026-07-16-l6-network-smoke.md`](audit/2026-07-16-l6-network-smoke.md)。
 后续仍可在此入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，
 且不触碰真实 PATH 文件；该扩展是增量，不改变 L6 当前已绿的声明范围。
 
