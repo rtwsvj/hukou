@@ -170,9 +170,10 @@ func QuarantinedPrefix() string { return quarantinedPrefix }
 // IsValidQuarantineContainer reports whether name under txRoot is a trusted
 // quarantined container. The name must be exactly "quarantined-" followed by
 // 16 lowercase hex digits; the path must be a real directory (not a symlink);
-// and its contents must be exactly the expected META regular file and payload
-// entry, with no other names. Containers that fail any of these checks must be
-// treated as Unknown so they are fail-closed rather than silently purged.
+// and its contents must be exactly the expected META regular file and a
+// non-directory payload entry, with no other names. Containers that fail any
+// of these checks are treated as Unknown so they are fail-closed rather than
+// silently purged.
 func IsValidQuarantineContainer(txRoot, name string) bool {
 	if txRoot == "" || name == "" {
 		return false
@@ -212,6 +213,10 @@ func IsValidQuarantineContainer(txRoot, name string) bool {
 			}
 			hasMeta = true
 		case quarantinePayloadName:
+			payloadInfo, err := os.Lstat(filepath.Join(path, entry.Name()))
+			if err != nil || payloadInfo.IsDir() {
+				return false
+			}
 			hasPayload = true
 		default:
 			return false

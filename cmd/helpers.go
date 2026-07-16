@@ -60,7 +60,7 @@ func reportRecoverSummary(stderr io.Writer, summary statejournal.RecoverSummary)
 		return
 	}
 	for _, record := range summary.Quarantined {
-		fmt.Fprintf(stderr, "warning: quarantined unknown transaction entry %q as transactions/%s; inspect it with `hukou doctor`, then remove it via `hukou repair plan --action purge-quarantine`\n", record.Original, record.Quarantined)
+		fmt.Fprintf(stderr, "warning: quarantined unknown transaction entry %q as transactions/%s; inspect it with `hukou doctor`, then remove it manually when you are satisfied it is no longer needed\n", record.Original, record.Quarantined)
 	}
 }
 

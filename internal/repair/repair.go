@@ -14,7 +14,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -39,31 +38,11 @@ type Action string
 const (
 	ActionRecoverTransaction    Action = "recover-transaction"
 	ActionRestoreManifestBackup Action = "restore-manifest-backup"
-	ActionPurgeQuarantine       Action = "purge-quarantine"
-	ActionCleanLiveTemps        Action = "clean-live-temps"
 )
-
-// liveTransactionTempPrefix is the shared prefix of the temporary names that
-// the transaction journal stages next to a live path before an atomic rename.
-// It covers both the regular-file (".hukou-txn-*") and symlink
-// (".hukou-txn-link-*") staging names.
-const liveTransactionTempPrefix = ".hukou-txn-"
-
-// liveTempMinAge is the minimum age an orphaned live transaction temporary must
-// have before clean-live-temps will plan its removal. Age is an auxiliary
-// guard, not the safety argument: the action additionally requires that no
-// building or pending journal exists (no active transaction writer), and every
-// planned deletion is re-verified against its full identity observation before
-// removal.
-const liveTempMinAge = time.Hour
-
-// liveTempSHA256PrefixLen is the number of leading SHA-256 hex characters bound
-// into a clean-live-temps target identity.
-const liveTempSHA256PrefixLen = 16
 
 func isSupportedAction(action Action) bool {
 	switch action {
-	case ActionRecoverTransaction, ActionRestoreManifestBackup, ActionPurgeQuarantine, ActionCleanLiveTemps:
+	case ActionRecoverTransaction, ActionRestoreManifestBackup:
 		return true
 	default:
 		return false
@@ -84,52 +63,26 @@ type Precondition struct {
 }
 
 // Plan is a portable JSON description of one locally authorized repair.
-// DataRootIdentity is an opaque digest; no absolute path is embedded, except
-// that clean-live-temps targets necessarily name the exact temporary paths the
-// plan is authorized to delete.
+// DataRootIdentity is an opaque digest; no absolute path is embedded.
 type Plan struct {
-	SchemaVersion    int              `json:"schema_version"`
-	Action           Action           `json:"action"`
-	DataRootIdentity string           `json:"data_root_identity"`
-	Preconditions    []Precondition   `json:"preconditions"`
-	StateFingerprint string           `json:"state_fingerprint"`
-	GeneratedAt      string           `json:"generated_at"`
-	Targets          []LiveTempTarget `json:"targets,omitempty"`
-}
-
-// LiveTempTarget pins one planned live-temporary deletion to a strong identity
-// observation captured at plan time: path, kind, permission bits, size,
-// modification time, device/inode when the platform exposes them, and a
-// SHA-256 prefix for regular files or the link target for symlinks. Apply
-// re-verifies every recorded field and skips the item on any mismatch rather
-// than deleting a resource the plan did not describe.
-type LiveTempTarget struct {
-	Path         string `json:"path"`
-	Kind         string `json:"kind"`
-	Mode         uint32 `json:"mode"`
-	Size         int64  `json:"size,omitempty"`
-	ModTime      string `json:"mod_time"`
-	Dev          uint64 `json:"dev,omitempty"`
-	Inode        uint64 `json:"inode,omitempty"`
-	HasFileID    bool   `json:"has_file_id,omitempty"`
-	SHA256Prefix string `json:"sha256_prefix,omitempty"`
-	LinkTarget   string `json:"link_target,omitempty"`
+	SchemaVersion    int            `json:"schema_version"`
+	Action           Action         `json:"action"`
+	DataRootIdentity string         `json:"data_root_identity"`
+	Preconditions    []Precondition `json:"preconditions"`
+	StateFingerprint string         `json:"state_fingerprint"`
+	GeneratedAt      string         `json:"generated_at"`
 }
 
 // Result reports what an applied plan actually changed so the caller can
 // surface it instead of discarding recovery evidence silently.
 type Result struct {
-	Quarantined      []statejournal.QuarantineRecord
-	PurgedQuarantine []string
-	RemovedLiveTemps []string
-	SkippedLiveTemps []string
+	Quarantined []statejournal.QuarantineRecord
 }
 
 type evaluation struct {
 	fingerprint   string
 	preconditions []Precondition
 	backup        []byte
-	targets       []LiveTempTarget
 }
 
 // BuildPlan observes dataRoot without creating, locking, syncing, or changing
@@ -155,7 +108,6 @@ func BuildPlan(dataRoot string, action Action, now time.Time) (Plan, error) {
 		Preconditions:    eval.preconditions,
 		StateFingerprint: eval.fingerprint,
 		GeneratedAt:      now.UTC().Format(time.RFC3339Nano),
-		Targets:          eval.targets,
 	}, nil
 }
 
@@ -250,31 +202,11 @@ func Apply(dataRoot string, plan Plan) (result Result, retErr error) {
 		return result, fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
 	}
 
-	if plan.Action == ActionCleanLiveTemps {
-		// The deletion set was fixed at plan time and every target carries its
-		// own identity observation, so state drift degrades to per-item skips
-		// instead of a whole-plan failure. The fingerprint is recomputed from the
-		// plan's own targets as a tamper-evidence hint; it is not an authorization
-		// check, because each target is re-proved against current manifest and
-		// directory reality immediately before removal.
-		expected, err := cleanLiveTempsFingerprint(plan.Targets, planTime)
-		if err != nil {
-			return result, err
-		}
-		if expected != plan.StateFingerprint {
-			return result, fmt.Errorf("%w: fingerprint does not match plan targets", ErrInvalidPlan)
-		}
-		if !reflect.DeepEqual(plan.Preconditions, cleanLiveTempsPreconditions()) {
-			return result, fmt.Errorf("%w: preconditions mismatch", ErrInvalidPlan)
-		}
-		return result, applyCleanLiveTemps(root, plan, planTime, &result)
-	}
-
 	current, err := evaluate(root, plan.Action, planTime)
 	if err != nil {
 		return result, fmt.Errorf("%w: %v", ErrStateChanged, err)
 	}
-	if current.fingerprint != plan.StateFingerprint || !reflect.DeepEqual(current.preconditions, plan.Preconditions) {
+	if current.fingerprint != plan.StateFingerprint || !slicesEqual(current.preconditions, plan.Preconditions) {
 		return result, fmt.Errorf("%w: fingerprint or preconditions mismatch", ErrStateChanged)
 	}
 
@@ -285,10 +217,6 @@ func Apply(dataRoot string, plan Plan) (result Result, retErr error) {
 		return result, recoverErr
 	case ActionRestoreManifestBackup:
 		return result, durablefs.AtomicWriteFile(filepath.Join(root, "manifest.json"), current.backup, 0o600)
-	case ActionPurgeQuarantine:
-		removed, purgeErr := statejournal.PurgeQuarantined(root)
-		result.PurgedQuarantine = removed
-		return result, purgeErr
 	default:
 		return result, fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
 	}
@@ -300,10 +228,6 @@ func evaluate(root string, action Action, now time.Time) (evaluation, error) {
 		return evaluateRecoverTransaction(root)
 	case ActionRestoreManifestBackup:
 		return evaluateRestoreManifestBackup(root)
-	case ActionPurgeQuarantine:
-		return evaluatePurgeQuarantine(root)
-	case ActionCleanLiveTemps:
-		return evaluateCleanLiveTemps(root, now)
 	default:
 		return evaluation{}, fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, action)
 	}
@@ -505,502 +429,6 @@ func evaluateRestoreManifestBackup(root string) (evaluation, error) {
 		},
 		backup: append([]byte(nil), backupRaw...),
 	}, nil
-}
-
-type purgeQuarantineObservation struct {
-	Action Action            `json:"action"`
-	Nodes  []nodeObservation `json:"nodes"`
-}
-
-func evaluatePurgeQuarantine(root string) (evaluation, error) {
-	status, err := statejournal.Inspect(root)
-	if err != nil {
-		return evaluation{}, fmt.Errorf("%w: inspect transaction state: %v", ErrNotRepairable, err)
-	}
-	if len(status.Quarantined) == 0 {
-		return evaluation{}, fmt.Errorf("%w: no quarantined transaction entries exist", ErrNotRepairable)
-	}
-	txRoot := filepath.Join(root, "transactions")
-	nodes := make([]nodeObservation, 0, len(status.Quarantined))
-	for _, name := range status.Quarantined {
-		path := filepath.Join(txRoot, name)
-		observed, err := observeNode(path, name)
-		if err != nil {
-			return evaluation{}, fmt.Errorf("%w: observe quarantined entry: %v", ErrNotRepairable, err)
-		}
-		nodes = append(nodes, observed)
-		if observed.Kind == "directory" {
-			subtree, err := observeTree(path)
-			if err != nil {
-				return evaluation{}, fmt.Errorf("%w: observe quarantined subtree: %v", ErrNotRepairable, err)
-			}
-			for _, child := range subtree {
-				if child.Name == "." {
-					continue
-				}
-				child.Name = filepath.Join(name, child.Name)
-				nodes = append(nodes, child)
-			}
-		}
-	}
-	fp, err := fingerprint(purgeQuarantineObservation{Action: ActionPurgeQuarantine, Nodes: nodes})
-	if err != nil {
-		return evaluation{}, err
-	}
-	return evaluation{
-		fingerprint:   fp,
-		preconditions: []Precondition{{Code: "quarantined_entries_present", Satisfied: true}},
-	}, nil
-}
-
-type cleanLiveTempsObservation struct {
-	Action  Action           `json:"action"`
-	Cutoff  string           `json:"cutoff"`
-	Targets []LiveTempTarget `json:"targets"`
-}
-
-// cleanLiveTempsFingerprint is computable from plan content alone: Apply
-// recomputes it from the plan's own targets and reference clock, so a tampered
-// or internally inconsistent plan document is rejected without touching disk.
-func cleanLiveTempsFingerprint(targets []LiveTempTarget, planTime time.Time) (string, error) {
-	return fingerprint(cleanLiveTempsObservation{
-		Action:  ActionCleanLiveTemps,
-		Cutoff:  planTime.Add(-liveTempMinAge).UTC().Format(time.RFC3339Nano),
-		Targets: targets,
-	})
-}
-
-func cleanLiveTempsPreconditions() []Precondition {
-	return []Precondition{
-		{Code: "no_active_transaction_journals", Satisfied: true},
-		{Code: "orphan_live_transaction_temps_present", Satisfied: true},
-	}
-}
-
-// fileIdentity is the physical device/inode identity of a filesystem node.
-type fileIdentity struct {
-	dev uint64
-	ino uint64
-}
-
-func (id fileIdentity) matches(dev, ino uint64) bool {
-	return id.dev == dev && id.ino == ino
-}
-
-func fileIdentityFromInfo(info os.FileInfo) (fileIdentity, bool) {
-	dev, ino, ok := fileID(info)
-	return fileIdentity{dev: dev, ino: ino}, ok
-}
-
-// liveIdentitySet captures the physical directories that contain manifest live
-// paths and the physical files that are manifest live paths themselves. On
-// platforms without stable file IDs the path string is retained as a fallback.
-type liveIdentitySet struct {
-	dirIDs    map[fileIdentity]struct{}
-	dirPaths  map[string]struct{}
-	fileIDs   map[fileIdentity]struct{}
-	filePaths map[string]struct{}
-}
-
-// collectLiveIdentities resolves every manifest entry to its parent directory
-// identity and to its own file identity. Directories are deduplicated by
-// device/inode, not by path string, so a live directory reached through a
-// symlink is not accidentally trusted.
-func collectLiveIdentities(m *manifest.Manifest) liveIdentitySet {
-	s := liveIdentitySet{
-		dirIDs:    make(map[fileIdentity]struct{}),
-		dirPaths:  make(map[string]struct{}),
-		fileIDs:   make(map[fileIdentity]struct{}),
-		filePaths: make(map[string]struct{}),
-	}
-	for _, entry := range m.Entries {
-		if entry.Path == "" || !filepath.IsAbs(entry.Path) {
-			continue
-		}
-		clean := filepath.Clean(entry.Path)
-		s.filePaths[clean] = struct{}{}
-		if info, err := os.Lstat(clean); err == nil {
-			if id, ok := fileIdentityFromInfo(info); ok {
-				s.fileIDs[id] = struct{}{}
-			}
-		}
-		parent := filepath.Dir(clean)
-		if _, seen := s.dirPaths[parent]; seen {
-			continue
-		}
-		info, err := os.Lstat(parent)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			continue
-		}
-		if id, ok := fileIdentityFromInfo(info); ok {
-			s.dirIDs[id] = struct{}{}
-		}
-		s.dirPaths[parent] = struct{}{}
-	}
-	return s
-}
-
-func (s liveIdentitySet) dirs() []string {
-	dirs := make([]string, 0, len(s.dirPaths))
-	for dir := range s.dirPaths {
-		dirs = append(dirs, dir)
-	}
-	sort.Strings(dirs)
-	return dirs
-}
-
-func (s liveIdentitySet) containsDir(info os.FileInfo, path string) bool {
-	if id, ok := fileIdentityFromInfo(info); ok {
-		_, in := s.dirIDs[id]
-		return in
-	}
-	_, in := s.dirPaths[path]
-	return in
-}
-
-func (s liveIdentitySet) isLivePath(info os.FileInfo, path string) bool {
-	if id, ok := fileIdentityFromInfo(info); ok {
-		_, in := s.fileIDs[id]
-		return in
-	}
-	_, in := s.filePaths[path]
-	return in
-}
-
-// testBeforeCleanLiveTempRemove is a deterministic race seam. Production leaves
-// it nil; package tests use it to swap a target after re-validation but before
-// the fd-anchored removal.
-var testBeforeCleanLiveTempRemove func(string)
-
-func evaluateCleanLiveTemps(root string, now time.Time) (evaluation, error) {
-	// Age alone cannot prove a temporary is orphaned: a slow copy inside a live
-	// transaction can legitimately exceed any threshold. Require that no
-	// building or pending journal exists, so there is provably no hukou writer
-	// whose staged temporaries could be selected.
-	status, err := statejournal.Inspect(root)
-	if err != nil {
-		return evaluation{}, fmt.Errorf("%w: inspect transaction state: %v", ErrNotRepairable, err)
-	}
-	if len(status.Building)+len(status.Pending) > 0 {
-		return evaluation{}, fmt.Errorf("%w: transaction journals exist (building=%d pending=%d); recover them before cleaning live temporaries", ErrNotRepairable, len(status.Building), len(status.Pending))
-	}
-	m, err := manifest.Load(filepath.Join(root, "manifest.json"))
-	if err != nil {
-		return evaluation{}, fmt.Errorf("%w: load manifest: %v", ErrNotRepairable, err)
-	}
-	live := collectLiveIdentities(m)
-
-	cutoff := now.Add(-liveTempMinAge)
-	targets := make([]LiveTempTarget, 0)
-	for _, dir := range live.dirs() {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return evaluation{}, fmt.Errorf("%w: enumerate live directory: %v", ErrNotRepairable, err)
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if !strings.HasPrefix(name, liveTransactionTempPrefix) {
-				continue
-			}
-			full := filepath.Join(dir, name)
-			info, err := os.Lstat(full)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				return evaluation{}, fmt.Errorf("%w: inspect live temporary: %v", ErrNotRepairable, err)
-			}
-			if live.isLivePath(info, full) {
-				// Registered live paths are permanently excluded, even when their
-				// basename carries the temporary prefix. The exclusion prefers the
-				// physical file identity over the path string.
-				continue
-			}
-			symlink := info.Mode()&os.ModeSymlink != 0
-			if !symlink && !info.Mode().IsRegular() {
-				continue
-			}
-			if !info.ModTime().Before(cutoff) {
-				continue
-			}
-			target := LiveTempTarget{
-				Path:    full,
-				Mode:    uint32(info.Mode().Perm()),
-				ModTime: info.ModTime().UTC().Format(time.RFC3339Nano),
-			}
-			if dev, inode, ok := fileID(info); ok {
-				target.Dev, target.Inode, target.HasFileID = dev, inode, true
-			}
-			if symlink {
-				target.Kind = "symlink"
-				linkTarget, err := os.Readlink(full)
-				if err != nil {
-					return evaluation{}, fmt.Errorf("%w: read live temporary link: %v", ErrNotRepairable, err)
-				}
-				target.LinkTarget = linkTarget
-			} else {
-				target.Kind = "regular"
-				target.Size = info.Size()
-				sha, _, err := hashStableRegular(full)
-				if err != nil {
-					return evaluation{}, fmt.Errorf("%w: hash live temporary: %v", ErrNotRepairable, err)
-				}
-				target.SHA256Prefix = sha[:liveTempSHA256PrefixLen]
-			}
-			targets = append(targets, target)
-		}
-	}
-	if len(targets) == 0 {
-		return evaluation{}, fmt.Errorf("%w: no orphaned live transaction temporaries older than %s exist", ErrNotRepairable, liveTempMinAge)
-	}
-	fp, err := cleanLiveTempsFingerprint(targets, now)
-	if err != nil {
-		return evaluation{}, err
-	}
-	return evaluation{
-		fingerprint:   fp,
-		preconditions: cleanLiveTempsPreconditions(),
-		targets:       targets,
-	}, nil
-}
-
-// applyCleanLiveTemps deletes exactly the planned targets. The plan's
-// fingerprint is retained only as a tamper-evidence hint; every target is
-// re-proved against the current manifest and directory reality under the
-// mutation lock before removal. A mismatch, a disappearance, a path that is
-// now a registered live path, or an age that no longer satisfies the cutoff
-// downgrades that item to a skip instead of a deletion.
-func applyCleanLiveTemps(root string, plan Plan, planTime time.Time, result *Result) error {
-	status, err := statejournal.Inspect(root)
-	if err != nil {
-		return fmt.Errorf("%w: inspect transaction state: %v", ErrStateChanged, err)
-	}
-	if len(status.Building)+len(status.Pending) > 0 {
-		return fmt.Errorf("%w: transaction journals appeared after planning; their staged temporaries may still be needed", ErrStateChanged)
-	}
-	m, err := manifest.Load(filepath.Join(root, "manifest.json"))
-	if err != nil {
-		return fmt.Errorf("%w: load manifest: %v", ErrStateChanged, err)
-	}
-	live := collectLiveIdentities(m)
-	cutoff := planTime.Add(-liveTempMinAge)
-	for _, target := range plan.Targets {
-		ok, err := revalidateLiveTempTarget(target, cutoff, live)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			result.SkippedLiveTemps = append(result.SkippedLiveTemps, target.Path)
-			continue
-		}
-		parent := filepath.Dir(target.Path)
-		rootFd, err := os.OpenRoot(parent)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				result.SkippedLiveTemps = append(result.SkippedLiveTemps, target.Path)
-				continue
-			}
-			return fmt.Errorf("anchor live temporary parent %s: %w", parent, err)
-		}
-		if testBeforeCleanLiveTempRemove != nil {
-			testBeforeCleanLiveTempRemove(target.Path)
-		}
-		if err := rootFd.Remove(filepath.Base(target.Path)); err != nil {
-			_ = rootFd.Close()
-			if errors.Is(err, os.ErrNotExist) {
-				result.SkippedLiveTemps = append(result.SkippedLiveTemps, target.Path)
-				continue
-			}
-			return fmt.Errorf("remove live transaction temporary %s: %w", target.Path, err)
-		}
-		if err := rootFd.Close(); err != nil {
-			return fmt.Errorf("close live temporary parent %s: %w", parent, err)
-		}
-		result.RemovedLiveTemps = append(result.RemovedLiveTemps, target.Path)
-	}
-	return nil
-}
-
-// revalidateLiveTempTarget re-proves one planned target against the current
-// manifest and directory reality. It returns true only when the target is still
-// inside a manifest live directory, is not a registered live path itself, still
-// carries the transaction temporary prefix, matches the recorded seven-field
-// identity (kind, permissions, size, mtime, dev/inode, and SHA-256 prefix or
-// symlink target), and is still older than the age cutoff.
-func revalidateLiveTempTarget(target LiveTempTarget, cutoff time.Time, live liveIdentitySet) (bool, error) {
-	path := filepath.Clean(target.Path)
-	if !strings.HasPrefix(filepath.Base(path), liveTransactionTempPrefix) {
-		return false, nil
-	}
-	parent := filepath.Dir(path)
-	parentInfo, err := os.Lstat(parent)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect live temporary parent %s: %w", parent, err)
-	}
-	if !live.containsDir(parentInfo, parent) {
-		return false, nil
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect live transaction temporary %s: %w", path, err)
-	}
-	if live.isLivePath(info, path) {
-		return false, nil
-	}
-	symlink := info.Mode()&os.ModeSymlink != 0
-	switch target.Kind {
-	case "symlink":
-		if !symlink {
-			return false, nil
-		}
-		linkTarget, err := os.Readlink(path)
-		if err != nil || linkTarget != target.LinkTarget {
-			return false, nil
-		}
-	case "regular":
-		if symlink || !info.Mode().IsRegular() || info.Size() != target.Size {
-			return false, nil
-		}
-		sha, _, err := hashStableRegular(path)
-		if err != nil || !strings.HasPrefix(sha, target.SHA256Prefix) {
-			return false, nil
-		}
-	default:
-		return false, nil
-	}
-	if uint32(info.Mode().Perm()) != target.Mode {
-		return false, nil
-	}
-	if info.ModTime().UTC().Format(time.RFC3339Nano) != target.ModTime {
-		return false, nil
-	}
-	if target.HasFileID {
-		dev, ino, ok := fileID(info)
-		if !ok || dev != target.Dev || ino != target.Inode {
-			return false, nil
-		}
-	}
-	if !info.ModTime().Before(cutoff) {
-		return false, nil
-	}
-	return true, nil
-}
-
-func existingDataRoot(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("data root is required")
-	}
-	root, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	root = filepath.Clean(root)
-	info, err := os.Stat(root)
-	if err != nil {
-		return "", fmt.Errorf("data root must already exist: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("data root is not a directory")
-	}
-	return root, nil
-}
-
-func dataRootIdentity(root string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", err
-	}
-	resolved, err = filepath.Abs(resolved)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte("hukou-repair-data-root-v1\x00" + filepath.Clean(root) + "\x00" + filepath.Clean(resolved)))
-	return hex.EncodeToString(sum[:]), nil
-}
-
-func validatePlan(plan Plan) error {
-	if plan.SchemaVersion != PlanSchemaVersion {
-		return fmt.Errorf("%w: unsupported schema_version %d", ErrInvalidPlan, plan.SchemaVersion)
-	}
-	if !isSupportedAction(plan.Action) {
-		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
-	}
-	if !validSHA256(plan.DataRootIdentity) || !validSHA256(plan.StateFingerprint) {
-		return fmt.Errorf("%w: identity and fingerprint must be SHA-256 digests", ErrInvalidPlan)
-	}
-	if _, err := time.Parse(time.RFC3339Nano, plan.GeneratedAt); err != nil {
-		return fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
-	}
-	if len(plan.Preconditions) == 0 {
-		return fmt.Errorf("%w: preconditions are required", ErrInvalidPlan)
-	}
-	seen := make(map[string]struct{}, len(plan.Preconditions))
-	for _, condition := range plan.Preconditions {
-		if condition.Code == "" || !condition.Satisfied {
-			return fmt.Errorf("%w: every precondition must be named and satisfied", ErrInvalidPlan)
-		}
-		if _, exists := seen[condition.Code]; exists {
-			return fmt.Errorf("%w: duplicate precondition %q", ErrInvalidPlan, condition.Code)
-		}
-		seen[condition.Code] = struct{}{}
-	}
-	return validatePlanTargets(plan)
-}
-
-func validatePlanTargets(plan Plan) error {
-	if plan.Action != ActionCleanLiveTemps {
-		if len(plan.Targets) != 0 {
-			return fmt.Errorf("%w: targets are only valid for %s", ErrInvalidPlan, ActionCleanLiveTemps)
-		}
-		return nil
-	}
-	if len(plan.Targets) == 0 {
-		return fmt.Errorf("%w: %s requires at least one target", ErrInvalidPlan, ActionCleanLiveTemps)
-	}
-	seenPaths := make(map[string]struct{}, len(plan.Targets))
-	for _, target := range plan.Targets {
-		if !filepath.IsAbs(target.Path) || filepath.Clean(target.Path) != target.Path {
-			return fmt.Errorf("%w: target path must be absolute and clean: %q", ErrInvalidPlan, target.Path)
-		}
-		if !strings.HasPrefix(filepath.Base(target.Path), liveTransactionTempPrefix) {
-			return fmt.Errorf("%w: target %q lacks the transaction temporary prefix", ErrInvalidPlan, target.Path)
-		}
-		if _, exists := seenPaths[target.Path]; exists {
-			return fmt.Errorf("%w: duplicate target path %q", ErrInvalidPlan, target.Path)
-		}
-		seenPaths[target.Path] = struct{}{}
-		if _, err := time.Parse(time.RFC3339Nano, target.ModTime); err != nil {
-			return fmt.Errorf("%w: target mod_time: %v", ErrInvalidPlan, err)
-		}
-		if target.Mode&^0o777 != 0 {
-			return fmt.Errorf("%w: target mode contains non-permission bits", ErrInvalidPlan)
-		}
-		switch target.Kind {
-		case "regular":
-			if len(target.SHA256Prefix) != liveTempSHA256PrefixLen || !validHex(target.SHA256Prefix) {
-				return fmt.Errorf("%w: regular target requires a %d-character SHA-256 prefix", ErrInvalidPlan, liveTempSHA256PrefixLen)
-			}
-			if target.LinkTarget != "" {
-				return fmt.Errorf("%w: regular target must not carry a link target", ErrInvalidPlan)
-			}
-		case "symlink":
-			if target.LinkTarget == "" || target.SHA256Prefix != "" || target.Size != 0 {
-				return fmt.Errorf("%w: symlink target requires a link target and no content metadata", ErrInvalidPlan)
-			}
-		default:
-			return fmt.Errorf("%w: unsupported target kind %q", ErrInvalidPlan, target.Kind)
-		}
-	}
-	return nil
 }
 
 func encodePlan(plan Plan) ([]byte, error) {
@@ -1390,4 +818,77 @@ func validSHA256(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func existingDataRoot(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("data root is required")
+	}
+	root, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	root = filepath.Clean(root)
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("data root must already exist: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("data root is not a directory")
+	}
+	return root, nil
+}
+
+func dataRootIdentity(root string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte("hukou-repair-data-root-v1\x00" + filepath.Clean(root) + "\x00" + filepath.Clean(resolved)))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func validatePlan(plan Plan) error {
+	if plan.SchemaVersion != PlanSchemaVersion {
+		return fmt.Errorf("%w: unsupported schema_version %d", ErrInvalidPlan, plan.SchemaVersion)
+	}
+	if !isSupportedAction(plan.Action) {
+		return fmt.Errorf("%w: unsupported action %q", ErrInvalidPlan, plan.Action)
+	}
+	if !validSHA256(plan.DataRootIdentity) || !validSHA256(plan.StateFingerprint) {
+		return fmt.Errorf("%w: identity and fingerprint must be SHA-256 digests", ErrInvalidPlan)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, plan.GeneratedAt); err != nil {
+		return fmt.Errorf("%w: generated_at: %v", ErrInvalidPlan, err)
+	}
+	if len(plan.Preconditions) == 0 {
+		return fmt.Errorf("%w: preconditions are required", ErrInvalidPlan)
+	}
+	seen := make(map[string]struct{}, len(plan.Preconditions))
+	for _, condition := range plan.Preconditions {
+		if condition.Code == "" || !condition.Satisfied {
+			return fmt.Errorf("%w: every precondition must be named and satisfied", ErrInvalidPlan)
+		}
+		if _, exists := seen[condition.Code]; exists {
+			return fmt.Errorf("%w: duplicate precondition %q", ErrInvalidPlan, condition.Code)
+		}
+		seen[condition.Code] = struct{}{}
+	}
+	return nil
+}
+
+func slicesEqual(a, b []Precondition) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -207,39 +207,6 @@ func quarantineEntry(txRoot, name string) (QuarantineRecord, error) {
 	return QuarantineRecord{Original: name, Quarantined: containerName}, nil
 }
 
-// PurgeQuarantined removes every quarantined-* entry under the data root's
-// transaction directory and returns the names it removed. Callers must hold the
-// mutation lock. It never touches building/pending/completed journals and is
-// idempotent when no quarantined entries remain.
-func PurgeQuarantined(dataRoot string) ([]string, error) {
-	root, err := filepath.Abs(dataRoot)
-	if err != nil {
-		return nil, err
-	}
-	txRoot := filepath.Join(root, transactionsDirName)
-	status, err := Inspect(root)
-	if err != nil {
-		return nil, err
-	}
-	removed := make([]string, 0, len(status.Quarantined))
-	for _, name := range status.Quarantined {
-		// Inspect already validates containers, but purge is destructive so the
-		// same layout check is repeated defensively before any removal.
-		if !IsValidQuarantineContainer(txRoot, name) {
-			continue
-		}
-		dir := filepath.Join(txRoot, name)
-		if filepath.Dir(dir) != txRoot {
-			return removed, fmt.Errorf("quarantine path escapes transaction root: %q", name)
-		}
-		if err := durablefs.RemoveAll(dir); err != nil {
-			return removed, fmt.Errorf("remove quarantined entry %s: %w", name, err)
-		}
-		removed = append(removed, name)
-	}
-	return removed, nil
-}
-
 func recoverLoaded(txRoot, dir string, intent Intent, committed bool) error {
 	targetAfter := committed
 	// Classify every participant before touching any of them. This is the
