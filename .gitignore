@@ -20,3 +20,6 @@ xcuserdata/
 .vscode/
 .idea/
 bin/
+
+# Local working notes (untracked)
+CARD-P2-DONE.md
