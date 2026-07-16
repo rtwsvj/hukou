@@ -78,11 +78,15 @@ func doRepairApply(stdout io.Writer, root, planPath string) error {
 		return err
 	}
 	result, err := repair.Apply(root, plan)
-	if err != nil {
-		return err
-	}
+	// Quarantine records are observable state changes that may have happened
+	// even when Apply ultimately fails (e.g. unknown directories fail closed
+	// after non-directory entries were already isolated), so report them on
+	// both paths before surfacing the error.
 	for _, record := range result.Quarantined {
 		fmt.Fprintf(stdout, "Quarantined unknown transaction entry %q as transactions/%s\n", record.Original, record.Quarantined)
+	}
+	if err != nil {
+		return err
 	}
 	_, err = fmt.Fprintf(stdout, "Repair completed: %s\n", plan.Action)
 	return err

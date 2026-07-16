@@ -135,7 +135,12 @@ func runSecurityGate(binPath string) (*provenance.Attribution, error) {
 	}
 	env := provenance.DefaultEnv()
 	runner := provenance.DefaultRunner()
-	if warnings := runner.Load(env); len(warnings) > 0 {
+	// The gate keys ONLY on warnings (detector load failures = degraded
+	// provenance). Notes are non-fatal advisories from detectors that loaded
+	// fine (e.g. verified stale journal residue); consuming them here would
+	// let any detector's routine advisory block adopt.
+	warnings, _ := runner.Load(env)
+	if len(warnings) > 0 {
 		return nil, fmt.Errorf("load provenance security gate: %s", strings.Join(warnings, "; "))
 	}
 	return runner.Match(b), nil

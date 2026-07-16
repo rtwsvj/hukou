@@ -33,6 +33,29 @@ govulncheck；各 target 仍可单独运行。
 - release 脚本静态检查与 snapshot 打包
 - Linux amd64 archive 解包并执行 `hukou version`
 
+## L6 真实网络 smoke（后置，opt-in）
+
+L6（受控公共 fixture repo 的真实 GitHub API/CDN 集成）当前仍**后置**，不在 `make
+verify`/`make release-verify` 与 CI 的默认门禁内，也未记录为通过。占位入口是
+`make verify-network`：
+
+```bash
+make verify-network
+```
+
+该目标运行 `cmd/network_e2e_test.go`，双重关闸确保默认零网络：
+
+- `//go:build network_e2e` 构建标签把测试文件排除在默认编译之外，`go test ./...`
+  与 `make verify` 都不会编译或运行它。
+- 即使带标签编译，测试也会在 `HUKOU_NETWORK_E2E=1` 未设置时 `t.Skip`；缺
+  `GITHUB_TOKEN`/`GH_TOKEN` 时同样跳过。
+
+当前骨架对固定 fixture repo（默认 `rtwsvj/hukou`，可用
+`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO` 覆盖）走一次真实
+`ghrelease.Client.Latest` 元数据请求，验证 GitHub release API 集成。后续可在此
+入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，且不触碰真实
+PATH 文件；在真实运行并记录进 `docs/codex/verification-reports/` 前，L6 不得标绿。
+
 ## CI
 
 `.github/workflows/ci.yml`：
@@ -91,6 +114,10 @@ V0.3 还必须覆盖：
   重复目标 member、已有目标无 force；有 Perl时最终提交覆盖 `link(2)` atomic
   no-replace 与 force `rename(2)`，Linux 无 Perl时覆盖 `ln -T`/`mv -T` fallback，
   并测试 directory、symlink-to-directory 与预检后竞争；dry-run 零写。
+- installer attestation：严格校验实参的 gh mock（subject 必须是已下载的 archive，
+  `--repo` 与锚定的 `--cert-identity-regex` 值钉死）覆盖 pass/fail/missing 三态与
+  `HUKOU_REQUIRE_ATTESTATION` 矩阵；非法取值 fail loud；tar spy 断言验证失败
+  发生在任何解压/安装之前（无 tar 调用、无 prefix、无临时安装文件）。
 - release archive 包含 LICENSE、THIRD_PARTY_NOTICES、双语 README、LICENSES，SBOM 与 checksums 对应固定 commit。
 
 ## V0.3 固定提交证据（2026-07-15）

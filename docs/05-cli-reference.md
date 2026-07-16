@@ -19,7 +19,9 @@ hukou scan [--json] [--unknown-only] [--source <name>] [--dir <dir>...]
 - `--source`：按来源过滤，不区分大小写。
 - `--dir`：追加扫描目录，可重复。
 
-副作用：无；不联网、不写用户目录。
+表格输出在汇总行后先逐行渲染 warning（前缀 `warning:`，探测器降级），再逐行渲染 note（前缀 `note:`，非致命提示）。hukou 事务残留的读路径语义：仅**已验证的 `completed-*`**（名字精确为 `completed-<32位小写hex>`、真实目录非软链、COMMIT 标记与 ID 一致）不降级，只产出 note `stale journal residue; run a mutating command or repair to clean`；`pending-*`、`building-*`（可能是另一进程活跃 Begin 的窗口，单点检查覆盖不了读取周期）、unknown 及畸形名字一律使 hukou 探测器降级——摘出链、已收编二进制回落 `system`/`unknown` 并写 warning。`--json` 中 `warnings` 与 `notes` 为独立字段。
+
+副作用：无；不联网、不写用户目录。读路径事务检查为 `transaction.CheckReadable`（仅放行已验证 completed 残留）；写路径（`Begin`）仍对全部残留失败关闭。adopt 的安全闸门只消费 warnings，不消费 notes——普通探测器提示不会阻断 adopt。
 
 ## `hukou explain`（V0.3 分支，未发布）
 
@@ -104,6 +106,7 @@ hukou list
 副作用：无。
 
 pending transaction 或无效 store 拓扑不会被吞成正常版本数；list 会失败关闭并提示先诊断/恢复。
+脚本消费者须注意：事务状态未清（存在未决 transaction）或 store 拓扑异常时 `list` 返回非零退出码而非打印部分清单，因此不能把 `list` 的成功退出之外的情况当作空清单处理。
 
 ## `hukou doctor`
 

@@ -807,11 +807,6 @@ func ensureJSONEOF(dec *json.Decoder) error {
 	return nil
 }
 
-func validHex(value string) bool {
-	_, err := hex.DecodeString(value)
-	return err == nil
-}
-
 func validSHA256(value string) bool {
 	if len(value) != 64 {
 		return false

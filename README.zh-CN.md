@@ -68,7 +68,12 @@ hukou **不会**替代 Homebrew、MacPorts、npm、Cargo、pipx、mise 或其他
 该分支还包含强制 checksum、最终目录项采用原子 no-replace/replace 且拒绝重复目标
 archive member 的安装器，许可证与社区文件、SBOM 打包、仅公开仓库启用的
 attest/CodeQL，以及 Topgrade custom command
-集成说明。当前证据和待办见
+集成说明。检测到已认证的 `gh` CLI 时，安装器还会验证所下载 archive 的 GitHub
+build-provenance attestation（签名者身份用锚定的 `--cert-identity-regex` 钉在
+本仓库 release workflow 的 release tag 运行上）；否则打印警告并回退到仅传输信
+任（HTTPS + 同源 checksums.txt）。设置 `HUKOU_REQUIRE_ATTESTATION=1`（或
+`true`/`yes`）可把该验证改为强制；留空或 `0`/`false`/`no` 表示不强制（合法默
+认）；其余任何取值一律报错拒绝。当前证据和待办见
 [私有 RC 执行记录](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)。
 
 ## 安全模型

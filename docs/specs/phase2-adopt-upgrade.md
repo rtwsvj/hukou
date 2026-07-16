@@ -13,7 +13,7 @@ report 为准。
 ## 命令
 
 ```
-hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force]
+hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force] [--dry-run] [--json]
 hukou upgrade [name ...] [--all] [--dry-run] [--asset <substr>]
 hukou rollback <name> [--to <tag|original>]
 hukou list
@@ -100,3 +100,4 @@ manifest 条目:name, path(PATH 中位置), repo(owner/repo), tag, sha256(active
 ## 已知限制(实现期追加)
 
 - **tar.xz 暂不支持**:Go 标准库无 xz 解码器,与"零第三方依赖"约束冲突;主流 release 均有 tar.gz/zip 资产。遇到 xz-only 的上游时再评估引入依赖。
+- **setuid/setgid/sticky 位不经事务保留**:事务的 before/after 状态只记录常规文件字节与 rwx 权限位(`internal/transaction` 的 `validateState` 用 `mode&^0o777` 拒绝任何超出 rwx 的模式),激活/回滚复制不还原 setuid/setgid/sticky。adopt 会拒绝带这些特殊权限位的源文件而非静默降级,所以受管二进制不应依赖它们。

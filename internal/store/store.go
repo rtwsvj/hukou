@@ -10,9 +10,17 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
 )
+
+// sha256FileCalls counts whole-file SHA-256 computations performed by
+// SHA256File. It is a diagnostics/benchmark accelerator only: no production
+// decision reads it, and the single atomic increment is negligible next to
+// reading and hashing an entire file. Benchmarks use it to measure how many
+// redundant full-file passes a refactor removes.
+var sha256FileCalls atomic.Uint64
 
 // Store manages versioned binary artifacts under Root.
 //
@@ -214,24 +222,35 @@ func (s *Store) ensureUnderRoot(p string) (string, error) {
 // The write is staged through <Root>/.tmp and committed with a no-replace hard
 // link so an existing version can never be overwritten.
 func (s *Store) Put(name, tag, srcPath string) error {
+	_, err := s.PutWithDigest(name, tag, srcPath)
+	return err
+}
+
+// PutWithDigest behaves exactly like Put and additionally returns the content
+// SHA-256 of the stored artifact. The digest is a by-product of the copy the
+// store already performs (and cross-checks against a fresh read of the source),
+// so callers that need to activate or record the just-stored version can reuse
+// it instead of hashing the immutable store file a second time. The digest is
+// only returned on success; any error yields "".
+func (s *Store) PutWithDigest(name, tag, srcPath string) (string, error) {
 	fs := s.durability()
 	if err := validateNameTag("name", name); err != nil {
-		return err
+		return "", err
 	}
 	if err := validateNameTag("tag", tag); err != nil {
-		return err
+		return "", err
 	}
 
 	srcInfo, err := os.Stat(srcPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !srcInfo.Mode().IsRegular() {
-		return fmt.Errorf("source is not a regular file: %s", srcPath)
+		return "", fmt.Errorf("source is not a regular file: %s", srcPath)
 	}
 
 	if _, err := s.storeDir(true, name); err != nil {
-		return err
+		return "", err
 	}
 	// A prior process may have durably created the final version directory and
 	// then exited before linking the completed file into it. An empty, validated
@@ -241,45 +260,48 @@ func (s *Store) Put(name, tag, srcPath string) error {
 	if err == nil {
 		entries, err := os.ReadDir(dstDir)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if len(entries) == 0 {
 			// Continue below and install the staged inode with a no-replace link.
 		} else if len(entries) != 1 || entries[0].Name() != filepath.Base(srcPath) || !entries[0].Type().IsRegular() {
-			return fmt.Errorf("version %s/%s already exists with unexpected contents", name, tag)
+			return "", fmt.Errorf("version %s/%s already exists with unexpected contents", name, tag)
 		} else {
 			dstPath := filepath.Join(dstDir, filepath.Base(srcPath))
 			srcSHA, err := SHA256File(srcPath)
 			if err != nil {
-				return err
+				return "", err
 			}
 			dstSHA, err := SHA256File(dstPath)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if srcSHA != dstSHA {
-				return fmt.Errorf("immutable version %s/%s already exists with different content", name, tag)
+				return "", fmt.Errorf("immutable version %s/%s already exists with different content", name, tag)
 			}
-			return syncExistingVersion(s.durability(), dstPath, dstDir)
+			if err := syncExistingVersion(s.durability(), dstPath, dstDir); err != nil {
+				return "", err
+			}
+			return dstSHA, nil
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return "", err
 	}
 
 	tmpDir, err := s.storeDir(true, ".tmp")
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	src, err := os.Open(srcPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer src.Close()
 
 	tmpFile, err := os.CreateTemp(tmpDir, fmt.Sprintf("put-%s-%s-*", name, tag))
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpPath := tmpFile.Name()
 	cleanup := true
@@ -292,42 +314,43 @@ func (s *Store) Put(name, tag, srcPath string) error {
 	copiedHash := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(tmpFile, copiedHash), src); err != nil {
 		_ = tmpFile.Close()
-		return err
+		return "", err
 	}
 	sourceSHA, err := SHA256File(srcPath)
 	if err != nil {
 		_ = tmpFile.Close()
-		return err
+		return "", err
 	}
-	if copiedSHA := hex.EncodeToString(copiedHash.Sum(nil)); copiedSHA != sourceSHA {
+	copiedSHA := hex.EncodeToString(copiedHash.Sum(nil))
+	if copiedSHA != sourceSHA {
 		_ = tmpFile.Close()
-		return fmt.Errorf("source changed while storing %s/%s", name, tag)
+		return "", fmt.Errorf("source changed while storing %s/%s", name, tag)
 	}
 	sourceInfoAfter, err := os.Stat(srcPath)
 	if err != nil {
 		_ = tmpFile.Close()
-		return err
+		return "", err
 	}
 	if sourceInfoAfter.Mode().Perm() != srcInfo.Mode().Perm() {
 		_ = tmpFile.Close()
-		return fmt.Errorf("source mode changed while storing %s/%s", name, tag)
+		return "", fmt.Errorf("source mode changed while storing %s/%s", name, tag)
 	}
 	if err := tmpFile.Chmod(srcInfo.Mode().Perm()); err != nil {
 		_ = tmpFile.Close()
-		return err
+		return "", err
 	}
 	if err := fs.SyncFile(tmpFile); err != nil {
 		_ = tmpFile.Close()
-		return err
+		return "", err
 	}
 	if err := tmpFile.Close(); err != nil {
-		return err
+		return "", err
 	}
 
 	if dstDir == "" {
 		dstDir, err = s.storeDir(true, name, tag)
 		if err != nil {
-			return err
+			return "", err
 		}
 	}
 	dstPath := filepath.Join(dstDir, filepath.Base(srcPath))
@@ -335,12 +358,12 @@ func (s *Store) Put(name, tag, srcPath string) error {
 	// Link fails with EEXIST and therefore cannot overwrite a version that
 	// appeared between the initial existence check and this commit point.
 	if err := fs.Link(tmpPath, dstPath); err != nil {
-		return fmt.Errorf("commit immutable version %s/%s: %w", name, tag, err)
+		return "", fmt.Errorf("commit immutable version %s/%s: %w", name, tag, err)
 	}
 	// Keep cleanup=true: the deferred remove unlinks the staging name while the
 	// final hard link remains. A failed cleanup is harmless to the committed
 	// immutable version and will be retried by GC.
-	return nil
+	return copiedSHA, nil
 }
 
 // syncExistingVersion repairs the indeterminate edge where a previous hard
@@ -998,6 +1021,7 @@ func (s *Store) GC() error {
 
 // SHA256File returns the hex-encoded SHA-256 digest of the file at path.
 func SHA256File(path string) (string, error) {
+	sha256FileCalls.Add(1)
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
