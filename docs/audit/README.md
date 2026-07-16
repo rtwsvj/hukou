@@ -35,8 +35,6 @@ The branch is only a transport. Pin every review result to a full commit SHA.
   recorded hashes, availability, native-run/build distinctions, and toolchain caveats.
 - [`external-finding-template.md`](external-finding-template.md): copyable
   finding and final-report structure.
-- [`../codex/verification-reports/2026-07-14-v0.3-private-rc.md`](../codex/verification-reports/2026-07-14-v0.3-private-rc.md):
-  original execution evidence; useful context, not independent proof.
 - [`../specs/v0.3-private-rc.md`](../specs/v0.3-private-rc.md): intended V0.3 contract.
 - [`../03-architecture.md`](../03-architecture.md) and
   [`../04-data-and-api.md`](../04-data-and-api.md): implementation and state boundaries.

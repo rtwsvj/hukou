@@ -14,7 +14,7 @@ required=(
   LICENSES/golang-x-mod-PATENTS.txt
   LICENSES/pflag-BSD-3-Clause.txt
   LICENSES/stew-MIT.txt
-  docs/pinhaoma-sources.md
+  docs/VENDORED.md
 )
 
 for path in "${required[@]}"; do

@@ -93,8 +93,9 @@ transport trust (HTTPS plus the release's checksums.txt). Set
 `HUKOU_REQUIRE_ATTESTATION=1` (or `true`/`yes`) to make that verification
 mandatory instead of best-effort; leaving it empty or setting `0`/`false`/`no`
 keeps the fallback allowed, and any other value is rejected. The
-[private RC execution record](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)
-tracks what is verified and what remains pending.
+<!-- TODO(P1 handoff): README rewrite owner — internal docs/codex/ records were removed for the public tree; re-point or reword this link during the rewrite. -->
+[external audit entry point](AUDIT.md) tracks what is verified and what
+remains pending.
 
 ## Safety model
 
@@ -136,7 +137,9 @@ v0.2.0 publishes archives for:
 
 Windows is not currently supported. A cross-compiled artifact alone is not
 treated as platform support; the project records actual verification evidence
-under [docs/codex/verification-reports](docs/codex/verification-reports/).
+under [docs/audit/](docs/audit/).
+<!-- TODO(P1 handoff): README rewrite owner — evidence formerly under docs/codex/verification-reports was removed for the public tree; confirm the final evidence location during the rewrite. -->
+
 
 ## Install v0.2
 

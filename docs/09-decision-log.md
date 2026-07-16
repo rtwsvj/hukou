@@ -1,30 +1,61 @@
-# 决策日志
+# Decision log
 
-重要、长期或难以回滚的决策写入 `docs/adr/`；本文件只做索引。
+Important, long-lived, or hard-to-reverse decisions are written to
+`docs/adr/`; this file is only an index.
 
-| ADR | 状态 | 决策 |
+| ADR | Status | Decision |
 |---|---|---|
-| [`ADR-0001`](adr/ADR-0001-h1-safety-and-release-contract.md) | Accepted | H1 安全边界、数据审计字段和发布契约 |
-| [`ADR-0002`](adr/ADR-0002-regular-file-activation.md) | Accepted | 活跃路径使用 regular-file copy + rename，不交换 symlink inode |
-| [`ADR-0003`](adr/ADR-0003-crash-recovery-and-doctor.md) | Accepted | H2 使用持久化事务决策恢复；doctor 默认只读且不猜测修复 |
-| [`ADR-0004`](adr/ADR-0004-trust-first-and-manager-boundaries.md) | Accepted / implemented in private RC | trust-first CLI；`upgrade --all` 只管 hukou；Topgrade 仅外层编排 |
-| [`ADR-0005`](adr/ADR-0005-manifest-v2-history-policy-and-repair.md) | Accepted / implemented in private RC | schema v2 lineage/policy/retention、窄版 repair 与脱敏 support |
-| [`ADR-0006`](adr/ADR-0006-transaction-residue-self-heal.md) | Accepted | 未知非目录事务条目安全隔离（仅移动，不删除）；未知目录保持 fail-closed；隔离容器只读诊断；不自动删除任何用户文件 |
+| [`ADR-0001`](adr/ADR-0001-h1-safety-and-release-contract.md) | Accepted | H1 safety boundary, data audit fields, and release contract |
+| [`ADR-0002`](adr/ADR-0002-regular-file-activation.md) | Accepted | The active path uses a regular-file copy + rename; it does not swap symlink inodes |
+| [`ADR-0003`](adr/ADR-0003-crash-recovery-and-doctor.md) | Accepted | H2 recovers using a durable transaction decision; `doctor` is read-only by default and does not guess at repairs |
+| [`ADR-0004`](adr/ADR-0004-trust-first-and-manager-boundaries.md) | Accepted / implemented in private RC | Trust-first CLI; `upgrade --all` manages only hukou; Topgrade is outer orchestration only |
+| [`ADR-0005`](adr/ADR-0005-manifest-v2-history-policy-and-repair.md) | Accepted / implemented in private RC | schema v2 lineage/policy/retention, narrow repair, and redacted support report |
+| [`ADR-0006`](adr/ADR-0006-transaction-residue-self-heal.md) | Accepted | Unknown non-directory transaction entries are safely quarantined (moved only, never deleted); unknown directories stay fail-closed; the quarantine container is diagnosed read-only; no user file is ever deleted automatically |
 
-## 历史决策摘要
+## History summary
 
-- 2026-07-11：主语言选择 Go，CLI 使用 Cobra，其余尽量标准库。
-- 2026-07-11：scan 必须纯本地只读；其他管理器已有所有权时不默认抢占。
-- 2026-07-12：版本 store + 软链切换；manifest schema v1。
-- 2026-07-13：仓库保持 private，本轮不创建原创代码 LICENSE。
-- 2026-07-13：首发版本目标 `v0.1.0`，四平台 tar.gz + checksums。
-- 2026-07-13：两次 macOS CI 证明并发替换 symlink inode 会产生瞬时 `EINVAL`；激活模型改为同目录 regular-file copy + rename。
-- 2026-07-14：跨 live/manifest 的崩溃恢复采用 PREPARED 回滚、COMMITTED 前滚的持久化事务；doctor 默认零写、零网络。
-- 2026-07-14：为公开准备加入 Apache-2.0 根许可证和第三方 notices；仓库保持 private，许可证落盘不等于公开或发布。
-- 2026-07-14：V0.3 先解释/预览再修改；跨管理器升级不进入 hukou，Topgrade 只负责串联各自独立的 manager。
-- 2026-07-14：manifest 提升到 v2，rollback/retention 只依据显式 lineage；repair 只开放 fingerprint 绑定的两个 action。
-- 2026-07-15：读路径事务残留检查（`transaction.CheckReadable`，卡 A）的两层 TOCTOU——①三重验证与调用方后续读取之间无原子性；②验证三步（名字/Lstat/COMMIT）彼此间可被并发替换——裁决为**记录接受**，不加读锁（Fable 裁决，Codex 复审引用）。理由：读路径是同用户诊断视图，不是安全边界，能与该检查竞态的写入者本就可写事务根、直接掌控状态；hukou 探测器对每个命中条目独立做 sha256 复核，归属结论不依赖该检查的时点正确性；写路径（`Begin`）保持全类别 fail-closed 且持 mutation lock。
-- 2026-07-15：未知**非目录**事务条目不再楔死恢复，移入 `quarantined-<16hex>` 容器（META 记录原名）并保留证据；未知目录保持 fail-closed（可能是新版本 journal）。
-- 2026-07-16：产品决策缩窄卡 B 范围，移除 `purge-quarantine` 与 `clean-live-temps` 两个破坏性 repair 动作；隔离与孤儿临时文件改为只读诊断 + 用户手动删除，程序不做任何自动删除。
+- 2026-07-11: Chose Go as the primary language, Cobra for the CLI, and the
+  standard library for everything else where possible.
+- 2026-07-11: `scan` must be purely local and read-only; do not preempt by
+  default when another manager already owns a binary.
+- 2026-07-12: Versioned store + symlink switching; manifest schema v1.
+- 2026-07-13: The repository stays private; no original-code LICENSE was created
+  in this round.
+- 2026-07-13: The first release target is `v0.1.0`, with four-platform tar.gz
+  archives plus checksums.
+- 2026-07-13: Two macOS CI runs proved that concurrently swapping a symlink
+  inode produces a transient `EINVAL`; the activation model was changed to a
+  same-directory regular-file copy + rename.
+- 2026-07-14: Crash recovery across live/manifest uses a durable transaction
+  with PREPARED rollback and COMMITTED roll-forward; `doctor` is zero-write and
+  zero-network by default.
+- 2026-07-14: Added an Apache-2.0 root license and third-party notices in
+  preparation for going public; the repository stays private, and landing the
+  license text is not the same as publishing or releasing.
+- 2026-07-14: For V0.3, explain/preview before modifying; cross-manager upgrades
+  do not enter hukou, and Topgrade only chains together the independent managers.
+- 2026-07-14: The manifest was promoted to v2; rollback/retention rely only on
+  explicit lineage; repair exposes only the two fingerprint-bound actions.
+- 2026-07-15: The two-layer TOCTOU in the read-path transaction-residue check
+  (`transaction.CheckReadable`) — (1) no atomicity between the triple
+  verification and the caller's subsequent read; (2) the three verification
+  steps (name / Lstat / COMMIT) can be replaced concurrently relative to each
+  other — was **recorded-accepted** without adding a read lock (maintainer
+  decision, corroborated by independent review). Rationale: the read path is a
+  same-user diagnostic view, not a security boundary; any writer able to race
+  this check can already write the transaction root and directly control state;
+  the hukou detector independently re-checks sha256 for every matched entry, so
+  the attribution conclusion does not depend on this check being point-in-time
+  correct; the write path (`Begin`) stays fail-closed for all categories and
+  holds the mutation lock.
+- 2026-07-15: Unknown **non-directory** transaction entries no longer wedge
+  recovery; they are moved into a `quarantined-<16hex>` container (META records
+  the original name) and preserved as evidence; unknown directories stay
+  fail-closed (they may be a newer version's journal).
+- 2026-07-16: A product decision narrowed the scope of card B, removing the two
+  destructive repair actions `purge-quarantine` and `clean-live-temps`;
+  quarantine and orphaned temp files are handled as read-only diagnosis plus
+  manual user deletion — the program performs no automatic deletion.
 
-决策发生变化时，应新增 ADR 或把旧 ADR 标成 Superseded，不静默改写历史理由。
+When a decision changes, add a new ADR or mark the old one Superseded; do not
+silently rewrite the historical rationale.

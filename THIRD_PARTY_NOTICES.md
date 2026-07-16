@@ -44,7 +44,7 @@ not identify copied implementation in the corresponding hukou components:
 - [soar](https://github.com/pkgforge/soar), evaluated at `cc0526e`, MIT.
 
 The detailed source relationship and maintenance rules are recorded in
-[docs/pinhaoma-sources.md](docs/pinhaoma-sources.md). A design reference is
+[docs/VENDORED.md](docs/VENDORED.md). A design reference is
 not a claim of authorship over the referenced project.
 
 ## Go module dependencies
@@ -105,5 +105,5 @@ Source and binary distributions of hukou must include:
 4. any source-level attribution headers on adapted files.
 
 When adding or materially adapting third-party code, update the source file
-header, `docs/pinhaoma-sources.md`, this notice, and the release packaging in
+header, `docs/VENDORED.md`, this notice, and the release packaging in
 the same pull request.

@@ -74,7 +74,8 @@ build-provenance attestation（签名者身份用锚定的 `--cert-identity-rege
 任（HTTPS + 同源 checksums.txt）。设置 `HUKOU_REQUIRE_ATTESTATION=1`（或
 `true`/`yes`）可把该验证改为强制；留空或 `0`/`false`/`no` 表示不强制（合法默
 认）；其余任何取值一律报错拒绝。当前证据和待办见
-[私有 RC 执行记录](docs/codex/execution-reports/2026-07-14-v0.3-private-rc.md)。
+<!-- TODO(P1 handoff): README rewrite owner — internal docs/codex/ records were removed for the public tree; re-point or reword this link during the rewrite. -->
+[外部审计入口](AUDIT.md)。
 
 ## 安全模型
 
@@ -109,7 +110,9 @@ v0.2.0 提供：
 | Linux | amd64、arm64 |
 
 Windows 当前不受支持。项目不会把“能交叉编译”直接写成“平台已受支持”；实际验证
-证据记录在 [docs/codex/verification-reports](docs/codex/verification-reports/)。
+证据记录在 [docs/audit/](docs/audit/)。
+<!-- TODO(P1 handoff): README rewrite owner — evidence formerly under docs/codex/verification-reports was removed for the public tree; confirm the final evidence location during the rewrite. -->
+
 
 ## 安装 v0.2
 

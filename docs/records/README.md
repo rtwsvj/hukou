@@ -1,16 +1,23 @@
-# 历史阶段记录
+# Historical phase records
 
-本目录保存 Phase 1、Phase 2 各批次执行者当时的完成声明。它们是历史证据，不是当前事实源，也不表示当前 HEAD 已通过相同测试。
+This directory preserves the completion claims made by the executors of each
+Phase 1 and Phase 2 batch at the time. They are historical evidence, not the
+current source of truth, and they do not assert that the current HEAD passes
+the same tests. The record bodies are kept in their original Chinese.
 
-阅读顺序：
+Reading order:
 
 1. `SKELETON-DONE.md`
 2. `DETECTORS-DONE.md`
-3. `FIXES-DONE.md`、`FIXES-ROUND2.md`
+3. `FIXES-DONE.md`, `FIXES-ROUND2.md`
 4. `DETPATCH-DONE.md`
 5. `PHASE2-GHRELEASE/MANIFEST/STORE/ASSETPICK/ARCHIVE/CMD-DONE.md`
 6. `PHASE2-FIXES-DONE.md`
 
-后续修复可能使早期文件中的函数签名、行号和限制过时。例如旧 store 记录中的 `Prune(name, keep)` 已被后续修复扩展。当前状态请从 `../README.md`、规格与 Codex verification reports 进入。
+Later fixes may have made function signatures, line numbers, and limitations in
+the earlier files stale. For example, the `Prune(name, keep)` signature noted in
+an old store record was extended by a later fix. For current status, start from
+`../README.md`, the specs, and the evidence under `../audit/`.
 
-新工作不再直接新增 `*-DONE.md`；使用 `docs/codex/execution-reports`、`change-records`、`verification-reports` 三段式记录。
+These `*-DONE.md` files are frozen; new work is not recorded by adding more of
+them here.

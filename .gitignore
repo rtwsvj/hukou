@@ -20,3 +20,6 @@ xcuserdata/
 .vscode/
 .idea/
 bin/
+
+# Card-local closeout note (P1 public-tree trim); not part of the public tree
+CARD-P1-DONE.md

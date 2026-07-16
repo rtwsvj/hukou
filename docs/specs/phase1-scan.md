@@ -1,6 +1,6 @@
 # Phase 1 规格:hukou scan
 
-状态:已实现并进入维护(Eric 2026-07-11 批准)。本文件定义 scan 契约；当前验证结果以 `docs/codex/verification-reports/` 为准。
+状态:已实现并进入维护。本文件定义 scan 契约；当前验证结果以 `docs/audit/` 的证据映射为准。
 
 ## 目标
 

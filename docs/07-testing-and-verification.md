@@ -1,193 +1,243 @@
-# 测试与验证
+# Testing and verification
 
-## 证据等级
+## Evidence levels
 
-| 等级 | 内容 | 能证明什么 |
+| Level | Content | What it proves |
 |---|---|---|
-| L1 静态 | diff、文件存在、配置解析 | 改动已落盘，不能证明行为 |
-| L2 单测 | 包级 `go test` | 局部契约 |
-| L3 全仓 | test、race、vet、build、coverage | 当前提交的工程基线 |
-| L4 隔离 smoke | 临时 HOME/PATH/data root 的 CLI 流程 | 命令接线与文件系统行为 |
-| L5 发布验证 | 四平台 archive、checksums、版本注入 | 发布链路 |
-| L6 真实网络 smoke | 受控公共 fixture repo | GitHub API/CDN 集成；当前后置 |
+| L1 static | diff, file existence, config parsing | The change landed; it does not prove behavior |
+| L2 unit | package-level `go test` | Local contracts |
+| L3 full-repo | test, race, vet, build, coverage | The engineering baseline of the current commit |
+| L4 isolated smoke | CLI flows over a temporary HOME/PATH/data root | Command wiring and filesystem behavior |
+| L5 release verification | four-platform archives, checksums, version injection | The release pipeline |
+| L6 real-network smoke | a controlled public fixture repo | GitHub API/CDN integration; currently deferred |
 
-历史 DONE 文档只记录当时声称的结果。新的“通过”结论必须写入 `docs/codex/verification-reports/`，并包含提交 SHA、命令、退出状态和关键输出。
+Historical DONE documents only record what was claimed at the time. A new
+"pass" conclusion must be recorded as verification evidence — commit SHA,
+command, exit status, and key output — not merely asserted.
 
-## 必需门禁
+## Required gates
 
 ```bash
 make verify
 make release-verify
 ```
 
-`make verify` 展开为 fmt-check、module verify、vet、test、race、coverage、build、
-license-check、install-test 和 release-test。release-test 以合法/非法矩阵覆盖严格
-SemVer 2.0.0（含 prerelease 空段、纯数字前导零与 build metadata 拒绝）。
-`make release-verify` 再增加 shellcheck 与固定版本
-govulncheck；各 target 仍可单独运行。
+`make verify` expands to fmt-check, module verify, vet, test, race, coverage,
+build, license-check, install-test, and release-test. release-test covers strict
+SemVer 2.0.0 with a valid/invalid matrix (including empty prerelease segments,
+purely numeric leading zeros, and build-metadata rejection). `make
+release-verify` additionally runs shellcheck and a pinned-version govulncheck;
+each target can still be run on its own.
 
-同时执行：
+Also run:
 
 - `git diff --check`
 - `go mod verify`
-- release 脚本静态检查与 snapshot 打包
-- Linux amd64 archive 解包并执行 `hukou version`
+- the release script's static checks and snapshot packaging
+- unpack the Linux amd64 archive and run `hukou version`
 
-## L6 真实网络 smoke（后置，opt-in）
+## L6 real-network smoke (deferred, opt-in)
 
-L6（受控公共 fixture repo 的真实 GitHub API/CDN 集成）当前仍**后置**，不在 `make
-verify`/`make release-verify` 与 CI 的默认门禁内，也未记录为通过。占位入口是
-`make verify-network`：
+L6 (real GitHub API/CDN integration against a controlled public fixture repo) is
+still **deferred**: it is not part of the default gates in `make verify` /
+`make release-verify` or CI, and it is not recorded as passing. The placeholder
+entry point is `make verify-network`:
 
 ```bash
 make verify-network
 ```
 
-该目标运行 `cmd/network_e2e_test.go`，双重关闸确保默认零网络：
+That target runs `cmd/network_e2e_test.go` behind two gates that keep the
+default zero-network:
 
-- `//go:build network_e2e` 构建标签把测试文件排除在默认编译之外，`go test ./...`
-  与 `make verify` 都不会编译或运行它。
-- 即使带标签编译，测试也会在 `HUKOU_NETWORK_E2E=1` 未设置时 `t.Skip`；缺
-  `GITHUB_TOKEN`/`GH_TOKEN` 时同样跳过。
+- The `//go:build network_e2e` build tag excludes the test file from the default
+  compile, so neither `go test ./...` nor `make verify` compiles or runs it.
+- Even when compiled with the tag, the test calls `t.Skip` unless
+  `HUKOU_NETWORK_E2E=1` is set; it also skips when `GITHUB_TOKEN`/`GH_TOKEN` is
+  missing.
 
-当前骨架对固定 fixture repo（默认 `rtwsvj/hukou`，可用
-`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO` 覆盖）走一次真实
-`ghrelease.Client.Latest` 元数据请求，验证 GitHub release API 集成。后续可在此
-入口上扩展临时目录内的 adopt → upgrade `--dry-run` → rollback 全流程，且不触碰真实
-PATH 文件；在真实运行并记录进 `docs/codex/verification-reports/` 前，L6 不得标绿。
+The current skeleton makes one real `ghrelease.Client.Latest` metadata request
+against a fixed fixture repo (default `rtwsvj/hukou`, overridable with
+`HUKOU_NETWORK_E2E_OWNER`/`HUKOU_NETWORK_E2E_REPO`) to validate the GitHub
+release API integration. This entry point can later be extended with a full
+adopt → upgrade `--dry-run` → rollback flow inside a temporary directory,
+without touching real PATH files. L6 must not be marked green until it has
+actually run and its evidence is recorded.
 
 ## CI
 
-`.github/workflows/ci.yml`：
+`.github/workflows/ci.yml`:
 
-- Ubuntu：格式、模块完整性、license/notices、installer、shellcheck、vet。
-- Ubuntu：独立 `govulncheck` job。
-- Ubuntu + macOS matrix：test、race、build、binary smoke。
-- Ubuntu：coverage profile 与 artifact。
+- Ubuntu: format, module integrity, license/notices, installer, shellcheck, vet.
+- Ubuntu: a standalone `govulncheck` job.
+- Ubuntu + macOS matrix: test, race, build, binary smoke.
+- Ubuntu: coverage profile and artifact.
 
-`.github/workflows/codeql.yml` 只在 repository visibility 为 public 时运行；当前
-private RC 中 job 会跳过，不能称为 CodeQL 通过。现有 GitHub-hosted runner 还可能
-在任何 step 之前被账户 billing/spending limit 阻断；这类运行只记
-`infrastructure-blocked`，不等于代码 pass/fail。
+`.github/workflows/codeql.yml` runs only when repository visibility is public;
+in the current private RC the job is skipped, which cannot be called a CodeQL
+pass. A GitHub-hosted runner may also be blocked by an account
+billing/spending-limit before any step; such a run is recorded only as
+`infrastructure-blocked`, which is not a code pass/fail.
 
-CI 使用 `go.mod` 的 Go 版本，不维护第二份版本字符串。
-当前 `go.mod` 声明 Go 1.26.2，而固定提交的本地与容器记录使用 Go 1.26.5；hosted
-job 未启动，所以 Go 1.26.2 兼容门禁尚待独立复跑。历史 archive hash 复现则应使用
-Go 1.26.5，并记录 GNU tar 版本。
+CI uses the Go version from `go.mod` and does not maintain a second version
+string. The current `go.mod` declares Go 1.26.2, while the fixed commit's local
+and container records used Go 1.26.5; the hosted job did not start, so the Go
+1.26.2 compatibility gate still needs an independent re-run. Reproducing the
+historical archive hashes should use Go 1.26.5 and record the GNU tar version.
 
-## 关键失败注入
+## Key fault injection
 
-H1 至少覆盖：
+H1 covers at least:
 
-- checksum asset 存在但缺所选文件条目。
-- checksum 不匹配。
-- 精确 checksum sidecar 的单摘要格式与 BSD checksum 格式。
-- asset 下载 404、大小不符、超限。
-- 下载期间外部修改 live binary，激活前二次 SHA 闸门拒绝覆盖。
-- manifest 保存失败发生在 Activate 之后。
-- rollback 保存失败发生在 Activate 之后。
-- regular-file 激活始终只暴露完整旧内容或新内容；事务恢复仍覆盖 regular file 与旧版 symlink 两种输入拓扑。
-- 写锁在同进程和子进程竞争时立即返回 `ErrLocked`，释放后可重新获取；锁路径软链被拒绝。
-- adopt 同名冲突不覆盖 original/manifest。
-- dry-run 不创建 data root、不 GC、不下载。
-- PREPARED 的 live/manifest before/after 四种组合全部收敛到 before。
-- durable COMMIT 后相同四种组合全部收敛到 after。
-- transaction payload/COMMIT 损坏，或预检/写入前复核发现任一资源 unknown drift 时，零覆盖并保留 pending evidence。
-- 子进程在 PREPARED/COMMITTED 窗口被强杀后，下一次 Recover 分别回滚/前滚。
-- absent→regular/symlink 使用原子 no-replace，检查后竞争写不会被覆盖。
-- doctor 在 data root 缺失、健康和损坏 fixture 上都保持零写；文本/JSON同源且稳定。
+- The checksum asset exists but is missing the entry for the selected file.
+- A checksum mismatch.
+- Both the single-digest exact checksum sidecar format and the BSD checksum
+  format.
+- Asset download 404, size mismatch, and over-limit.
+- The live binary is modified externally during download; the pre-activation
+  second SHA gate refuses to overwrite.
+- A manifest save failure occurring after Activate.
+- A rollback save failure occurring after Activate.
+- Regular-file activation always exposes only the complete old or new content;
+  transaction recovery still covers both regular-file and legacy-symlink input
+  topologies.
+- The write lock returns `ErrLocked` immediately under same-process and
+  child-process contention and can be re-acquired after release; a symlinked lock
+  path is rejected.
+- An adopt name collision does not overwrite the original/manifest.
+- dry-run does not create the data root, does not GC, and does not download.
+- All four PREPARED live/manifest before/after combinations converge to before.
+- All four combinations after a durable COMMIT converge to after.
+- On corrupted transaction payload/COMMIT, or when the pre-check or pre-write
+  re-check finds any resource in unknown drift, there is zero overwrite and the
+  pending evidence is preserved.
+- After a child process is force-killed in the PREPARED/COMMITTED window, the
+  next Recover rolls back / rolls forward respectively.
+- absent→regular/symlink uses an atomic no-replace, so a check-then-race write is
+  not overwritten.
+- doctor stays zero-write on missing, healthy, and corrupted data-root fixtures;
+  its text/JSON come from one source and are stable.
 
-V0.3 还必须覆盖：
+V0.3 must also cover:
 
-- explain/adopt dry-run 的目录快照、网络请求计数为零，JSON schema/排序稳定。
-- outdated local/pin-current 的零网络路径，以及 drift-before-network、metadata-only/no-download。
-- schema 0/1→2 deterministic migration；schema 2 缺 policy/history、未知字段、future schema、重复 path/name、forward/missing lineage 拒绝。
-- schema 0/1 携带 v2-only retention/policy/history 字段必须拒绝，不能通过 migration
-  smuggling；activation unsafe tag 与同 tag/different-SHA binding 必须拒绝且不修改 entry。
-- `A→B→C→B→A` 默认 rollback，不读取/信任目录 mtime；explicit ancestor/original 边界。
-- stable/prerelease、SemVer normalized equal、隐式 downgrade refusal、exact pin 前进/回退、bounded release pagination。
-- retention 对 current/original/pin/N ancestors/pending refs 的保护；malformed protected ref 与 apply 前替换必须零删除。
-- repair plan 的零 hukou 写入、plan 0600、stale fingerprint/data-root mismatch/ambiguous journal/live SHA mismatch 零业务写入。
-- support stdout 零写、file 0600，且 fixture 中 path/repo/user/HOME/env/WAL/binary secret 不出现在 JSON。
-- list 在统计下载版本前验证 original namespace 完整；original 不计入 `VERSIONS`。
-- installer 拒绝 HTTP、未授权 file URL、坏/重复/缺失 checksum、错误 archive root、
-  重复目标 member、已有目标无 force；有 Perl时最终提交覆盖 `link(2)` atomic
-  no-replace 与 force `rename(2)`，Linux 无 Perl时覆盖 `ln -T`/`mv -T` fallback，
-  并测试 directory、symlink-to-directory 与预检后竞争；dry-run 零写。
-- installer attestation：严格校验实参的 gh mock（subject 必须是已下载的 archive，
-  `--repo` 与锚定的 `--cert-identity-regex` 值钉死）覆盖 pass/fail/missing 三态与
-  `HUKOU_REQUIRE_ATTESTATION` 矩阵；非法取值 fail loud；tar spy 断言验证失败
-  发生在任何解压/安装之前（无 tar 调用、无 prefix、无临时安装文件）。
-- release archive 包含 LICENSE、THIRD_PARTY_NOTICES、双语 README、LICENSES，SBOM 与 checksums 对应固定 commit。
+- explain/adopt dry-run: directory snapshot, network-request count of zero, and a
+  stable JSON schema/ordering.
+- outdated: the zero-network paths for local/pin-current, plus
+  drift-before-network and metadata-only/no-download.
+- schema 0/1→2 deterministic migration; schema 2 rejection of missing
+  policy/history, unknown fields, a future schema, duplicate path/name, and
+  forward/missing lineage.
+- schema 0/1 carrying v2-only retention/policy/history fields must be rejected and
+  must not be smuggled through migration; an activation unsafe tag and a
+  same-tag/different-SHA binding must be rejected without modifying the entry.
+- `A→B→C→B→A` default rollback, which does not read or trust directory mtime;
+  explicit ancestor/original boundaries.
+- stable/prerelease, SemVer-normalized equality, implicit downgrade refusal, exact
+  pin forward/back, and bounded release pagination.
+- retention protection of current/original/pin/N-ancestors/pending refs; a
+  malformed protected ref and a pre-apply replacement must delete nothing.
+- The repair plan's zero hukou writes, plan mode 0600, and zero business writes on
+  stale fingerprint/data-root mismatch/ambiguous journal/live SHA mismatch.
+- support: zero writes on stdout, file mode 0600, and no path/repo/user/HOME/env/
+  WAL/binary secret from the fixture appearing in the JSON.
+- list verifies the original namespace is complete before counting downloaded
+  versions; the original is not counted in `VERSIONS`.
+- The installer rejects HTTP, an unauthorized file URL, a bad/duplicate/missing
+  checksum, a wrong archive root, a duplicate target member, and an existing
+  target without force; with Perl present, the final commit covers `link(2)`
+  atomic no-replace and force `rename(2)`, and on Linux without Perl it covers the
+  `ln -T`/`mv -T` fallback, and it tests directory, symlink-to-directory, and
+  post-check race; dry-run performs zero writes.
+- installer attestation: a gh mock that strictly validates arguments (the subject
+  must be the downloaded archive, with `--repo` and the anchored
+  `--cert-identity-regex` value pinned) covers the pass/fail/missing tri-state and
+  the `HUKOU_REQUIRE_ATTESTATION` matrix; an illegal value fails loud; a tar spy
+  asserts that a verification failure happens before any extraction/installation
+  (no tar call, no prefix, no temporary install file).
+- The release archive contains LICENSE, THIRD_PARTY_NOTICES, both README
+  languages, and LICENSES, and the SBOM and checksums correspond to the fixed
+  commit.
 
-## V0.3 固定提交证据（2026-07-15）
+## V0.3 fixed-commit evidence (2026-07-15)
 
-| 检查 | 当前结果 | 能证明/不能证明 |
+| Check | Current result | What it proves / does not prove |
 |---|---|---|
-| 安全关键路径定向 audit | 321 passed / 6 packages | 固定 subject commit 的 schema/activation/ghrelease/manifest/repair/store 证据 |
-| `go test -count=1 ./...` | 641 passed / 21 packages | subject `1fa45a0` direct uncached ordinary，零失败 |
-| `go test -count=1 -race ./...` | 641 passed / 21 packages | subject `1fa45a0` direct uncached race，零失败 |
-| `GOPROXY=https://goproxy.cn,direct make release-verify` | exit 0 | 全 target pass；coverage 72.9%；govuln 无已知漏洞；默认 proxy 路径另有 IPv6 timeout |
-| explain name/path 只读定向 | 5 passed | 独立目录快照与 `http.DefaultTransport` spy 证明该批次零写/零网络 |
-| `scripts/install_test.sh` | pass | 含 Perl link(2)/rename(2)、Linux 无 Perl `-T` fallback、directory/symlink-dir/竞争/duplicate member |
-| `scripts/release_test.sh` | pass | v-prefix、无 build metadata 的 strict shell SemVer matrix；不证明 snapshot |
-| Linux/arm64 non-root container ordinary/race | pass / all packages | 固定 image digest、UID/GID 65534、source/module cache read-only、`GOPROXY=off` |
-| Linux GNU tar 1.34 installer/release tests | pass | release test 在配置 git safe.directory 后通过；root/default-proxy 首次失败不计代码失败 |
-| 四目标双构建与 snapshot | pass | 两次目录逐字节一致；4/4 checksum、单 root/单 executable、buildinfo 与 installer smoke 通过 |
-| Syft 1.46.0 SPDX JSON | 21 packages / 4 files | 四个平台真实二进制与四组直接依赖均被列入；空壳 SBOM 缺口已关闭 |
-| actionlint 1.7.12 / Ruby YAML parse / Action pin 对账 | pass | workflow 静态结构与固定 SHA；hosted run 仍须单独解释 |
-| Markdown links / production 汉字 sweep / secret scan / `git diff --check` | 68 Markdown、89 targets、0 missing；0 汉字；0 leak；diff pass | 文档、界面与提交卫生门禁 |
+| Targeted audit of the security-critical path | 321 passed / 6 packages | schema/activation/ghrelease/manifest/repair/store evidence for the fixed subject commit |
+| `go test -count=1 ./...` | 641 passed / 21 packages | subject `1fa45a0` direct uncached ordinary, zero failures |
+| `go test -count=1 -race ./...` | 641 passed / 21 packages | subject `1fa45a0` direct uncached race, zero failures |
+| `GOPROXY=https://goproxy.cn,direct make release-verify` | exit 0 | all targets pass; coverage 72.9%; govuln reports no known vulnerabilities; the default proxy path separately has an IPv6 timeout |
+| explain name/path read-only targeted | 5 passed | an isolated directory snapshot and an `http.DefaultTransport` spy prove this batch is zero-write / zero-network |
+| `scripts/install_test.sh` | pass | includes Perl link(2)/rename(2), the Linux-without-Perl `-T` fallback, and directory/symlink-dir/race/duplicate member |
+| `scripts/release_test.sh` | pass | the strict shell SemVer matrix with v-prefix and no build metadata; it does not prove the snapshot |
+| Linux/arm64 non-root container ordinary/race | pass / all packages | fixed image digest, UID/GID 65534, read-only source/module cache, `GOPROXY=off` |
+| Linux GNU tar 1.34 installer/release tests | pass | the release test passes after configuring git safe.directory; a first root/default-proxy failure is not counted as a code failure |
+| Four-target dual build and snapshot | pass | the two directories are byte-for-byte identical; 4/4 checksum, single root / single executable, buildinfo, and installer smoke pass |
+| Syft 1.46.0 SPDX JSON | 21 packages / 4 files | the real binaries for all four platforms and all four direct dependencies are listed; the empty-shell SBOM gap is closed |
+| actionlint 1.7.12 / Ruby YAML parse / Action pin reconciliation | pass | workflow static structure and pinned SHAs; the hosted run still needs a separate explanation |
+| Markdown links / production CJK sweep / secret scan / `git diff --check` | 68 Markdown, 89 targets, 0 missing; 0 CJK; 0 leak; diff pass | documentation, UI, and commit-hygiene gates |
 
-Codex 团队内部 `pinhaoma-review` 对固定 subject 当时记录为 P0/P1/P2 = 0，但没有
-保留单独 raw report，不能作为外部 clean bill。Draft PR #6 的
-GitHub-hosted CI run `29352308455` 五个 job 均在任何 step 前因 billing/spending limit
-失败，不能记为远端代码失败或远端绿色；CodeQL run `29352310557` 在 private repository
-按设计 skipped。
+An internal team review recorded P0/P1/P2 = 0 for the fixed subject at the time,
+but it kept no standalone raw report and cannot serve as an external clean bill.
+The GitHub-hosted CI run `29352308455` for draft PR #6 failed on all five jobs
+before any step because of a billing/spending limit, which cannot be recorded as
+a remote code failure or a remote green; the CodeQL run `29352310557` was skipped
+by design in the private repository.
 
-2026-07-15 外部交接审阅又提出下载/归档资源预算、transaction intent 授权信任根、
-private Release 后公开的 attestation 时序、缺 publisher checksum 的默认策略和
-toolchain 差异等高优先级 hypotheses。它们尚待第三方确认/定级，详见
-[`audit/v0.3-review-checklist.md`](audit/v0.3-review-checklist.md)。
+The 2026-07-15 external handoff review additionally raised high-priority
+hypotheses about the download/archive resource budget, the trust root that
+authorizes a transaction intent, the timing of attestation becoming public after
+a private Release, the default policy when a publisher checksum is missing, and
+toolchain differences. They still await third-party confirmation/triage; see
+[`audit/v0.3-review-checklist.md`](audit/v0.3-review-checklist.md).
 
-Gap audit 缺口已在工作树关闭：installer 有 Perl时采用 `link(2)` atomic no-replace /
-force `rename(2)`，Linux 无 Perl时采用 `ln -T`/`mv -T` fallback；覆盖 directory、
-symlink-to-directory、预检后竞争并拒绝重复目标 member。Release workflow
-删除历史 `v0.1.0` 手动 snapshot default。另新增 schema-specific manifest required
-fields、legacy v2-only smuggling rejection、activation safe tag 与 tag/SHA binding、
-list original completeness，以及 symlink adopt→upgrade→implicit rollback E2E；上述契约
-已随最终 subject commit 的全仓与定向门禁复跑。
+The gap-audit gaps have been closed in the working tree: with Perl present, the
+installer uses `link(2)` atomic no-replace / force `rename(2)`, and on Linux
+without Perl it uses the `ln -T`/`mv -T` fallback; it covers directory,
+symlink-to-directory, and post-check race, and rejects a duplicate target member.
+The release workflow removed the historical `v0.1.0` manual-snapshot default.
+Also added: schema-specific manifest required fields, legacy v2-only smuggling
+rejection, activation safe tag and tag/SHA binding, list original completeness,
+and a symlink adopt→upgrade→implicit rollback E2E; these contracts were re-run
+under the full-repo and targeted gates of the final subject commit.
 
-Gap audit 的后续两个 P2 也已在工作树关闭：Store.Versions 对非目录/畸形版本
-失败关闭并有两组测试；explain 已补上述 5 项零写/network-spy 定向测试。
+Two follow-up P2s from the gap audit are also closed in the working tree:
+Store.Versions fails closed on a non-directory/malformed version with two test
+sets, and explain gained the five zero-write / network-spy targeted tests above.
 
-后续 defense-in-depth 尚未完成，测试计划也不得提前标绿：duplicate JSON key、
-GitHub API body cap、installer 总解压体积/member 数膨胀预算，以及 `openat`/目录 fd
-路径锚定。
+Further defense-in-depth is not yet done, and the test plan must not be marked
+green early: duplicate JSON key, GitHub API body cap, the installer's total
+extraction size / member-count inflation budget, and `openat`/directory-fd path
+anchoring.
 
-## 覆盖率
+## Coverage
 
-- profile 是 CI artifact，不进入 Git。
-- H1 首先建立当前真实基线；在不知道基线前不虚构百分比门槛。
-- 后续不得无说明降低总体覆盖率。
-- V0.3 总覆盖率 72.9%，比 v0.2/H2 的 73.8% 下降 0.9 个百分点。原因是新增
-  repair、support、policy 与 supply-chain 路径扩大了生产代码面；安全关键契约已有
-  321 项定向测试、641 项全仓 ordinary/race 与故障矩阵覆盖。本 private RC 接受该
-  小幅下降并记录为 P3，后续优先提高 support/store/repair/output 分支覆盖率。
-- `cmd`、store、manifest、verify、archive、ghrelease 是优先提高的安全关键包。
+- The profile is a CI artifact and is not committed to Git.
+- H1 first establishes the current real baseline; do not invent a percentage
+  threshold before the baseline is known.
+- Do not later reduce overall coverage without explanation.
+- V0.3 overall coverage is 72.9%, down 0.9 points from the 73.8% of v0.2/H2. The
+  cause is that the new repair, support, policy, and supply-chain paths enlarged
+  the production-code surface; the security-critical contracts already have 321
+  targeted tests, 641 full-repo ordinary/race, and fault-matrix coverage. This
+  private RC accepts the small decline and records it as P3, prioritizing higher
+  branch coverage of support/store/repair/output next.
+- `cmd`, store, manifest, verify, archive, and ghrelease are the
+  security-critical packages to prioritize.
 
-## 隔离要求
+## Isolation requirements
 
-- 测试统一使用 `t.TempDir` 或 runner 临时目录。
-- 不读取真实 manifest/store。
-- 不把真实 PATH 交给 adopt/upgrade/rollback e2e。
-- PR 测试使用 `httptest`，默认不访问公网。
-- 真实网络 smoke 独立为手动/定时 workflow，使用只读 fixture repo 和最小权限 token。
+- Tests uniformly use `t.TempDir` or the runner's temporary directory.
+- Do not read a real manifest/store.
+- Do not hand a real PATH to the adopt/upgrade/rollback e2e.
+- PR tests use `httptest` and do not access the public network by default.
+- The real-network smoke is a separate manual/scheduled workflow that uses a
+  read-only fixture repo and a minimal-permission token.
 
-## 验证报告最小字段
+## Minimum fields of a verification report
 
-- Verification ID、日期、commit、OS、Go 版本。
-- 实际运行命令及退出状态。
-- Claims vs Evidence。
-- 未运行/跳过项及原因。
-- 生成的 release artifact 名与 checksums。
-- 总结：pass、partial、fail 或 inconclusive。
+- Verification ID, date, commit, OS, Go version.
+- The actual commands run and their exit status.
+- Claims vs Evidence.
+- Not-run/skipped items and the reason.
+- The generated release artifact names and checksums.
+- Summary: pass, partial, fail, or inconclusive.

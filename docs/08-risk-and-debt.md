@@ -1,100 +1,91 @@
-# 风险与技术债
+# Risks and Technical Debt
 
-## H1 发布关闭条件
+## H1 Release Closure Conditions
 
-以下缺陷已有实现与本地测试，仍须由最终 verification report 和远端 release workflow 核验后才能视为关闭，不应理解为当前代码仍明确保留这些旧行为：
+The following defects already have implementations and local tests, but can only be considered closed after final verification by the verification report and the remote release workflow; this should not be read as implying the current code still deliberately retains these old behaviors:
 
-- checksum 缺条目必须失败关闭。
-- upgrade/rollback 激活后保存失败必须补偿。
-- 写命令必须持有进程互斥锁。
-- dry-run 必须保持零本地写入。
-- release artifact 必须验证版本注入、四资产数量、双构建一致性与 checksums。
+- Missing checksum entries must fail closed.
+- A save failure after upgrade/rollback activation must be compensated.
+- Write commands must hold a cross-process mutex lock.
+- dry-run must maintain zero local writes.
+- Release artifacts must verify version injection, the four-asset count, dual-build consistency, and checksums.
 
-## 已知债务与 V0.3 状态
+## Known Debt and V0.3 Status
 
-| 风险 | 当前边界 | 后续方向 |
+| Risk | Current Boundary | Follow-up Direction |
 |---|---|---|
-| 断电/SIGKILL | 单全局 WAL、file/dir sync 与真实进程 kill 测试已覆盖 hukou 协作事务；普通 CI 不能完全模拟硬件掉电缓存重排 | 在 APFS/ext4 等目标文件系统做周期性 crash harness；不扩大到未验证平台 |
-| 非协作外部原地写 | 下载后和 snapshot 后均复核 SHA，regular snapshot 为独立副本；但最终复核到 activate 仍有窄窗口 | 文件描述符绑定与 OS 级协调策略 |
-| 文件元数据 | 复制只保证字节与 rwx 权限位；owner/group、ACL、xattr、mtime、特殊权限位与 hardlink topology 不保留，`adopt` 拒绝特权/特殊权限位 | 如需扩展保留范围，先定义跨平台契约与失败语义 |
-| 默认 rollback 选择 | V0.3 subject 已改用 manifest v2 activation parent，不再读取 mtime；lineage fault matrix 与固定提交回归已通过，v0.2 仍是旧行为 | 公开发布前继续保留真实用户迁移观察 |
-| manifest 损坏 | V0.3 分支已有 fingerprint-bound backup restore，但只接受 main 缺失/无效、backup 语义有效、transaction clean、全部 live SHA 匹配 | 保持窄 action，不扩成自动 merge/猜测恢复 |
-| store 孤儿版本 | doctor 区分 manifest 外 tool 与合法 retained version，只报告不删除 | 显式逐项 quarantine + undo，不做 repair-all |
-| tar.xz | 明确不支持 | 决定是否引入 xz 依赖 |
-| 版本比较 | V0.3 subject 已有 SemVer/GitHub-latest、channel、pin 与降级保护；本地/隔离 Linux 门禁通过，未做公共 fixture 网络 smoke | 公共 fixture smoke 后再宣称公开稳定 |
-| 固定保留 3 版 | V0.3 subject 改为 global/entry rollback depth 与 lineage/pin/pending 保护集，固定提交故障矩阵通过 | 观察历史增长，后续设计压缩/归档而非猜删 |
-| 真实网络覆盖 | PR 仅 httptest | 独立 fixture smoke |
-| 平台 | Windows 未支持 | 单独设计和 CI |
+| Power loss/SIGKILL | A single global WAL, file/dir sync, and real process-kill tests already cover hukou-cooperative transactions; ordinary CI cannot fully simulate hardware power loss and cache reordering | Periodic crash harness on target filesystems such as APFS/ext4; not expanding to unverified platforms |
+| Non-cooperative external in-place writes | SHA is re-checked both after download and after snapshotting; the regular snapshot is an independent copy; but a narrow window remains between the final re-check and activation | File-descriptor binding and OS-level coordination strategy |
+| File metadata | Copying only guarantees the bytes and rwx permission bits; owner/group, ACL, xattr, mtime, special permission bits, and hardlink topology are not preserved; `adopt` rejects privileged/special permission bits | If the preserved scope needs to expand, first define a cross-platform contract and failure semantics |
+| Default rollback selection | The V0.3 subject now uses the manifest v2 activation parent and no longer reads mtime; the lineage fault matrix and fixed-commit regression have passed; v0.2 still has the old behavior | Continue observing real-user migration before public release |
+| Manifest corruption | The V0.3 branch already has fingerprint-bound backup restore, but it only accepts cases where main is missing/invalid, the backup is semantically valid, the transaction is clean, and all live SHAs match | Keep the action narrow; do not expand into automatic merge/guessed recovery |
+| Orphaned store versions | doctor distinguishes tools outside the manifest from legitimately retained versions, and only reports without deleting | Explicit, item-by-item quarantine + undo, not a repair-all |
+| tar.xz | Explicitly unsupported | Decide whether to introduce an xz dependency |
+| Version comparison | The V0.3 subject already has SemVer/GitHub-latest, channel, pin, and downgrade protection; local/isolated Linux gating passes, but no public-fixture network smoke test has been done | Only claim public stability after a public-fixture smoke test |
+| Fixed retention of 3 versions | The V0.3 subject switched to global/entry rollback depth plus a lineage/pin/pending protection set; the fixed-commit fault matrix passes | Observe history growth, then design compression/archiving rather than guessed deletion |
+| Real network coverage | PRs use httptest only | Independent fixture smoke test |
+| Platform | Windows unsupported | Separate design and CI |
 
-## V0.3 新边界
+## New V0.3 Boundaries
 
-| 风险 | 当前边界 | 后续方向 |
+| Risk | Current Boundary | Follow-up Direction |
 |---|---|---|
-| schema v2 向后兼容 | V0.2 必须拒绝 v2，避免旧 writer 丢 history/policy；迁移只从当前状态造 synthetic root，无法恢复历史事实 | 发布前备份与 downgrade 文档；不提供 v2→v1 静默转换 |
-| schema 字段边界 | V0.3 decoder 已按声明 schema 要求 v2 policy/retention/history，并拒绝 v0/v1 携带 v2-only 字段；但 Go JSON 仍接受重复 object key | 后续增加 duplicate-key-aware tokenizer/decoder 与回归；当前 unknown-field 检查不冒充已覆盖 duplicate key |
-| history 增长 | activation event 追加，retention 只删 artifact、不删事件 | 另立 ADR 设计可审计压缩，不在 V0.3 猜测 |
-| explicit original | legacy migration 无法证明 original 的 parent，恢复后 lineage 刻意终止 | 用户需要继续升级时从该状态建立新的 forward event；文档提示默认 rollback 无 ancestor |
-| repair plan 时效 | plan 绑定 data-root identity/fingerprint；apply 时任何相关状态差异都会 stale。plan 写进被观察树可能使自身失效 | 建议把 plan 放在 data root 外；不放宽 stale 检查 |
-| repair apply 的 lock 痕迹 | apply 会确认 existing root durability 并创建/使用 `state.lock`，但 fingerprint 失败不得改 live/store/manifest/journal | verification report 明确区分锁文件与业务状态零写 |
-| support 隐私 | 当前只输出匿名序号/计数/枚举；仍需持续用 secret fixture 回归，用户也应在公开提交前人工查看 | 未来字段默认 deny-list 不够，应保持显式 allow-list |
-| 安装器信任根 | checksum 与 archive 来自同一 GitHub Release；installer 在检测到已认证 gh CLI 时对下载的 archive 做 `gh attestation verify`（`--repo` + 锚定的 `--cert-identity-regex` 把证书 SAN 钉到 release workflow 的 `refs/tags/v*` 运行；不用 `--signer-workflow`，因为 gh 将其实现为未转义、未锚定的 SAN 前缀正则），`HUKOU_REQUIRE_ATTESTATION=1/true/yes` 可强制、非法取值 fail loud；gh 缺失/未认证默认仍回退仅传输信任 | attestation 仅在仓库 public 后由 attest job 产生，公开前该验证在真实 release 上不可用；公开旗舰版前评估默认强制与签名策略 |
-| 安装目标竞争 | V0.3 subject 已把 dangling symlink 计为 existing；有 Perl时最终目录项使用 `link(2)` atomic no-replace / force `rename(2)`，Linux 无 Perl时回退 `ln -T`/`mv -T`；directory、symlink-to-directory、预检后竞争与 duplicate member tests 已在固定提交通过 | 保持目标目录同文件系统前提；force 仍是显式允许覆盖的独立路径 |
-| plan replay/freshness | fingerprint 只覆盖 action 相关观察；无关变化不使 plan stale，`generated_at` 无过期语义，现场精确回到旧 observation 时旧 plan 可能再次适用 | 外部审计 plan replay；若需要时效语义，增加显式 expiry/nonce 而不是依赖展示时间 |
-| transaction intent 授权 | intent 校验 schema、绝对 clean/unique path 与 before/after payload，但未独立把 operation/role/path 绑定到 manifest 或 allowlist；当前安全依赖 data root 由同一可信身份独占且不以提权方式消费低权限输入 | 明确 data-root ownership/permission threat model；审计低权限可写 root 与 elevated invocation，必要时绑定 role/path |
-| 下载尺寸 | API size 未知时使用 512 MiB；声明正数时当前以声明值为读取上限，没有独立全局 ceiling | 同时应用全局最大值与磁盘预算；对异常超大 asset size 做 fail-closed 测试 |
-| Go 归档预扫描 | 选中 entry 本身限制 512 MiB，但 tar 第一次选择扫描会遍历完整解压流，未累计总工作量/member 数 | 为 header 数、总展开工作量和候选数增加 streaming budget |
-| shell 安装包膨胀 | 当前检查 archive root、目标 member 唯一性和目标文件类型；尚未给总展开字节数与 member 数设置独立预算 | 为压缩炸弹/超多 member 增加 streaming budget，超限时在写目标前失败关闭 |
-| installer 网络预算 | `curl` 限制 HTTPS 协议并重试，但未设置显式 connect/total timeout、最大文件大小或 redirect host allowlist | 增加 fail-closed 网络预算与重定向主机策略，并覆盖慢连接/超大 body/跨主机 fixture |
-| 无 publisher checksum | 真实 upgrade 在没有 checksum asset 时警告、记录下载后 hash 并继续；这是可审计性而不是 publisher 身份证明 | 公开旗舰版前决定默认 fail closed、显式 opt-in 或签名/attestation 信任策略 |
-| release list 上限 | 最多 10×100 releases，填满上限时失败关闭 | 如确有超大仓库，再引入有边界的完整性证明 |
-| GitHub API body | request 有总超时和有界分页，但 JSON response 尚无独立 body byte cap | 使用有界 reader 并测试超限 response，避免异常服务端造成内存放大 |
-| manifest 资源预算 | regular manifest 当前无独立 byte cap，activation history 追加且不压缩 | 对文件字节、entry/event 数设上限；另立 ADR 做可审计 history 压缩 |
-| 路径遍历 TOCTOU | 当前按组件拒绝 symlink/非目录、在写前重检并验证 tag/SHA；store root 自身可作为 deliberate symlink trust anchor；非协作 writer 仍可能命中 check 与 syscall 间窗口 | 评估 `openat`/目录 fd anchored traversal 与 root pinning；先定义 Darwin/Linux 一致失败语义 |
-| explain 只读证据 | V0.3 subject 已增加 name/path 独立目录快照与 `http.DefaultTransport` spy；5 项定向测试与固定提交全仓回归通过 | 保持测试，避免未来 detector 漂移破坏零写/零网络契约 |
+| schema v2 backward compatibility | V0.2 must reject v2 to avoid old writers dropping history/policy; migration only builds a synthetic root from the current state and cannot recover historical facts | Backup and downgrade documentation before release; no silent v2→v1 conversion is provided |
+| schema field boundary | The V0.3 decoder now requires v2 policy/retention/history per the declared schema, and rejects v0/v1 entries carrying v2-only fields; but Go's JSON still accepts duplicate object keys | Add a duplicate-key-aware tokenizer/decoder and regression tests later; the current unknown-field check does not claim to cover duplicate keys |
+| History growth | Activation events are appended; retention only deletes artifacts, never events | Design auditable compression in a separate ADR; not guessed in V0.3 |
+| Explicit original | Legacy migration cannot prove the original's parent; lineage is deliberately terminated after restore | When the user needs to continue upgrading, a new forward event is built from that state; documentation notes the default rollback has no ancestor |
+| Repair plan freshness | The plan is bound to the data-root identity/fingerprint; at apply time, any relevant state difference makes it stale. Writing the plan into the observed tree can invalidate itself | Recommend placing the plan outside the data root; the staleness check is not relaxed |
+| Lock traces from repair apply | apply confirms existing root durability and creates/uses `state.lock`, but a fingerprint failure must not change live/store/manifest/journal | The verification report clearly distinguishes the lock file from zero writes to business state |
+| support privacy | Currently only anonymized ordinals/counts/enums are output; secret-fixture regression must still be run continuously, and users should also manually review before public submission | A default deny-list for future fields is not enough; an explicit allow-list should be maintained |
+| Installer trust root | checksum and archive come from the same GitHub Release; when the installer detects an authenticated gh CLI, it runs `gh attestation verify` on the downloaded archive (`--repo` + an anchored `--cert-identity-regex` pins the certificate SAN to the release workflow's `refs/tags/v*` run; `--signer-workflow` is not used because gh implements it as an unescaped, unanchored SAN prefix regex); `HUKOU_REQUIRE_ATTESTATION=1/true/yes` can force it, and invalid values fail loud; when gh is missing/unauthenticated, it still defaults to falling back to transport-only trust | Attestation is only produced by the attest job once the repository is public; before then this verification is unavailable on real releases; evaluate default enforcement and signing policy before the public flagship release |
+| Install target contention | The V0.3 subject now treats dangling symlinks as existing; when Perl is available, the final directory entry uses `link(2)` atomic no-replace / forced `rename(2)`; on Linux without Perl it falls back to `ln -T`/`mv -T`; directory, symlink-to-directory, post-precheck contention, and duplicate-member tests pass on the fixed commit | Keep the same-filesystem-as-target-directory precondition; force remains a separate, explicitly opt-in overwrite path |
+| Plan replay/freshness | The fingerprint only covers action-relevant observations; unrelated changes do not make the plan stale; `generated_at` carries no expiry semantics — if the live state returns exactly to an old observation, the old plan may become applicable again | External audit of plan replay; if freshness semantics are needed, add an explicit expiry/nonce rather than relying on display time |
+| Transaction intent authorization | The intent validates the schema, absolute clean/unique paths, and before/after payloads, but does not independently bind operation/role/path to the manifest or an allowlist; current security relies on the data root being exclusively owned by the same trusted identity and not consuming low-privilege input in a privilege-escalating way | Define an explicit data-root ownership/permission threat model; audit low-privilege writable roots and elevated invocation, binding role/path if necessary |
+| Download size | 512 MiB is used when the API size is unknown; when a positive value is declared, the declared value is currently used as the read ceiling, with no independent global ceiling | Apply both a global maximum and a disk budget; add fail-closed tests for abnormally oversized asset sizes |
+| Go archive pre-scan | The selected entry itself is capped at 512 MiB, but the tar's initial selection scan walks the full decompression stream without accumulating total work/member count | Add a streaming budget for header count, total expansion work, and candidate count |
+| Shell installer package bloat | Currently checks the archive root, target member uniqueness, and target file type; no independent budget yet for total expanded bytes or member count | Add a streaming budget for zip bombs/excessive member counts, failing closed before writing the target when exceeded |
+| Installer network budget | `curl` restricts to the HTTPS protocol and retries, but sets no explicit connect/total timeout, maximum file size, or redirect host allowlist | Add a fail-closed network budget and redirect-host policy, and cover slow-connection/oversized-body/cross-host fixtures |
+| No publisher checksum | A real upgrade warns when there is no checksum asset, records the post-download hash, and continues; this provides auditability, not proof of publisher identity | Decide on default fail-closed, explicit opt-in, or a signing/attestation trust policy before the public flagship release |
+| Release list ceiling | At most 10x100 releases; fails closed once the ceiling is filled | Introduce a bounded completeness proof if an oversized repository is actually encountered |
+| GitHub API body | Requests have a total timeout and bounded pagination, but the JSON response has no independent body byte cap yet | Use a bounded reader and test over-limit responses to avoid memory amplification from an anomalous server |
+| Manifest resource budget | The regular manifest currently has no independent byte cap; activation history is appended and not compressed | Set an upper bound on file bytes and entry/event counts; design auditable history compression in a separate ADR |
+| Path traversal TOCTOU | Currently rejects symlinks/non-directories component by component, re-checks before writing, and validates tag/SHA; the store root itself can serve as a deliberate symlink trust anchor; a non-cooperative writer may still hit the window between the check and the syscall | Evaluate `openat`/directory-fd-anchored traversal and root pinning; first define consistent Darwin/Linux failure semantics |
+| explain read-only evidence | The V0.3 subject now adds independent name/path directory snapshots and an `http.DefaultTransport` spy; 5 targeted tests and the fixed-commit whole-repo regression pass | Keep the tests, to prevent future detector drift from breaking the zero-write/zero-network contract |
 
-## H2 恢复边界
+## H2 Recovery Boundaries
 
-- WAL 只覆盖 journal 中精确绑定的 before/after。恢复会先分类全部参与者，并在写入前复核；此时发现 live/manifest/original 已变成第三种状态会停止并保留 pending evidence。非协作外部写仍可命中最后一次复核与 rename/remove 系统调用之间的窄 TOCTOU 窗口。
-- scan、list、doctor 与纯 `--dry-run` 不持写锁；它们会报告检查瞬间已知的 pending transaction，但不会对并发的非协作文件系统写入提供一致快照保证。
-- durability 返回成功表示操作系统接受了 file/dir sync；不等于磁盘介质、控制器或文件系统绝不损坏。
-- 旧版本遗留的 `.hukou-rollback-*` 没有 transaction ID，doctor 只能报告，不能猜测恢复。
-- doctor 当前没有自动 repair；这是刻意的安全边界，不是遗漏一个通用删除按钮。
+- The WAL only covers the before/after states precisely bound in the journal. Recovery first classifies all participants and re-checks before writing; if live/manifest/original is found to have become a third state at that point, it stops and retains pending evidence. A non-cooperative external write can still hit the narrow TOCTOU window between the final re-check and the rename/remove syscall.
+- scan, list, doctor, and pure `--dry-run` do not hold the write lock; they report the pending transaction known at the instant of the check, but provide no consistent-snapshot guarantee against concurrent non-cooperative filesystem writes.
+- A successful durability return means the operating system accepted the file/dir sync; it does not mean the disk media, controller, or filesystem can never be corrupted.
+- `.hukou-rollback-*` files left over from old versions have no transaction ID; doctor can only report them, not guess a recovery.
+- doctor currently has no automatic repair; this is a deliberate safety boundary, not a missing generic delete button.
 
-## Phase 1 已知限制
+## Phase 1 Known Limitations
 
-- scan 的 Stat/Open 间存在 TOCTOU。
-- npm wrapper、nvm、自定义 prefix 的归属不总能精确还原。
-- PATH 空段被刻意跳过，不按 POSIX 解释为 CWD。
-- 探测结果是证据驱动的最佳判断，不是软件供应链证明。
+- There is a TOCTOU between scan's Stat and Open.
+- Ownership attribution for npm wrappers, nvm, and custom prefixes cannot always be precisely reconstructed.
+- Empty PATH segments are deliberately skipped, not interpreted as CWD per POSIX.
+- Detection results are an evidence-driven best judgment, not a software-supply-chain proof.
 
-## 发布与工程风险
+## Release and Engineering Risks
 
-- 仓库仍 private，但 V0.3 分支已加入 Apache-2.0 根 LICENSE、THIRD_PARTY_NOTICES
-  和依赖/改编来源许可证；这属于公开准备，不代表仓库已经公开或 V0.3 已发布。
-- release archive 的双语 README、根 LICENSE、notices 与 `LICENSES/` 已在四目标
-  双构建 snapshot 验收；4/4 checksums、root/mode/buildinfo 与安装器 smoke 通过。
-- 固定 subject 已在 non-root Linux/arm64 容器完成 ordinary/race，并在 GNU tar 1.34
-  下完成 installer/release tests；source/module cache read-only，`GOPROXY=off`。
-- GitHub hosted runner 与 Action 主版本会演进，workflow 升级应单独验证。
-- Draft PR #6 的 CI run `29352308455` 已确认五个 job 均因账户 billing/spending limit
-  在 0 steps 前失败；不得以本地结果冒充远端绿色。
-- CodeQL job 当前只对 public repository 运行；private 中 skipped 不等于通过。
-- workflow 会先从四个 archive 提取四个平台二进制，再用固定 Syft 1.46.0 生成并
-  断言 SPDX 内容。验收曾发现扫描压缩包目录只得到 1 package/0 files 的空壳 SBOM，
-  修复后为 21 packages/4 files；artifact attestation 仍仅 public repository 执行。
-- 手动 workflow 只生成 snapshot，防止误发布；只有已推送 tag 触发 Release。
-- attestation 只在事件发生时 repository 为 public 才运行；private 状态下先创建
-  Release、之后直接改变 visibility 会使既有未 attested 资产随仓库暴露。公开
-  Go/No-Go 必须审计完整 private tag/Release → public 时序，不能只检查单次 job 条件。
-- `go.mod` 声明 Go 1.26.2，hosted setup-go 会读取该值；现有固定提交验证与历史
-  archive hash 使用 Go 1.26.5，而 hosted job 未启动。两套 toolchain 需要分别复核。
-- 本轮授权禁止创建 `v0.3.0` tag、正式 Release 或改变 repository visibility。
+- The repository is still private, but the V0.3 branch has already added the Apache-2.0 root LICENSE, THIRD_PARTY_NOTICES, and the licenses of dependency/adaptation sources; this is public-release preparation and does not mean the repository is already public or that V0.3 has shipped.
+- The release archive's bilingual README, root LICENSE, notices, and `LICENSES/` have been accepted in the four-target dual-build snapshot; 4/4 checksums, root/mode/buildinfo, and the installer smoke test pass.
+- The fixed subject has completed ordinary/race testing in a non-root Linux/arm64 container, and completed installer/release tests under GNU tar 1.34; the source/module cache is read-only, with `GOPROXY=off`.
+- GitHub-hosted runners and Action major versions will evolve; workflow upgrades should be verified separately.
+- Draft PR #6's CI run `29352308455` has confirmed that all five jobs failed before 0 steps due to the account billing/spending limit; local results must not be passed off as a remote green build.
+- The CodeQL job currently only runs for public repositories; being skipped while private does not count as passing.
+- The workflow first extracts the four platform binaries from the four archives, then generates and asserts SPDX content with a fixed Syft 1.46.0. Acceptance testing once found that scanning the archive directory produced an empty-shell SBOM of only 1 package/0 files; after the fix it became 21 packages/4 files. Artifact attestation still only runs for public repositories.
+- The manual workflow only produces a snapshot, to prevent accidental release; only a pushed tag triggers a Release.
+- Attestation only runs if the repository is public at the moment the event occurs; if a Release is first created while the repository is private and visibility is later changed directly, existing unattested assets are exposed along with the repository. A public Go/No-Go decision must audit the complete private tag/Release → public sequencing, not just check a single job's condition.
+- `go.mod` declares Go 1.26.2, which the hosted setup-go will read; existing fixed-commit verification and historical archive hashes used Go 1.26.5, while the hosted job has not run. The two toolchains need to be reviewed separately.
+- This round's authorization prohibits creating the `v0.3.0` tag, an official Release, or changing repository visibility.
 
-## 风险关闭规则
+## Risk Closure Rules
 
-不能仅删除本文件中的条目。关闭风险时必须同时提供：
+An entry in this file cannot simply be deleted. Closing a risk must be accompanied by:
 
-1. 对应代码或文档变更。
-2. 失败场景测试。
-3. change record。
-4. 指向具体 commit 的 verification report。
+1. The corresponding code or documentation change.
+2. A failure-scenario test.
+3. A change record.
+4. A verification report pointing to a specific commit.

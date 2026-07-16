@@ -1,9 +1,9 @@
 # Architecture Decision Records
 
-ADR 记录长期、跨模块或难以无损回滚的决策。
+ADRs record long-term, cross-module, or hard-to-losslessly-revert decisions.
 
-状态：Proposed、Accepted、Superseded、Rejected。
+Status: Proposed, Accepted, Superseded, Rejected.
 
-新 ADR 不改写旧 ADR 的历史理由；决策变化时新增文件，并在旧文件顶部链接替代者。
+New ADRs do not rewrite the historical rationale of old ADRs; when a decision changes, add a new file and link the replacement at the top of the old file.
 
-当前 ADR 索引见 [`../09-decision-log.md`](../09-decision-log.md)。
+The current ADR index is at [`../09-decision-log.md`](../09-decision-log.md).

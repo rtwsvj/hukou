@@ -44,8 +44,8 @@ Never upload your complete hukou data directory to a public issue.
 ## Supported scope
 
 Current release archives target macOS and Linux on amd64 and arm64. Windows is
-not supported. Actual runtime-validation evidence for each release is recorded
-under [docs/codex/verification-reports](docs/codex/verification-reports/).
+not supported. The claims-to-evidence map and reproduction commands for the
+latest release candidate are recorded under [docs/audit/](docs/audit/).
 
 hukou supports its own documented workflow for standalone binaries. It does
 not provide support for upgrading software owned by Homebrew, npm, Cargo,

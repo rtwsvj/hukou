@@ -1,4 +1,4 @@
-# ADR-0002：活跃路径使用常规文件原子替换
+# ADR-0002: Active Path Uses Atomic Regular-File Replacement
 
 - Status: Accepted
 - Date: 2026-07-13
@@ -6,30 +6,30 @@
 
 ## Context
 
-Phase 2 通过“创建完整临时 symlink，再同目录 rename”切换活跃版本。PR #1 的前两次 macOS CI 在紧密并发读取测试中分别从 `ReadFile(linkPath)` 和单次 `Readlink(linkPath)` 收到 `EINVAL`；Ubuntu 与本机未复现。这说明即使目录项替换本身是原子的，macOS/APFS 读者仍可能在 symlink inode 交换窗口看到瞬时解引用失败。
+Phase 2 switched the active version by "creating a complete temporary symlink, then renaming it within the same directory." In the first two macOS CI runs of PR #1, tight concurrent-read tests received `EINVAL` from `ReadFile(linkPath)` and a single `Readlink(linkPath)` respectively; this did not reproduce on Ubuntu or locally. This shows that even though the directory-entry replacement itself is atomic, macOS/APFS readers can still see a transient dereference failure during the symlink inode swap window.
 
-CLI 工具路径的首要契约是调用者应持续打开完整旧版本或完整新版本。不能仅在测试中忽略 `EINVAL`。
+The primary contract for the CLI tool path is that callers should consistently open either the complete old version or the complete new version. `EINVAL` cannot simply be ignored in tests.
 
 ## Decision
 
-1. store 中的 `original/<binary>` 与 `<tag>/<binary>` 保持不可变常规文件副本。
-2. `Activate` 在 live path 同目录创建临时常规文件，完整复制目标、设置权限、`fsync`、close 后 rename 覆盖 live path。
-3. `AdoptOriginal` 只复制 original 备份，不改变现有 live regular file。
-4. rollback original 与普通 tag 使用同一 `Activate` 路径。
-5. `Prune` 由调用方显式传入受保护 tag，不再从活跃 symlink 反推当前版本。
-6. 事务快照继续识别 regular file 与遗留 symlink；失败时恢复原拓扑。遗留 symlink 首次成功激活后迁移为 regular file。
-7. store 内部目录解析拒绝大小写别名、symlink 与非目录组件，避免跨平台保留名碰撞及写入/删除越界。
+1. `original/<binary>` and `<tag>/<binary>` in the store remain immutable regular-file copies.
+2. `Activate` creates a temporary regular file in the same directory as the live path, fully copies the target, sets permissions, `fsync`s, and after closing, renames it to overwrite the live path.
+3. `AdoptOriginal` only copies the original backup and does not change the existing live regular file.
+4. Rolling back to original and to a regular tag use the same `Activate` path.
+5. `Prune` has the caller explicitly pass in the protected tag, and no longer infers the current version from the active symlink.
+6. Transaction snapshots continue to recognize regular files and legacy symlinks; the original topology is restored on failure. A legacy symlink migrates to a regular file after its first successful activation.
+7. Internal store directory resolution rejects case-alias, symlink, and non-directory components, to avoid cross-platform reserved-name collisions and out-of-bounds write/delete.
 
 ## Consequences
 
-- 活跃文件与 store 版本各占一份空间；换取平台一致的打开语义和更简单的 live path。
-- 活跃文件不再通过链接直接证明所属版本，manifest tag + SHA-256 继续作为事实源，hukou detector 会重新哈希验证。
-- 复制契约只保证文件字节与 rwx 权限位。owner/group、ACL、xattr、mtime、setuid/setgid/sticky 等特殊权限位以及 hardlink topology 均不保留；`adopt` 会拒绝带特权或特殊权限位的源文件，而不是静默降级。
-- regular-file 快照使用独立副本，避免与 live file 共享 inode；普通错误返回的补偿路径与新激活模型直接兼容。
-- 这仍不是断电安全事务：目录 `fsync`、WAL 与 doctor 留 H2；进程被强制终止时，live path 所在目录可能留下未进入生效路径的事务临时文件（常规文件提交用 `.hukou-txn-*`，遗留 symlink 拓扑用 `.hukou-txn-link-*`）。
+- The active file and the store version each occupy their own space, in exchange for platform-consistent open semantics and a simpler live path.
+- The active file no longer directly proves which version it belongs to via a link; manifest tag + SHA-256 continues to serve as the source of truth, and the hukou detector re-hashes to verify.
+- The copy contract only guarantees the file bytes and rwx permission bits. owner/group, ACL, xattr, mtime, special permission bits such as setuid/setgid/sticky, and hardlink topology are all not preserved; `adopt` rejects source files with privileged or special permission bits rather than silently downgrading.
+- The regular-file snapshot uses an independent copy, avoiding sharing an inode with the live file; the compensation path for ordinary error returns is directly compatible with the new activation model.
+- This is still not a power-loss-safe transaction: directory `fsync`, WAL, and doctor are left for H2; if the process is forcibly terminated, the directory containing the live path may be left with transaction temp files that never entered the effective path (`.hukou-txn-*` for regular-file commits, `.hukou-txn-link-*` for legacy symlink topology).
 
 ## Evidence
 
 - Initial CI: `https://github.com/rtwsvj/hukou/actions/runs/29265826948`
 - Single-Readlink retry CI: `https://github.com/rtwsvj/hukou/actions/runs/29266208797`
-- 最终证据写入 H1 verification report 与后续 macOS CI run。
+- Final evidence is recorded in the H1 verification report and subsequent macOS CI runs.

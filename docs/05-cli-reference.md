@@ -1,12 +1,12 @@
 # CLI Reference
 
-本页描述用户可见接口。最终参数约束以当前 Cobra 命令为准；修改命令时必须同步本页和根 README。
+This page describes the user-facing interface. The authoritative source for parameter constraints is the current Cobra command; when changing a command, this page and the root README must be updated in sync.
 
 ## `hukou version`
 
-输出发布版本、commit 与构建时间。本地未注入构建显示 `devel`/`unknown`，release archive 必须显示 tag 与固定提交。
+Prints the release version, commit, and build time. A local build without injected build info shows `devel`/`unknown`; a release archive must show the tag and a pinned commit.
 
-副作用：无。
+Side effects: none.
 
 ## `hukou scan`
 
@@ -14,28 +14,28 @@
 hukou scan [--json] [--unknown-only] [--source <name>] [--dir <dir>...]
 ```
 
-- `--json`：完整 JSON report。
-- `--unknown-only`：只显示 `source=unknown`。
-- `--source`：按来源过滤，不区分大小写。
-- `--dir`：追加扫描目录，可重复。
+- `--json`: full JSON report.
+- `--unknown-only`: show only `source=unknown`.
+- `--source`: filter by source, case-insensitive.
+- `--dir`: append a scan directory; repeatable.
 
-表格输出在汇总行后先逐行渲染 warning（前缀 `warning:`，探测器降级），再逐行渲染 note（前缀 `note:`，非致命提示）。hukou 事务残留的读路径语义：仅**已验证的 `completed-*`**（名字精确为 `completed-<32位小写hex>`、真实目录非软链、COMMIT 标记与 ID 一致）不降级，只产出 note `stale journal residue; run a mutating command or repair to clean`；`pending-*`、`building-*`（可能是另一进程活跃 Begin 的窗口，单点检查覆盖不了读取周期）、unknown 及畸形名字一律使 hukou 探测器降级——摘出链、已收编二进制回落 `system`/`unknown` 并写 warning。`--json` 中 `warnings` 与 `notes` 为独立字段。
+After the summary line, table output renders warnings line by line first (prefixed `warning:`, detector degraded), then notes line by line (prefixed `note:`, non-fatal hints). Read-path semantics for hukou transaction residue: only a **verified `completed-*`** entry (name exactly `completed-<32-char lowercase hex>`, a real directory rather than a symlink, and the COMMIT marker matching the ID) is not degraded — it only produces the note `stale journal residue; run a mutating command or repair to clean`. `pending-*`, `building-*` (which may be a window where another process's Begin is still active — a single point-in-time check cannot cover the whole read cycle), unknown, and malformed names all degrade the hukou detector: the extraction chain falls back and an already-adopted binary falls back to `system`/`unknown` with a warning written. In `--json`, `warnings` and `notes` are separate fields.
 
-副作用：无；不联网、不写用户目录。读路径事务检查为 `transaction.CheckReadable`（仅放行已验证 completed 残留）；写路径（`Begin`）仍对全部残留失败关闭。adopt 的安全闸门只消费 warnings，不消费 notes——普通探测器提示不会阻断 adopt。
+Side effects: none; no network access, no writes to the user's directories. The read-path transaction check is `transaction.CheckReadable` (it admits only verified completed residue); the write path (`Begin`) still fails closed on any residue. adopt's safety gate consumes only warnings, not notes — a plain detector hint will not block adopt.
 
-## `hukou explain`（V0.3 分支，未发布）
+## `hukou explain` (V0.3 branch, unreleased)
 
 ```text
 hukou explain <name|path> [--json]
 ```
 
-- 裸名字解释 PATH 中所有同名候选，active match 与 shadowed match 都保留。
-- 显式路径只解释该 regular executable。
-- 报告 path/real path/kind/source/package/version/confidence/evidence/shadowed；
-  detector 加载问题进入 warnings，不伪造成 exact attribution。
-- `--json` 输出独立 `schema_version=1` report。
+- A bare name resolves all same-named candidates on PATH, keeping both the active match and any shadowed matches.
+- An explicit path resolves only that regular executable.
+- The report includes path/real path/kind/source/package/version/confidence/evidence/shadowed;
+  detector loading problems go into warnings and are never fabricated into exact attribution.
+- `--json` outputs an independent `schema_version=1` report.
 
-副作用：无；只读本地文件系统，不联网。
+Side effects: none; read-only access to the local filesystem, no network access.
 
 ## `hukou adopt`
 
@@ -44,29 +44,29 @@ hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force]
 hukou adopt <name|path> [owner/repo] [--tag <tag>] [--local] [--force] --dry-run [--json]
 ```
 
-- 裸名字经 PATH 查找，路径参数直接定位。
-- Go 二进制可从 build info 推导 `owner/repo`。
-- 其他二进制必须给 repo 或使用 `--local`。
-- `--force` 允许越过其他管理器所有权闸门，不越过文件与路径安全检查。
-- 带 setuid/setgid/sticky 等特权或特殊权限位的源文件会被拒绝。
-- `--tag` 必须是单一路径组件；`original`（含大小写别名）是不可变备份保留名，不能作为 adopt tag。
-- V0.3 分支的 `--dry-run` 检查文件、来源、repo/tag、冲突和 SHA，并输出将要写入的计划；不创建 data root、lock、store、manifest、backup 或 transaction，也不 recovery/GC。
-- `--json` 仅允许和 `--dry-run` 同时使用，输出 `schema_version=1`。
+- A bare name is resolved via PATH lookup; a path argument is located directly.
+- For Go binaries, `owner/repo` can be derived from build info.
+- Other binaries must specify a repo or use `--local`.
+- `--force` allows bypassing the ownership gate of other package managers, but not file and path safety checks.
+- Source files carrying privileged or special permission bits such as setuid/setgid/sticky are rejected.
+- `--tag` must be a single path component; `original` (including case-variant aliases) is the reserved name for the immutable backup and cannot be used as an adopt tag.
+- In the V0.3 branch, `--dry-run` checks the file, source, repo/tag, conflicts, and SHA, and prints the plan of what would be written; it does not create the data root, lock, store, manifest, backup, or transaction, and does not run recovery/GC.
+- `--json` is allowed only together with `--dry-run`, and outputs `schema_version=1`.
 
-真实收编副作用：获取 `state.lock`、恢复旧 transaction、创建 data root、持久化 transaction、备份 original、创建 root activation、保存 schema v2 manifest。真实路径不会信任旧 dry-run，而是在锁内重检。H1 后同名条目不得静默覆盖。activation 会再次验证 safe tag，并拒绝让 history 中同一个 tag 绑定不同 SHA。original 备份只保留字节与 rwx 权限位，不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。
+Side effects of a real adoption: acquires `state.lock`, recovers any stale transaction, creates the data root, persists the transaction, backs up the original, creates the root activation, and saves the schema v2 manifest. The real path never trusts a prior dry-run — it re-checks everything inside the lock. After H1, an entry with the same name must not be silently overwritten. Activation re-validates the safe tag, and rejects binding the same tag in history to a different SHA. The original backup preserves only the bytes and the rwx permission bits — not owner/group, ACLs, xattrs, mtime, special permission bits, or hardlink topology.
 
-## `hukou outdated`（V0.3 分支，未发布）
+## `hukou outdated` (V0.3 branch, unreleased)
 
 ```text
 hukou outdated [name ...] [--json] [--asset <substring>]
 ```
 
-- 不给 name 时检查全部已收编条目；重复 name 去重。
-- local 条目标记 `local`，不联网；live SHA drift 在 GitHub 请求前失败关闭。
-- 其余条目按 policy 查询 metadata、选择候选和平台资产；不下载、不写本地状态。
-- `--asset` 与 upgrade 相同，`^` 前缀表示反选。
-- current/outdated/local 是正常结果；unavailable/unsupported/drift 等失败使整体非零，同时保留 report。
-- `--json` 输出 `schema_version=1`。
+- When no name is given, all adopted entries are checked; duplicate names are deduplicated.
+- Local entries are marked `local` and no network access is made; live SHA drift fails closed before any GitHub request.
+- For remaining entries, metadata is queried per policy, and candidates and platform assets are selected; nothing is downloaded and no local state is written.
+- `--asset` behaves the same as in upgrade; a `^` prefix means negation.
+- current/outdated/local are normal results; failures such as unavailable/unsupported/drift make the overall exit non-zero while still preserving the report.
+- `--json` outputs `schema_version=1`.
 
 ## `hukou upgrade`
 
@@ -74,13 +74,13 @@ hukou outdated [name ...] [--json] [--asset <substring>]
 hukou upgrade [name ...] [--all] [--dry-run] [--asset <substring>]
 ```
 
-- 名称列表与 `--all` 二选一。
-- `--all` 只表示 manifest 中全部 hukou-adopted entries，不运行 Homebrew/npm/Cargo/mise/系统更新。
-- `--asset` 用子串过滤资产，以 `^` 开头表示反选。
-- local 条目跳过。
-- `--dry-run` 与 outdated 复用 policy-aware checker，查询必要 release metadata 和资产选择，但不下载、不创建目录、不持锁、不 GC。
+- A name list and `--all` are mutually exclusive.
+- `--all` means all hukou-adopted entries in the manifest only; it does not run Homebrew/npm/Cargo/mise/system updates.
+- `--asset` filters assets by substring; a `^` prefix means negation.
+- Local entries are skipped.
+- `--dry-run` reuses the same policy-aware checker as outdated, querying the necessary release metadata and asset selection, but without downloading, creating directories, holding the lock, or running GC.
 
-真实升级会在锁内重检后下载并校验资产、写 store、记录 child activation、持久化 before/after transaction、切换活跃路径、更新 manifest；transaction clean 时再按 current/original/pin/lineage 保护集两阶段清理旧版本。metadata 选择遵循 effective policy，默认 SemVer 不降级；exact pin 可显式前进或回退。`--dry-run` 发现 pending transaction 时失败提示，但不会自动恢复或写状态。
+A real upgrade re-checks inside the lock, then downloads and verifies the asset, writes the store, records the child activation, persists the before/after transaction, switches the active path, and updates the manifest; once the transaction is clean, old versions are cleaned up in two phases according to the current/original/pin/lineage protection set. Metadata selection follows the effective policy; by default SemVer never downgrades, while an exact pin can move explicitly forward or backward. `--dry-run` fails with a message when it finds a pending transaction, but does not auto-recover or write state.
 
 ## `hukou rollback`
 
@@ -88,11 +88,11 @@ hukou upgrade [name ...] [--all] [--dry-run] [--asset <substring>]
 hukou rollback <name> [--to <tag|original>]
 ```
 
-V0.3 分支不带 `--to` 时选择当前 activation 的逻辑 parent；连续 rollback 按 lineage 向前走，不读取 store mtime。`--to <tag>` 必须是安全单路径组件、且是当前 lineage 中最近的同 tag ancestor；目标 store artifact 的 tag/SHA 必须同时与 history 绑定一致。`--to original` 恢复不可变收编原件并生成无 parent 的新 event，后续默认 rollback 不猜测去向。操作前后都更新 active binary SHA。
+In the V0.3 branch, without `--to`, the logical parent of the current activation is selected; successive rollbacks walk forward through the lineage rather than reading store mtimes. `--to <tag>` must be a safe single path component and the nearest ancestor with that tag in the current lineage; the target store artifact's tag/SHA must also be consistent with what's bound in history. `--to original` restores the immutable adopted original and generates a new event with no parent, so subsequent default rollbacks no longer guess a destination. The active binary SHA is updated both before and after the operation.
 
-副作用：获取 `state.lock`、先恢复旧 transaction、持久化新 transaction、原子替换活跃常规文件、把 history/current 放进同一 after-manifest；失败必须补偿或保留可重入恢复证据。
+Side effects: acquires `state.lock`, first recovers any stale transaction, persists the new transaction, atomically replaces the active regular file, and puts history/current into the same after-manifest; on failure, it must either compensate or preserve evidence for a re-entrant recovery.
 
-激活复制只保留字节与 rwx 权限位；不保留 owner/group、ACL、xattr、mtime、特殊权限位或 hardlink topology。文件、rename 与父目录持久化后才进入下一事务阶段。
+Activation copy preserves only the bytes and rwx permission bits — not owner/group, ACLs, xattrs, mtime, special permission bits, or hardlink topology. The next transaction phase begins only after the file, the rename, and the parent directory have all been persisted.
 
 ## `hukou list`
 
@@ -100,13 +100,11 @@ V0.3 分支不带 `--to` 时选择当前 activation 的逻辑 parent；连续 ro
 hukou list
 ```
 
-显示 `NAME / TAG / REPO / PATH / VERSIONS`。`VERSIONS` 只统计下载/保留的普通 tag，
-不把 immutable `original` 算作版本；但每个条目输出前都必须证明 original namespace
-恰好包含预期 regular backup，因此 original 缺失、重复或拓扑异常会使 list 失败关闭。
-副作用：无。
+Displays `NAME / TAG / REPO / PATH / VERSIONS`. `VERSIONS` counts only downloaded/retained regular tags and does not count the immutable `original` as a version; however, before each entry is printed it must be proven that the original namespace contains exactly the expected regular backup, so a missing, duplicated, or topologically abnormal original causes list to fail closed.
+Side effects: none.
 
-pending transaction 或无效 store 拓扑不会被吞成正常版本数；list 会失败关闭并提示先诊断/恢复。
-脚本消费者须注意：事务状态未清（存在未决 transaction）或 store 拓扑异常时 `list` 返回非零退出码而非打印部分清单，因此不能把 `list` 的成功退出之外的情况当作空清单处理。
+A pending transaction or an invalid store topology is never silently swallowed into a normal version count; list fails closed and prompts you to diagnose/recover first.
+Script consumers should note: when transaction state is not clean (a pending transaction exists) or the store topology is abnormal, `list` returns a non-zero exit code instead of printing a partial listing — so any outcome other than a successful exit from `list` must not be treated as an empty listing.
 
 ## `hukou doctor`
 
@@ -114,17 +112,17 @@ pending transaction 或无效 store 拓扑不会被吞成正常版本数；list 
 hukou doctor [--json] [--deep]
 ```
 
-- 默认检查 manifest/backup、entry、live SHA/类型/权限、original/current tag、store 拓扑与 transaction inventory。
-- `--deep` 额外 hash retained versions，并检查已登记 live parent 的 hukou 临时文件前缀。
-- manifest 无效时，manifest 外 store tool 标为 `UNCLASSIFIABLE`，不会猜成可删除 orphan。
-- `transactions/` 里的合法 `quarantined-*` 容器以 Warning（`TRANSACTION_QUARANTINED_PRESENT`）上报，提示用户检查后在确认无价值时手动删除；未知真实目录以 Error（`TRANSACTION_ENTRY_UNKNOWN`）上报，要求用户手动处置或升级 hukou；`--deep` 发现的 `.hukou-txn-*` 孤儿临时文件（`LIVE_TRANSACTION_TEMP_PRESENT`）同样仅提示用户确认无活跃事务后手动删除。
-- warning/error 会输出完整报告并返回非零；JSON stdout 始终是同一 Report 模型。
+- By default, checks manifest/backup, entries, live SHA/type/permissions, original/current tags, store topology, and the transaction inventory.
+- `--deep` additionally hashes retained versions and checks hukou temp file prefixes against the registered live parent.
+- When the manifest is invalid, a store tool outside the manifest is labeled `UNCLASSIFIABLE` rather than guessed as a deletable orphan.
+- A legitimate `quarantined-*` container in `transactions/` is reported as a Warning (`TRANSACTION_QUARANTINED_PRESENT`), prompting the user to inspect it and delete it manually once confirmed to be of no value; an unknown real directory is reported as an Error (`TRANSACTION_ENTRY_UNKNOWN`), requiring the user to handle it manually or upgrade hukou; a `.hukou-txn-*` orphan temp file found by `--deep` (`LIVE_TRANSACTION_TEMP_PRESENT`) is likewise only flagged for the user to delete manually after confirming there is no active transaction.
+- A warning/error prints the full report and returns non-zero; JSON stdout is always the same Report model.
 
-副作用：无。当前正式版本 v0.2.0 没有 repair；V0.3 分支也没有 repair-all。
+Side effects: none. The current official release, v0.2.0, has no repair; the V0.3 branch also has no repair-all.
 
-V0.3 分支仍保持 doctor 本身无 repair 参数；所有修复都经过下面独立命令。
+The V0.3 branch still keeps doctor itself free of repair flags; all fixes go through the separate command below.
 
-## `hukou policy`（V0.3 分支，未发布）
+## `hukou policy` (V0.3 branch, unreleased)
 
 ```text
 hukou policy show [name] [--json]
@@ -134,15 +132,14 @@ hukou policy set <name> [--mode semver|github-latest]
                          [--rollback-depth <N>]
 ```
 
-- `show` 输出 effective policy；entry 没有 retention override 时显示 manifest 来源。
-- `set` 至少需要一个变更 flag；`--pin` 与 `--unpin` 互斥，depth 必须非负。
-- 显式 `--mode semver` 会拒绝 local entry，以及当前 tag 不是 Go update policy 所需的
-  严格可排序 SemVer `X.Y.Z`（可带小写 `v` 和合法 prerelease/build）的 entry。
-  发布/安装脚本使用更窄的 v-prefix、无 build metadata 契约；不要混用两套用途。
-- `set` 在 state lock 内重新加载并原子保存 manifest，只改 policy，不触碰 live/store。
-- pending transaction 使 show/set 失败关闭；set 不隐式 recovery。
+- `show` prints the effective policy; when an entry has no retention override, it shows the manifest's source value.
+- `set` requires at least one change flag; `--pin` and `--unpin` are mutually exclusive, and depth must be non-negative.
+- An explicit `--mode semver` rejects local entries, as well as entries whose current tag is not the strictly orderable SemVer `X.Y.Z` (optionally with a lowercase `v` and a valid prerelease/build) required by the Go update policy.
+  The release/install scripts use a narrower v-prefix, no-build-metadata contract — do not conflate the two usages.
+- `set` reloads and atomically saves the manifest inside the state lock, changing only the policy without touching live/store.
+- A pending transaction makes show/set fail closed; set does not implicitly recover.
 
-## `hukou repair`（V0.3 分支，未发布）
+## `hukou repair` (V0.3 branch, unreleased)
 
 ```text
 hukou repair plan --action recover-transaction --output <plan.json>
@@ -150,28 +147,26 @@ hukou repair plan --action restore-manifest-backup --output <plan.json>
 hukou repair apply --plan <plan.json>
 ```
 
-- `plan` 只读 hukou data root，并只写用户明确指定的 `0600` plan 文件；父目录必须已存在。
-- `apply` 持 state lock，重算 data-root identity、state fingerprint 和前置条件；plan stale 时零业务状态写入失败。apply 可能创建/使用 lock 文件，所以这不是“绝对零文件写入”。
-- `recover-transaction` 收敛未决 journal；未知**非目录**条目（垃圾文件/符号链接）会被移入 `quarantined-<16hex>` 容器（原名以 `%q` 记录在容器内 `META`，数据保留为 `payload`）后继续，不再楔死；未知**目录**可能是更新版本的 journal 布局，保持 fail-closed，需人工处置或升级 hukou。apply 输出会列出隔离明细，写命令的自动恢复也会把隔离记录打到 stderr。
-- `restore-manifest-backup` 只接受主文件缺失/无效、backup 语义有效、transaction clean 且所有 live SHA 匹配的状态。
-- **没有** `purge-quarantine`、`clean-live-temps`、repair-all、orphan 删除或 manifest merge；隔离本身由 `recover-transaction` 自动完成，隔离区与孤儿临时文件须由用户在确认安全后手动删除。
+- `plan` only reads the hukou data root, and writes only the `0600` plan file explicitly specified by the user; the parent directory must already exist.
+- `apply` holds the state lock and recomputes data-root identity, the state fingerprint, and preconditions; if the plan is stale, it fails with zero business-state writes. apply may create/use a lock file, so this is not "absolutely zero file writes."
+- `recover-transaction` converges pending journals; an unknown **non-directory** entry (a stray file/symlink) is moved into a `quarantined-<16hex>` container (the original name is recorded as `%q` in the container's `META`, with the data preserved as `payload`) and processing continues rather than getting stuck; an unknown **directory** may be a newer version's journal layout, so it stays fail-closed and requires manual handling or a hukou upgrade. apply's output lists the quarantine details, and the write commands' auto-recovery also logs quarantine records to stderr.
+- `restore-manifest-backup` accepts only a state where the primary file is missing/invalid, the backup semantics are valid, the transaction is clean, and all live SHAs match.
+- There is **no** `purge-quarantine`, `clean-live-temps`, repair-all, orphan deletion, or manifest merge; quarantining itself is done automatically by `recover-transaction`, and the quarantine area and orphaned temp files must be deleted manually by the user after confirming it is safe to do so.
 
-建议把 plan 写在 hukou data root 之外；把 plan 放入被 fingerprint 覆盖的状态树可能会让它在 apply 前自行变 stale。
+It's recommended to write the plan outside the hukou data root; placing the plan inside the state tree covered by the fingerprint may cause it to go stale on its own before apply.
 
-## `hukou support bundle`（V0.3 分支，未发布）
+## `hukou support bundle` (V0.3 branch, unreleased)
 
 ```text
 hukou support bundle --format json
 hukou support bundle --output <report.json>
 ```
 
-两种输出方式必须且只能选一个。stdout 模式零写；文件模式只写一个 `0600` JSON。
-报告离线生成且不上传，只包含安全 build/platform 值、脱敏 doctor finding、匿名
-policy/history 摘要和 transaction/store 计数，不包含原始 path/repo/tag/name、用户、
-环境变量、二进制或 WAL payload。
+Exactly one of the two output modes must be chosen. stdout mode performs zero writes; file mode writes only a single `0600` JSON file.
+The report is generated offline and never uploaded; it contains only safe build/platform values, redacted doctor findings, anonymized policy/history summaries, and transaction/store counts — it does not contain raw paths/repos/tags/names, user information, environment variables, binaries, or WAL payloads.
 
-## 退出状态
+## Exit status
 
-- 成功为 0。
-- 参数、完整性、网络、checksum、锁、文件系统或部分升级失败返回非零。
-- `upgrade --all` 即使其他条目成功，只要有一项失败，整体仍返回非零并打印失败清单。
+- Success is 0.
+- Argument, integrity, network, checksum, lock, filesystem, or partial-upgrade failures return non-zero.
+- For `upgrade --all`, even if other entries succeed, a single failing entry makes the overall result non-zero and prints the list of failures.

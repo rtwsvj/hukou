@@ -29,9 +29,6 @@ git diff bd4faa32d9b5b604b1b224f97fe891ed670f3742...1fa45a0d8473446e3208490f037a
 2. Review the [claims-to-evidence map](docs/audit/v0.3-claims-evidence.md).
 3. Work through the [security and reliability checklist](docs/audit/v0.3-review-checklist.md).
 4. Check the [artifact and platform matrix](docs/audit/v0.3-artifact-and-platform-evidence.md).
-5. Compare any conclusion with the original
-   [verification report](docs/codex/verification-reports/2026-07-14-v0.3-private-rc.md),
-   but do not treat that report as independent proof.
 
 ## Current boundary
 
