@@ -30,6 +30,7 @@ make release-verify
 | Target | 含义 |
 |---|---|
 | `build` | `-trimpath` 构建到 `bin/hukou` |
+| `build-release` | 单平台快速构建到 `bin/hukou`，经 `scripts/build_flags.sh` 注入 version/commit/date（与 `scripts/release.sh` 同一 ldflags 来源）；供公开后本地自装 |
 | `test` | 全仓库单测与隔离 mock e2e |
 | `race` | 全仓 race detector |
 | `coverage` | 生成被忽略的 `coverage.out` 并打印函数摘要 |
@@ -44,6 +45,23 @@ make release-verify
 | `release-verify` | `verify` 加 shellcheck 与 govulncheck 的发布专用门禁 |
 | `release` | 先运行 `release-verify`，再调用 `scripts/release.sh` |
 | `demo` | build 后在临时目录运行只读/隔离 demo，不应触碰真实 hukou 状态 |
+
+### 版本注入的单一来源与语义差异
+
+`scripts/build_flags.sh` 是 buildinfo `-X` ldflags 的唯一拼装点，
+`scripts/release.sh` 与 `make build-release` 都调用它，两条构建路径不会漂移。
+两者的**版本语义**是有意不同的：
+
+- `make release`（经 `scripts/release.sh`）要求严格 SemVer 2.0.0（校验在调用
+  build_flags 之前完成），且默认拒绝脏工作树。
+- `make build-release` 面向本地开发/自装：`VERSION=` 可传任意字符串；不传时回退
+  `git describe --tags --always --dirty`，允许出现 `-dirty` 后缀。
+
+```bash
+make build-release                    # git describe 版本
+make build-release VERSION=v0.3.0    # 显式版本
+./bin/hukou version                   # 验证注入
+```
 
 ## 安全的本地 CLI 试验
 

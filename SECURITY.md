@@ -15,12 +15,15 @@ not. Architecture decision records carry the full rationale.
 
 ### Protected (in scope)
 
-- **Installer trust chain.** `scripts/install.sh` refuses non-HTTPS asset URLs,
-  verifies the SHA-256 checksum of every downloaded archive against the
-  release's published `checksums.txt`, and can additionally require a GitHub
-  build-provenance attestation (`gh attestation verify`, gated by
-  `HUKOU_REQUIRE_ATTESTATION`) that binds the archive to this repository and its
-  release workflow before anything is extracted. See
+- **Installer trust chain.** `scripts/install.sh` refuses non-HTTPS asset URLs
+  by default: plain HTTP is always rejected, and `file://` sources are honored
+  only when explicitly opted in with `HUKOU_ALLOW_FILE_URL=1` (intended for
+  isolated tests and offline mirrors). It verifies the SHA-256 checksum of
+  every downloaded archive against the release's published `checksums.txt`,
+  and can additionally require a GitHub build-provenance attestation
+  (`gh attestation verify`, gated by `HUKOU_REQUIRE_ATTESTATION`) that binds
+  the archive to this repository and its release workflow before anything is
+  extracted. See
   [ADR-0001](docs/adr/ADR-0001-h1-safety-and-release-contract.md).
 - **Write-path integrity.** Activating a binary replaces the live file through a
   same-directory temporary regular file that is fully written, `fsync`ed, and
@@ -33,10 +36,13 @@ not. Architecture decision records carry the full rationale.
   ([ADR-0003](docs/adr/ADR-0003-crash-recovery-and-doctor.md),
   [ADR-0006](docs/adr/ADR-0006-transaction-residue-self-heal.md)). Write
   commands serialize through a cross-process state lock.
-- **Release-origin integrity.** Missing or invalid checksum entries fail closed,
-  asset selection is deterministic, release requests stay on an allowlisted set
-  of GitHub hosts over HTTPS, and the API token is never forwarded to download
-  CDNs on redirect.
+- **Release-origin integrity.** Missing or invalid checksum entries fail
+  closed, and asset selection is deterministic. On the default production
+  path, release requests stay on an allowlisted set of GitHub hosts over
+  HTTPS, and the API token is never forwarded to download CDNs on redirect.
+  The `ghrelease` client also accepts an injected custom base URL (used by
+  tests and available for mirrors); a build or deployment configured that way
+  extends its trust to whatever endpoint it points at.
 
 ### Not a security boundary (out of scope)
 
