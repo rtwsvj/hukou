@@ -9,7 +9,7 @@ import (
 
 // setupProcessControl is the non-POSIX fallback: no process groups, so context
 // cancellation keeps exec.CommandContext's default behavior of killing the
-// direct child only. finishKill is a no-op.
-func setupProcessControl(_ *exec.Cmd, _ time.Duration) (finishKill func()) {
+// direct child only. afterReap is a no-op.
+func setupProcessControl(_ *exec.Cmd, _ time.Duration) (afterReap func()) {
 	return func() {}
 }

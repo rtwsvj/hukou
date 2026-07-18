@@ -69,3 +69,18 @@ silently rewrite the historical rationale.
   independent ways (a never-reached executor stub across the table/JSON/
   filter/error/placeholder paths, and a byte-for-byte sandbox tree snapshot
   including directory mtimes). The guard is a stated U2 acceptance criterion.
+- 2026-07-18: U2 delivered the deferred guard at PACKAGE level after review
+  rejected file-level and pseudo-call-graph variants: all dry-run assembly and
+  rendering moved into `internal/orchestrate/plan`, whose transitive
+  dependency set is asserted by test to contain neither the executor
+  subpackage nor `os/exec` (`go list -deps`; a synthetic in-module violating
+  package proves the assertion fires). The U1 forbidRunner behavioral stub is
+  retained as runtime depth. Same review fixed the executor kill protocol:
+  each manager runs in its own process group, cancellation sends group
+  SIGTERM then SIGKILL after a grace, and — the recorded invariant — no code
+  path signals the pgid after the direct child is reaped (mutex-shared reaped
+  flag between escalation timer and reap path), accepting the documented
+  corner that a TERM-ignoring, fully pipe-detached grandchild can outlive a
+  quickly-exiting manager rather than risking a recycled-pgid mis-kill.
+  `up`'s exit contract is 0/1 only; failing to persist the snapshot history
+  is a run failure (non-zero exit, recorded in the report).

@@ -17,6 +17,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/orchestrate"
+	"github.com/rtwsvj/hukou/internal/orchestrate/plan"
 	"github.com/rtwsvj/hukou/internal/output"
 	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/scan"
@@ -49,10 +50,17 @@ func fakeLookPath(dir string) orchestrate.LookPathFunc {
 	}
 }
 
-// The dry-run entry doUpPlan takes no execution seam at all: there is nothing a
-// test (or production caller) could even pass that would let it run a command.
-// The structural proof that its whole call chain stays executor-free lives in
-// up_guard_test.go; the byte-for-byte sandbox test below proves zero writes.
+// forbidRunner returns a managerRunner stub that fails the test the moment any
+// dry-run code path tries to execute a manager command (the U1 mechanism,
+// retained as runtime depth beneath the package-level dependency guard in
+// internal/orchestrate/plan/guard_test.go). Every dry-run test injects it.
+func forbidRunner(t *testing.T) managerRunner {
+	t.Helper()
+	return func(name string, argv []string) error {
+		t.Fatalf("dry run must never execute a manager command, but the runner was invoked: %s %v", name, argv)
+		return nil
+	}
+}
 
 func TestUp_dryRunTableListsDetectedManagers(t *testing.T) {
 	dir := t.TempDir()
@@ -66,7 +74,7 @@ func TestUp_dryRunTableListsDetectedManagers(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := doUpPlan(&stdout, upOptions{dryRun: true}, lookPath, fixtureInventory); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true}, lookPath, fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -106,22 +114,22 @@ func TestUp_dryRunJSONParses(t *testing.T) {
 	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
 
 	var stdout bytes.Buffer
-	if err := doUpPlan(&stdout, upOptions{dryRun: true, json: true}, fakeLookPath(dir), fixtureInventory); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true, json: true}, fakeLookPath(dir), fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 
-	var plan upPlanJSON
-	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+	var doc plan.Document
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatalf("decode plan: %v\n%s", err, stdout.String())
 	}
-	if plan.SchemaVersion != 1 {
-		t.Fatalf("schema_version = %d, want 1", plan.SchemaVersion)
+	if doc.SchemaVersion != 1 {
+		t.Fatalf("schema_version = %d, want 1", doc.SchemaVersion)
 	}
-	if len(plan.Managers) != 7 {
-		t.Fatalf("managers len = %d, want the full registry of 7", len(plan.Managers))
+	if len(doc.Managers) != 7 {
+		t.Fatalf("managers len = %d, want the full registry of 7", len(doc.Managers))
 	}
-	byName := map[string]upManagerJSON{}
-	for _, m := range plan.Managers {
+	byName := map[string]plan.ManagerJSON{}
+	for _, m := range doc.Managers {
 		byName[m.Name] = m
 	}
 	if !byName["brew"].Available {
@@ -136,8 +144,8 @@ func TestUp_dryRunJSONParses(t *testing.T) {
 	if got := byName["brew"].Commands; len(got) != 2 || got[0][0] != "brew" {
 		t.Fatalf("brew commands not carried as argv arrays: %+v", got)
 	}
-	if plan.InventorySummary.Total != 2 {
-		t.Fatalf("inventory_summary.total = %d, want 2", plan.InventorySummary.Total)
+	if doc.InventorySummary.Total != 2 {
+		t.Fatalf("inventory_summary.total = %d, want 2", doc.InventorySummary.Total)
 	}
 	// Fields must be stable snake_case.
 	raw := stdout.String()
@@ -155,38 +163,38 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 
 	// --only brew,hukou keeps just those two.
 	var out bytes.Buffer
-	if err := doUpPlan(&out, upOptions{dryRun: true, json: true, only: []string{"brew", "hukou"}}, fakeLookPath(dir), fixtureInventory); err != nil {
+	if err := doUpPlan(&out, upOptions{dryRun: true, json: true, only: []string{"brew", "hukou"}}, fakeLookPath(dir), fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
-	var plan upPlanJSON
-	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+	var doc plan.Document
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Managers) != 2 {
-		t.Fatalf("--only kept %d managers, want 2: %+v", len(plan.Managers), plan.Managers)
+	if len(doc.Managers) != 2 {
+		t.Fatalf("--only kept %d managers, want 2: %+v", len(doc.Managers), doc.Managers)
 	}
 
 	// --skip removes named managers from the set.
 	out.Reset()
-	if err := doUpPlan(&out, upOptions{dryRun: true, json: true, skip: []string{"brew"}}, fakeLookPath(dir), fixtureInventory); err != nil {
+	if err := doUpPlan(&out, upOptions{dryRun: true, json: true, skip: []string{"brew"}}, fakeLookPath(dir), fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
-	plan = upPlanJSON{}
-	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+	doc = plan.Document{}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range plan.Managers {
+	for _, m := range doc.Managers {
 		if m.Name == "brew" {
-			t.Fatalf("--skip brew still present: %+v", plan.Managers)
+			t.Fatalf("--skip brew still present: %+v", doc.Managers)
 		}
 	}
-	if len(plan.Managers) != 6 {
-		t.Fatalf("--skip left %d managers, want 6", len(plan.Managers))
+	if len(doc.Managers) != 6 {
+		t.Fatalf("--skip left %d managers, want 6", len(doc.Managers))
 	}
 }
 
 func TestUp_unknownManagerNameErrors(t *testing.T) {
-	err := doUpPlan(&bytes.Buffer{}, upOptions{dryRun: true, only: []string{"bogus"}}, nil, fixtureInventory)
+	err := doUpPlan(&bytes.Buffer{}, upOptions{dryRun: true, only: []string{"bogus"}}, nil, fixtureInventory, forbidRunner(t))
 	if err == nil {
 		t.Fatal("expected error for unknown manager name")
 	}
@@ -203,7 +211,7 @@ func TestUp_dryRunIsZeroWriteAgainstRealScan(t *testing.T) {
 	var stdout bytes.Buffer
 	// nil lookPath uses the real exec.LookPath; defaultInventory runs the real
 	// read-only scan. Neither may create the data root or spawn a process.
-	if err := doUpPlan(&stdout, upOptions{dryRun: true}, nil, defaultInventory); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true}, nil, defaultInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "dry run: nothing was executed or written") {
@@ -338,10 +346,10 @@ func TestUp_dryRunSandboxTreesAreByteForByteUnchanged(t *testing.T) {
 	// Full dry-run, twice (human table + JSON), with the REAL LookPath (nil)
 	// and the REAL read-only inventory scan.
 	var stdout bytes.Buffer
-	if err := doUpPlan(&stdout, upOptions{dryRun: true}, nil, defaultInventory); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true}, nil, defaultInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
-	if err := doUpPlan(&stdout, upOptions{dryRun: true, json: true}, nil, defaultInventory); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true, json: true}, nil, defaultInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -391,5 +399,35 @@ func TestExitCode(t *testing.T) {
 	}
 	if ExitCode(errors.New("boom")) != 1 {
 		t.Fatalf("ExitCode(other) = %d, want 1", ExitCode(errors.New("boom")))
+	}
+}
+
+// TestUp_dryRunNeverInvokesRunner drives every dry-run code path of doUpPlan
+// with a runner stub that fails the test on first invocation (the retained U1
+// behavioral guard). Combined with the forbidRunner injection in every other
+// dry-run test and the package-level dependency guard on the plan package
+// (internal/orchestrate/plan/guard_test.go), "zero subprocess execution on the
+// dry-run path" is enforced both at runtime and in the import graph.
+func TestUp_dryRunNeverInvokesRunner(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
+	writeExecutable(t, dir, "gh", "#!/bin/sh\n")
+	forbidden := forbidRunner(t)
+
+	paths := []struct {
+		name string
+		opts upOptions
+	}{
+		{"dry-run table", upOptions{dryRun: true}},
+		{"dry-run json", upOptions{dryRun: true, json: true}},
+		{"dry-run only", upOptions{dryRun: true, only: []string{"brew", "hukou"}}},
+		{"dry-run skip", upOptions{dryRun: true, json: true, skip: []string{"npm"}}},
+		{"dry-run filter error", upOptions{dryRun: true, only: []string{"bogus"}}},
+	}
+	for _, tc := range paths {
+		var stdout bytes.Buffer
+		// The filter-error path returns an error; the only assertion here is
+		// that `forbidden` never fires (it fails the test itself if it does).
+		_ = doUpPlan(&stdout, tc.opts, fakeLookPath(dir), fixtureInventory, forbidden)
 	}
 }

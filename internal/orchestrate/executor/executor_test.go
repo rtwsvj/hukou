@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -129,20 +131,24 @@ func TestRunManager_TimeoutKillsHungManager(t *testing.T) {
 	}
 }
 
-// TestRunManager_TimeoutKillsWholeProcessTree is the P1-2 acceptance: a fake
-// manager spawns a background grandchild that ignores SIGTERM and writes a
+// TestRunManager_TimeoutKillsWholeProcessTree is the process-tree acceptance:
+// a fake manager spawns a background grandchild that ignores SIGTERM, keeps
+// the inherited output pipes open (as real manager helpers do), and writes a
 // heartbeat file forever. The per-manager timeout must kill the ENTIRE process
-// group — SIGTERM first, then the SIGKILL escalation — so the heartbeat stops.
-// Killing only the direct child would leave the grandchild beating and fail
-// this test.
+// group — SIGTERM first, then the SIGKILL escalation, which fires pre-reap
+// because the grandchild's open pipe keeps Wait draining (TermGrace <
+// KillGrace) — so the heartbeat stops. Killing only the direct child would
+// leave the grandchild beating and fail this test.
 func TestRunManager_TimeoutKillsWholeProcessTree(t *testing.T) {
 	skipOnWindows(t)
 	dir := t.TempDir()
 	hb := filepath.Join(dir, "heartbeat")
-	// The grandchild ignores TERM (trap '' TERM) and detaches from the output
-	// pipes, so only a group-wide SIGKILL can stop it.
+	// The grandchild ignores TERM (trap '' TERM) and inherits the script's
+	// stdout/stderr pipes (no redirect), so only the group-wide SIGKILL
+	// escalation can stop it — and the held pipe guarantees that escalation
+	// happens before the child is reaped (see proc_unix.go).
 	body := fmt.Sprintf(`#!/bin/sh
-( trap '' TERM; while :; do echo beat >> %q; sleep 0.05; done ) >/dev/null 2>&1 &
+( trap '' TERM; while :; do echo beat >> %q; sleep 0.05; done ) &
 sleep 30
 `, hb)
 	tree := writeScript(t, dir, "treeslow.sh", body)
@@ -151,10 +157,11 @@ sleep 30
 	e := New(&out, &errb)
 	// Generous timeout: the first exec of a freshly written script can take
 	// hundreds of ms on macOS (syspolicyd scan); the grandchild must have time
-	// to start beating before the timeout fires.
+	// to start beating before the timeout fires. TermGrace < KillGrace so the
+	// group SIGKILL fires while Wait is still draining the held pipe.
 	e.Timeout = 1500 * time.Millisecond
 	e.TermGrace = 250 * time.Millisecond
-	e.KillGrace = 500 * time.Millisecond
+	e.KillGrace = 800 * time.Millisecond
 
 	res := e.RunManager(context.Background(), "brew", [][]string{{tree}})
 	if res.Status != orchestrate.StatusTimeout {
@@ -252,5 +259,66 @@ func TestNew_NilWritersDoNotPanic(t *testing.T) {
 	e.Timeout = 5 * time.Second
 	if res := e.RunManager(context.Background(), "brew", [][]string{{ok}}); res.Status != orchestrate.StatusOK {
 		t.Fatalf("status = %s, want ok", res.Status)
+	}
+}
+
+// TestRunManager_GroupKillReapRaceStress hammers the cancellation path with
+// short-lived children so the escalation-timer callback and the Wait/reap
+// path collide as often as possible (TermGrace of 1ms, timeout close to the
+// children's own lifetimes), while a sentinel process sits in its own process
+// group for the whole run. Afterwards the sentinel must still be alive and
+// un-exited: a stray or mis-addressed group signal (stale pgid variable,
+// signaling after reap, pgid 0/-1 bugs) would have hit it or shown up under
+// the race detector.
+//
+// Verification boundary, stated honestly: the sentinel occupies one fixed
+// process group — it cannot be made to occupy a pgid the kernel just recycled
+// from a reaped child, so this test detects gross stray-signal and data-race
+// bugs, not kernel-level pgid reuse itself. Reuse safety is instead the
+// protocol invariant reviewed in proc_unix.go: no code path signals -pgid
+// after the child is reaped.
+func TestRunManager_GroupKillReapRaceStress(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	quick := writeScript(t, dir, "quick.sh", "#!/bin/sh\nexit 0\n")
+	brief := writeScript(t, dir, "brief.sh", "#!/bin/sh\nsleep 0.02\n")
+	slow := writeScript(t, dir, "slow.sh", "#!/bin/sh\nsleep 1\n")
+
+	sentinel := exec.Command("sleep", "30")
+	sentinel.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := sentinel.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = sentinel.Process.Kill()
+		_, _ = sentinel.Process.Wait()
+	})
+
+	for i := 0; i < 12; i++ {
+		for _, script := range []string{quick, brief, slow} {
+			var out, errb lockedBuf
+			e := New(&out, &errb)
+			e.Timeout = 25 * time.Millisecond
+			e.TermGrace = time.Millisecond
+			e.KillGrace = 100 * time.Millisecond
+			res := e.RunManager(context.Background(), "stress", [][]string{{script}})
+			switch res.Status {
+			case orchestrate.StatusOK, orchestrate.StatusFailed, orchestrate.StatusTimeout:
+			default:
+				t.Fatalf("iteration %d: unexpected status %q", i, res.Status)
+			}
+		}
+	}
+
+	// The sentinel must be alive AND un-exited. syscall.Kill(pid, 0) alone
+	// would also succeed for a zombie, so use a non-blocking wait: WNOHANG
+	// returning 0 means the child has not exited.
+	var ws syscall.WaitStatus
+	wpid, err := syscall.Wait4(sentinel.Process.Pid, &ws, syscall.WNOHANG, nil)
+	if err != nil {
+		t.Fatalf("probe sentinel: %v", err)
+	}
+	if wpid != 0 {
+		t.Fatalf("sentinel process exited during the stress run (status %v): a stray group signal killed it", ws)
 	}
 }

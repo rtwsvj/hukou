@@ -9,7 +9,7 @@
 package executor
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -112,12 +112,20 @@ func (e *Executor) RunManager(ctx context.Context, name string, commands [][]str
 	return res
 }
 
-// runOne launches a single command and streams its combined output. It returns
-// the process exit code (or -1 when the process never produced one) and a
-// non-nil error when the command failed, timed out, or was cancelled. On POSIX
-// the command runs in its own process group and cancellation/timeout kills the
+// runOne launches a single command and streams its output. It returns the
+// process exit code (or -1 when the process never produced one) and a non-nil
+// error when the command failed, timed out, or was cancelled. On POSIX the
+// command runs in its own process group and cancellation/timeout kills the
 // whole group (SIGTERM, then SIGKILL after TermGrace) so grandchildren spawned
 // by a manager cannot outlive it.
+//
+// Output deliberately uses cmd.Stdout/cmd.Stderr writers rather than
+// StdoutPipe: with writers, Wait keeps draining until the pipes reach EOF (or
+// WaitDelay force-closes them), so a grandchild holding the inherited pipes
+// keeps the direct child UN-reaped long enough for the pre-reap group-kill
+// escalation to fire — the safety property the whole kill protocol rests on
+// (see proc_unix.go). StdoutPipe would let Wait return at reap and strand such
+// grandchildren.
 func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int, error) {
 	grace := e.KillGrace
 	if grace <= 0 {
@@ -129,41 +137,42 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// WaitDelay bounds how long Wait blocks draining pipes after the process is
-	// killed on ctx cancellation/timeout, so an inherited-stdout grandchild
-	// cannot hang the whole run.
+	// WaitDelay bounds how long Wait blocks draining pipes after the process
+	// exits or is cancelled, so an inherited-stdout grandchild cannot wedge the
+	// run indefinitely.
 	cmd.WaitDelay = grace
 	// Platform-specific: own process group + group-wide TERM->KILL cancel.
-	finishKill := setupProcessControl(cmd, termGrace)
+	afterReap := setupProcessControl(cmd, termGrace)
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return -1, err
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return -1, err
-	}
+	// A shared mutex keeps stdout and stderr lines from interleaving mid-line,
+	// even when both writers point at the same buffer.
+	var mu sync.Mutex
+	prefix := "[" + name + "] "
+	outW := &lineWriter{mu: &mu, dst: e.stdout, prefix: prefix}
+	errW := &lineWriter{mu: &mu, dst: e.stderr, prefix: prefix}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
 
 	if err := cmd.Start(); err != nil {
 		return -1, err
 	}
 
-	// Serialize the two streams onto shared writers so stdout and stderr lines
-	// never interleave mid-line, even when both point at the same buffer.
-	var mu sync.Mutex
-	prefix := "[" + name + "] "
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); streamPrefixed(&mu, e.stdout, prefix, stdoutPipe) }()
-	go func() { defer wg.Done(); streamPrefixed(&mu, e.stderr, prefix, stderrPipe) }()
-
 	waitErr := cmd.Wait()
-	wg.Wait()
-	// If a cancellation started the TERM->KILL escalation, make sure the group
-	// SIGKILL lands (now, if the escalation timer has not fired yet) so no
-	// TERM-surviving descendant lingers after RunManager returns.
-	finishKill()
+	// The child is reaped: under the shared lock, mark it so and cancel any
+	// still-pending escalation — after this point nothing may signal the pgid
+	// again (it could have been recycled). See proc_unix.go for the protocol.
+	afterReap()
+	// Wait has joined the internal copy goroutines; flush any trailing
+	// unterminated line from each stream.
+	outW.flush()
+	errW.flush()
+
+	// A manager that exited zero but left a descendant holding the pipes past
+	// WaitDelay is a success with lingering output, not a failure.
+	if errors.Is(waitErr, exec.ErrWaitDelay) && ctx.Err() == nil &&
+		cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+		waitErr = nil
+	}
 
 	if ctx.Err() != nil {
 		// The deadline or a parent cancellation ended the process. Report it as
@@ -192,16 +201,52 @@ func classifyCtx(runCtx, parent context.Context) orchestrate.StepStatus {
 	return orchestrate.StatusOK
 }
 
-// streamPrefixed copies src to dst line by line, writing prefix before each
-// line, guarded by mu so concurrent stdout/stderr streams stay line-atomic.
-func streamPrefixed(mu *sync.Mutex, dst io.Writer, prefix string, src io.Reader) {
-	sc := bufio.NewScanner(src)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		mu.Lock()
-		fmt.Fprintf(dst, "%s%s\n", prefix, sc.Text())
-		mu.Unlock()
+// lineWriter forwards complete lines to dst with a prefix, holding mu per line
+// so concurrent stdout/stderr streams stay line-atomic. os/exec writes to each
+// instance from a single internal copy goroutine; flush is called only after
+// Wait has joined those goroutines.
+type lineWriter struct {
+	mu     *sync.Mutex
+	dst    io.Writer
+	prefix string
+	buf    []byte
+}
+
+// maxBufferedLine caps how much of an unterminated line is buffered before it
+// is force-flushed, so a manager emitting a newline-free torrent cannot grow
+// memory without bound.
+const maxBufferedLine = 1 << 20
+
+func (lw *lineWriter) Write(p []byte) (int, error) {
+	lw.buf = append(lw.buf, p...)
+	for {
+		i := bytes.IndexByte(lw.buf, '\n')
+		if i < 0 {
+			break
+		}
+		lw.emit(lw.buf[:i])
+		lw.buf = lw.buf[i+1:]
 	}
+	if len(lw.buf) > maxBufferedLine {
+		lw.emit(lw.buf)
+		lw.buf = lw.buf[:0]
+	}
+	return len(p), nil
+}
+
+// flush emits any trailing unterminated line.
+func (lw *lineWriter) flush() {
+	if len(lw.buf) == 0 {
+		return
+	}
+	lw.emit(lw.buf)
+	lw.buf = lw.buf[:0]
+}
+
+func (lw *lineWriter) emit(line []byte) {
+	lw.mu.Lock()
+	fmt.Fprintf(lw.dst, "%s%s\n", lw.prefix, line)
+	lw.mu.Unlock()
 }
 
 // exitCodeOf extracts a process exit code from a Wait error; -1 when the error

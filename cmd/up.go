@@ -1,9 +1,10 @@
 // This file wires the `up` command and dispatches between its two entry files:
 // the dry-run (plan-only) path in up_plan.go and the real execution path in
-// up_exec.go. The split is deliberate and guarded: up_plan.go and this file
-// must never import the executor subpackage, so the dry-run call chain is
-// statically incapable of reaching subprocess execution (see up_guard_test.go
-// and docs/09-decision-log.md, 2026-07-17).
+// up_exec.go. The executor boundary is guarded at package level — the plan
+// package's transitive deps contain neither the executor subpackage nor
+// os/exec (internal/orchestrate/plan/guard_test.go) — with a file-level import
+// check (up_guard_test.go) and the U1 forbidRunner behavioral stub as depth
+// (see docs/09-decision-log.md, 2026-07-17).
 package cmd
 
 import (
@@ -63,7 +64,9 @@ func runUp(cmd *cobra.Command, _ []string) error {
 		skip:   upSkip,
 	}
 	if opts.dryRun {
-		return doUpPlan(cmd.OutOrStdout(), opts, nil, defaultInventory)
+		// nil runner: the production dry-run wires no execution capability at
+		// all; the seam exists only so tests can inject a failing stub.
+		return doUpPlan(cmd.OutOrStdout(), opts, nil, defaultInventory, nil)
 	}
 	return runUpExecute(cmd.OutOrStdout(), cmd.ErrOrStderr(), opts)
 }
