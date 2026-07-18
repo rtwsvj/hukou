@@ -73,6 +73,19 @@ func setupProcessControl(cmd *exec.Cmd, termGrace time.Duration) (afterReap func
 			if st.reaped {
 				return
 			}
+			// Defense in depth for the unavoidable micro-window between the
+			// kernel reaping the child inside cmd.Wait and afterReap taking
+			// this lock: probe the group with signal 0 first. ESRCH means the
+			// group is already empty (every member exited and was reaped), so
+			// there is nothing of ours to signal and no recycled pgid to hit.
+			// Fully closing the window would need WNOWAIT-based manual reaping
+			// (a rewrite of the exec model) or a pidfd (non-portable); this
+			// narrows the harmful case to the vanishing sliver where the pgid
+			// is recycled into a new group leader between this probe and the
+			// SIGKILL. Recorded as an accepted boundary (docs/09-decision-log).
+			if err := syscall.Kill(-st.pgid, 0); err != nil {
+				return
+			}
 			_ = syscall.Kill(-st.pgid, syscall.SIGKILL)
 		})
 		if termErr != nil {

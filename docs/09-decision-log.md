@@ -84,3 +84,25 @@ silently rewrite the historical rationale.
   quickly-exiting manager rather than risking a recycled-pgid mis-kill.
   `up`'s exit contract is 0/1 only; failing to persist the snapshot history
   is a run failure (non-zero exit, recorded in the report).
+- 2026-07-18: Two U2 `up` engineering boundaries were reviewed to a residue
+  that a portable, zero-third-party-dependency, standard-library implementation
+  cannot fully close, and are recorded as accepted (Fable ruling, cited by the
+  internal multi-round review):
+  (a) The dry-run structural guard proves at package granularity that the
+  planning package `internal/orchestrate/plan` cannot reach the executor or
+  `os/exec`. A fully static function-level reachability proof that the cobra
+  dispatch's dry-run branch cannot reach execution would require an `x/tools`
+  call-graph analysis (a third-party dependency, forbidden). The runtime
+  behavioral stub (`forbidRunner`) carries the real guarantee — it asserts the
+  execution seam is never invoked on any dry-run path — backed by U1's
+  byte-for-byte zero-side-effect sandbox snapshot. Static guard + behavioral
+  stub + file-level check are kept as layered defense.
+  (b) The escalation timer's SIGKILL(-pgid) has an unavoidable micro-window
+  between the kernel reaping the direct child inside `cmd.Wait` and `afterReap`
+  taking the shared lock to set `reaped`. Closing it completely needs
+  WNOWAIT-based manual reaping (rewriting the exec model) or a pidfd
+  (non-portable). The callback checks `reaped` under the lock and additionally
+  probes the group with signal 0 before SIGKILL, narrowing the harmful case to
+  the vanishing sliver where the pgid is recycled into a new group leader
+  between the probe and the kill. The mis-kill-free protocol invariant (no
+  signal after reap) plus the signal-0 probe is the accepted portable limit.

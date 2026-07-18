@@ -88,21 +88,24 @@ to that source.
   `--json`; zero writes, zero subprocess execution (commands are printed,
   never run). Fixture tests with a fake PATH.
 - **U2 (delivered)**: real execution + snapshot/diff/report + history +
-  aggregate exit. The structural executor boundary is aimed at the actual
-  deferral requirement — the dry-run CALL CHAIN cannot reach execution. The up
-  command is split into a plan-only entry file (`cmd/up_plan.go`, entry
-  `doUpPlan`, whose signature carries no execution seam at all) and an
-  execution entry file (`cmd/up_exec.go`, the only cmd file importing the
-  constrained `internal/orchestrate/executor` package, itself the only package
-  launching manager subprocesses). A parser-level guard
-  (`cmd/up_guard_test.go`) walks the call graph reachable from the dry-run
-  entry, fails if any reachable function is defined in an executor-importing
-  file, and verifies the cobra dispatch actually routes `--dry-run` to the
-  guarded entry. Defense in depth: `go list -deps` shows `orchestrate` has no
-  dependency on the executor subpackage, plus a `go/parser` scan forbidding
-  `exec.Command`/`exec.CommandContext` in `orchestrate` outside that
-  subpackage. Deferred from U1 by recorded ruling — see
-  docs/09-decision-log.md, 2026-07-17.
+  aggregate exit. The dry-run planning/rendering logic lives in its own
+  package `internal/orchestrate/plan`, which imports neither the constrained
+  `internal/orchestrate/executor` package nor `os/exec`; command execution is
+  confined to the executor package (the only package launching manager
+  subprocesses), imported by exactly one cmd file (`cmd/up_exec.go`).
+  The dry-run zero-execution property is guaranteed by three layers, in
+  descending strength: (1) the U1 runtime behavioral stub `forbidRunner`,
+  which asserts the execution seam is never invoked on any dry-run path;
+  (2) a package-dependency guard — `go list -deps` proves `plan` has no
+  transitive dependency on `executor` or `os/exec`, with a synthetic
+  negative test (`TestGuardCatchesSyntheticViolations`) confirming the
+  assertion actually fires on a violating package; (3) an auxiliary
+  file-level check that only `up_exec.go` imports the executor. Full static
+  function-level reachability proof would require an `x/tools` call-graph
+  analysis, which the zero-third-party-dependency rule excludes; the runtime
+  behavioral stub carries the real guarantee instead. Recorded as an accepted
+  boundary — see docs/09-decision-log.md, 2026-07-18. (Deferral origin:
+  2026-07-17.)
 - U3: diff-driven rollback surface + retention pruning + docs.
 
 ## Acceptance (U1)
