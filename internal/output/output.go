@@ -73,9 +73,15 @@ func Summarize(r *Report) {
 // WriteJSON writes the full report as indented JSON.
 func WriteJSON(w io.Writer, r Report) error {
 	Summarize(&r)
+	return WriteJSONValue(w, r)
+}
+
+// WriteJSONValue writes any value as indented JSON in the house style (two-space
+// indent, trailing newline), so every command's --json output matches.
+func WriteJSONValue(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(r)
+	return enc.Encode(v)
 }
 
 // WriteTable writes a human-readable table plus a summary footer line:
@@ -113,26 +119,10 @@ func WriteTable(w io.Writer, r Report) error {
 		return err
 	}
 
-	// Summary line (spec acceptance #5).
-	fmt.Fprintf(w, "\nsummary: total=%d sources=%d unknown=%d shadowed=%d",
-		r.Summary.Total, r.Summary.SourceN, r.Summary.Unknown, r.Summary.Shadowed)
-	if r.Summary.Skipped > 0 {
-		fmt.Fprintf(w, " skipped=%d", r.Summary.Skipped)
-	}
-	fmt.Fprintln(w)
-
-	// Optional source breakdown (stable order).
-	if len(r.Summary.Sources) > 0 {
-		names := make([]string, 0, len(r.Summary.Sources))
-		for k := range r.Summary.Sources {
-			names = append(names, k)
-		}
-		sort.Strings(names)
-		parts := make([]string, 0, len(names))
-		for _, n := range names {
-			parts = append(parts, fmt.Sprintf("%s=%d", n, r.Summary.Sources[n]))
-		}
-		fmt.Fprintf(w, "by source: %s\n", strings.Join(parts, " "))
+	// Summary line + source breakdown (spec acceptance #5). Shared with
+	// `up --dry-run` via WriteSummaryLine so both read identically.
+	if err := WriteSummaryLine(w, r); err != nil {
+		return err
 	}
 
 	// Non-fatal warnings and notes, one per line, after the summary. Warnings
@@ -152,6 +142,41 @@ func WriteTable(w io.Writer, r Report) error {
 		}
 	}
 	return nil
+}
+
+// WriteSummaryLine renders the shared inventory footer: the one-line
+// total/sources/unknown/shadowed[/skipped] summary followed by the optional
+// per-source breakdown. Callers must run Summarize on the report first. It is
+// shared by the scan table and `up --dry-run` so a machine's inventory summary
+// reads identically in both. The leading newline separates it from whatever
+// preceded it (a table, a manager plan).
+func WriteSummaryLine(w io.Writer, r Report) error {
+	if _, err := fmt.Fprintf(w, "\nsummary: total=%d sources=%d unknown=%d shadowed=%d",
+		r.Summary.Total, r.Summary.SourceN, r.Summary.Unknown, r.Summary.Shadowed); err != nil {
+		return err
+	}
+	if r.Summary.Skipped > 0 {
+		if _, err := fmt.Fprintf(w, " skipped=%d", r.Summary.Skipped); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+	if len(r.Summary.Sources) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(r.Summary.Sources))
+	for k := range r.Summary.Sources {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", n, r.Summary.Sources[n]))
+	}
+	_, err := fmt.Fprintf(w, "by source: %s\n", strings.Join(parts, " "))
+	return err
 }
 
 // sanitizeField replaces control characters (tab/newline/CR, ANSI ESC, other
