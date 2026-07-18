@@ -83,8 +83,14 @@ to that source.
 - Interruption: the run's root context is a `signal.NotifyContext` (SIGINT,
   plus SIGTERM on unix); the manager loop checks `ctx.Err()` before each
   manager — external and the internal hukou step alike — so an interrupt stops
-  launching further managers, marks the rest `canceled`, and still snapshots,
-  diffs, and reports what already ran before exiting non-zero.
+  launching further managers (the manager the run stopped at is recorded
+  `canceled`; later ones are simply not listed), and still snapshots, diffs,
+  and reports what already ran before exiting non-zero. Known limitation: the
+  internal hukou step is in-process and WAL-protected, so cancellation is
+  observed only at its boundaries — skipped (and marked `canceled`) before it
+  starts, or reclassified `canceled` after it returns if the run was canceled
+  while it ran — never mid-flight. Intentional minimal semantics; external
+  managers, by contrast, have their direct child killed on cancel.
 - `up` holds no hukou mutation lock while foreign managers run (they do not
   touch hukou state); the internal hukou step uses the normal lock.
 - No network code in hukou itself beyond the existing ghrelease path; all

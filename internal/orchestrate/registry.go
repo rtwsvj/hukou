@@ -6,7 +6,7 @@
 // stats the filesystem.
 package orchestrate
 
-import "os/exec"
+import "github.com/rtwsvj/hukou/internal/lookpath"
 
 // Manager is one upgrade participant: a named package manager (or hukou
 // itself) paired with the binary that proves it is present and the exact argv
@@ -43,8 +43,9 @@ func Registry() []Manager {
 }
 
 // LookPathFunc resolves an executable name to a path, matching the signature of
-// exec.LookPath. Injecting it lets tests supply a fake PATH without touching the
-// real system and lets callers prove detection never runs anything.
+// exec.LookPath (accessed via the fence-allowlisted internal/lookpath wrapper).
+// Injecting it lets tests supply a fake PATH without touching the real system
+// and lets callers prove detection never runs anything.
 type LookPathFunc func(file string) (string, error)
 
 // Detected is a Manager paired with its detection outcome.
@@ -58,11 +59,12 @@ type Detected struct {
 }
 
 // Detect resolves each manager against PATH through lookPath (nil defaults to
-// exec.LookPath). It launches no subprocess: lookPath only stats the
-// filesystem. The internal hukou row is always available and is never probed.
+// lookpath.LookPath, the fence-allowlisted exec.LookPath wrapper). It launches
+// no subprocess: lookPath only stats the filesystem. The internal hukou row is
+// always available and is never probed.
 func Detect(managers []Manager, lookPath LookPathFunc) []Detected {
 	if lookPath == nil {
-		lookPath = exec.LookPath
+		lookPath = lookpath.LookPath
 	}
 	out := make([]Detected, 0, len(managers))
 	for _, m := range managers {

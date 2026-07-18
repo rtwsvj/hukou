@@ -116,12 +116,19 @@ and after.
     chase the process tree.
 - A failing manager is reported and does **not** stop the rest; the report is
   still printed. An interrupt (SIGINT/Ctrl-C, or SIGTERM on unix) stops the run:
-  no further manager — external or the internal `hukou` step — is launched, the
-  remaining ones are marked `canceled`, and the run still snapshots, diffs, and
-  reports what already happened before exiting non-zero. The internal `hukou`
-  step runs in-process via the normal `upgrade --all` path and holds the normal
-  mutation lock only for its own duration; no hukou lock is held while external
-  managers run.
+  no further manager — external or the internal `hukou` step — is launched (the
+  manager the run stopped at is recorded as `canceled`; managers after it are
+  simply not listed), and the run still snapshots, diffs, and reports what
+  already ran before exiting non-zero. The internal `hukou` step runs in-process
+  via the normal `upgrade --all` path and holds the normal mutation lock only
+  for its own duration; no hukou lock is held while external managers run.
+  - **Known limitation:** the internal `hukou` step is an in-process, fast,
+    WAL-transaction-protected operation, so an interrupt cannot break into it
+    mid-flight — cancellation is observed only at its boundaries: before it
+    starts (it is skipped and recorded `canceled`) or after it returns (its
+    result is reclassified `canceled` so an interrupted run can never report
+    ok / exit 0). This is an intentional minimal semantic, unlike long-running
+    external managers, whose direct child is killed on timeout/cancel.
 - The snapshot pair and diff are persisted under
   `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, and `diff.json`,
   written atomically (staged in a temp directory, then renamed into place) and

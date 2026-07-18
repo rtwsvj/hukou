@@ -287,6 +287,54 @@ func TestUp_interruptStopsSubsequentManagersAndSkipsHukou(t *testing.T) {
 	}
 }
 
+// TestUp_interruptDuringInternalHukouStepIsNonZero drives the post-step
+// boundary check: the run's root ctx is canceled WHILE the internal hukou step
+// runs (the in-process, WAL-protected step cannot be interrupted mid-flight,
+// so it completes and returns nil). The step's result must be reclassified
+// canceled — not ok — and the run must exit non-zero. Before this fix an
+// interrupt arriving during the internal step was silently lost and the run
+// reported ok / exit 0.
+func TestUp_interruptDuringInternalHukouStepIsNonZero(t *testing.T) {
+	binDir := t.TempDir() // no external managers on the fake PATH; hukou is internal
+	same := output.Report{Rows: []output.Row{row("brew", "/b/brew", "brew", "4.0")}}
+	fx := &fakeExecutor{}
+	var hukouCalled bool
+	deps := stubRunDeps(t, fakeLookPath(binDir), fx, &hukouCalled, same, same)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.baseContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	// The step observes the interrupt only at its boundary: it finishes its
+	// (simulated) work, the cancel lands mid-step, and it returns nil.
+	deps.hukouStep = func(io.Writer, io.Writer) error {
+		hukouCalled = true
+		cancel()
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	err := doUpExecute(&out, &errb, upOptions{json: true, only: []string{"hukou"}}, deps)
+	if err == nil {
+		t.Fatal("run interrupted during the internal hukou step reported success (exit 0); must be non-zero")
+	}
+	if ExitCode(err) != 1 {
+		t.Fatalf("ExitCode = %d, want 1", ExitCode(err))
+	}
+	if !hukouCalled {
+		t.Fatal("internal hukou step never ran; fixture is broken")
+	}
+
+	var doc upRunJSON
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode run json: %v\n%s", err, out.String())
+	}
+	if len(doc.Managers) != 1 || doc.Managers[0].Name != "hukou" {
+		t.Fatalf("managers = %+v, want exactly the hukou step", doc.Managers)
+	}
+	if got := doc.Managers[0].Status; got != "canceled" {
+		t.Fatalf("internal step status = %q after mid-step interrupt, want canceled (not ok)", got)
+	}
+}
+
 // TestUp_snapshotPersistFailureIsNonZeroAndReported drives P1-4: when the
 // snapshot history cannot be written, the run must exit non-zero even though
 // every manager succeeded, and the report must record the failure honestly

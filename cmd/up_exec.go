@@ -180,6 +180,17 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 		var res orchestrate.StepResult
 		if d.Internal {
 			res = runInternalHukou(streamOut, stderr, deps.hukouStep)
+			// Known limitation, deliberate (docs/05, spec): the internal hukou
+			// step is an in-process, WAL-protected batch that cannot be safely
+			// interrupted mid-transaction, so cancellation is observed only at
+			// its boundaries — before it starts (the loop check above) and here,
+			// after it returns. If the run was canceled while it ran, an "ok"
+			// result is reclassified as canceled so the run can never report
+			// success / exit 0 after an interrupt.
+			if ctx.Err() != nil && res.Status == orchestrate.StatusOK {
+				res.Status = orchestrate.StatusCanceled
+				res.Err = ctx.Err()
+			}
 		} else {
 			res = deps.exec.RunManager(ctx, d.Name, d.Commands)
 		}

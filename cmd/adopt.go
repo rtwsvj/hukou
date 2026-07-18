@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/rtwsvj/hukou/internal/activation"
+	"github.com/rtwsvj/hukou/internal/lookpath"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/output"
 	"github.com/rtwsvj/hukou/internal/provenance"
@@ -342,5 +342,5 @@ func resolveAdoptTarget(target string) (string, error) {
 	if filepath.IsAbs(target) || strings.ContainsAny(target, `/\`) {
 		return filepath.Abs(target)
 	}
-	return exec.LookPath(target)
+	return lookpath.LookPath(target)
 }

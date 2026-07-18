@@ -63,6 +63,11 @@ func TestPlanDepsExcludeExecutorAndOsExec(t *testing.T) {
 func TestGuardCatchesSyntheticViolations(t *testing.T) {
 	writeSynthetic := func(imports string) string {
 		t.Helper()
+		// The "synthbad_" prefix is reserved: the repo-wide execution fence
+		// (internal/orchestrate/execution_fence_test.go) skips directories with
+		// this prefix so these ephemeral, deliberately violating packages are
+		// not reported as phantom violations when both test binaries run
+		// concurrently in the full suite.
 		dir, err := os.MkdirTemp(".", "synthbad_")
 		if err != nil {
 			t.Fatal(err)
