@@ -82,6 +82,72 @@ hukou upgrade [name ...] [--all] [--dry-run] [--asset <substring>]
 
 A real upgrade re-checks inside the lock, then downloads and verifies the asset, writes the store, records the child activation, persists the before/after transaction, switches the active path, and updates the manifest; once the transaction is clean, old versions are cleaned up in two phases according to the current/original/pin/lineage protection set. Metadata selection follows the effective policy; by default SemVer never downgrades, while an exact pin can move explicitly forward or backward. `--dry-run` fails with a message when it finds a pending transaction, but does not auto-recover or write state.
 
+## `hukou up` (U1 slice, unreleased)
+
+```text
+hukou up --dry-run [--only <mgr>...] [--skip <mgr>...] [--json]
+hukou up            # placeholder in this slice: prints a notice, exits 2
+```
+
+One command that will upgrade everything on the machine (see
+`docs/specs/phase3-up.md`). The current slice, U1, ships only the read-only
+plan; real execution, the before/after inventory snapshot, and the diff report
+land in a later slice (U2+).
+
+### `--dry-run` semantics
+
+- Detects the participating managers from the v1 registry (brew, npm, pnpm,
+  rustup, uv, gh-extensions, hukou) by resolving each manager's detect binary
+  on `PATH` via `exec.LookPath`. The internal `hukou` row always participates
+  and is never probed.
+- Prints the plan table (`NAME / SOURCE-BINARY / COMMANDS`; the hukou row shows
+  `internal`), then the same inventory summary line as `hukou scan` (from the
+  shared read-only scan), then the trailer
+  `dry run: nothing was executed or written`.
+- Hard zero-side-effect guarantees, enforced by tests over the table, JSON,
+  filter, filter-error, and placeholder paths: no data root is created, no
+  subprocess is launched (detection is `LookPath` only; the execution seam is
+  asserted never reached on those paths), no lock is held, no network access.
+  `HOME` and the hukou data dir are verified byte-for-byte untouched in a
+  sandboxed run. A structural import-level guard around the executor is a
+  stated acceptance criterion of the next slice (U2), where real execution
+  code first appears.
+
+### `--only` / `--skip`
+
+Filter the manager set by registry name before detection. Both flags accept
+either repeated use (`--only brew --only npm`) or a comma-separated list
+(`--only brew,npm`). `--only` is a whitelist (empty means all); `--skip` is
+subtracted afterwards. A name not present in the registry is an error (exit 1)
+so a typo can never silently select the wrong set.
+
+### `--json`
+
+Outputs `{"schema_version": 1, "managers": [...], "inventory_summary": {...}}`.
+
+Contract (deliberate asymmetry with the table):
+
+- The human table lists **only detected (available) managers**.
+- The JSON `managers` array lists the **full filtered set** — including
+  managers that are not present — each entry carrying
+  `{name, binary, commands, available}` so scripts can distinguish "skipped by
+  filter" (absent from the array) from "not installed" (`available: false`).
+  `commands` is an array of argv arrays, never a shell string. The internal
+  hukou row has `binary: ""` and `available: true`.
+- `inventory_summary` reuses the scan summary object
+  (`total/sources/unknown/shadowed/source_count/skipped`).
+
+### Exit status
+
+| Code | Meaning |
+|---|---|
+| 0 | `--dry-run` plan printed successfully |
+| 1 | Any other error (unknown `--only`/`--skip` name, scan failure, …) |
+| 2 | Invoked without `--dry-run`: placeholder prints `real execution lands in a later slice; use --dry-run` on stderr and nothing on stdout |
+
+The exit-2 placeholder is part of the U1 contract (documented in `--help`):
+scripts may rely on it until U2 replaces that path with real execution.
+
 ## `hukou rollback`
 
 ```text
@@ -170,3 +236,4 @@ The report is generated offline and never uploaded; it contains only safe build/
 - Success is 0.
 - Argument, integrity, network, checksum, lock, filesystem, or partial-upgrade failures return non-zero.
 - For `upgrade --all`, even if other entries succeed, a single failing entry makes the overall result non-zero and prints the list of failures.
+- `up` without `--dry-run` is a documented placeholder in the U1 slice and exits 2 (see the `hukou up` section above); every other failure keeps the generic non-zero (1) convention.

@@ -159,6 +159,7 @@ hukou 与 topgrade 是组合关系而非竞争关系。把它注册成 custom co
 | `outdated [name…]` | 否 | 是 | 检查是否有更新版本，不下载 |
 | `upgrade [name…]` | 是 | 是 | 校验并替换；`--dry-run` 预览，`--all` 全部条目 |
 | `rollback <name>` | 是 | 否 | 激活某个保留版本；`--to <tag>` 或 `--to original` |
+| `up` | 否（本版本仅 dry-run） | 否 | 规划全机升级（覆盖已知包管理器）；`--dry-run` 打印将执行的命令与库存概要，真实执行在后续版本落地（占位退出码 2） |
 | `policy show/set` | show: 否；set: manifest | 否 | 查看或原子修改更新/回滚策略 |
 | `doctor` | 否 | 否 | 审计 manifest、store、journal 与活跃文件；`--deep`、`--json` |
 | `repair plan/apply` | plan: 仅写 plan 文件；apply: manifest、活跃二进制、事务状态（可能隔离 journal 残留） | 否 | fingerprint 绑定的未决事务或 manifest 备份恢复 |

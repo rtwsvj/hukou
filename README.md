@@ -180,6 +180,7 @@ for the ownership boundary.
 | `outdated [name…]` | no | yes | Check for newer releases without downloading |
 | `upgrade [name…]` | yes | yes | Verify and replace; `--dry-run` previews, `--all` for every entry |
 | `rollback <name>` | yes | no | Activate a retained version; `--to <tag>` or `--to original` |
+| `up` | no (dry-run only in this release) | no | Plan a full-machine upgrade across known managers; `--dry-run` prints the exact commands and an inventory summary, real execution lands in a later release (exit 2 placeholder) |
 | `policy show/set` | show: no; set: manifest | no | Inspect or atomically change update/rollback policy |
 | `doctor` | no | no | Audit manifest, store, journal, and live files; `--deep`, `--json` |
 | `repair plan/apply` | plan: plan file only; apply: manifest, live binary, transaction state (may quarantine journal residue) | no | Fingerprint-bound recovery of unfinished transactions or a manifest backup |
