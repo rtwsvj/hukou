@@ -1,7 +1,9 @@
 # Phase 3 Spec: hukou up (upgrade orchestration + snapshot diff)
 
-Status: approved; U1 (dry-run) in progress. This document defines the `up`
-contract; verification evidence lands in `docs/audit/`.
+Status: approved; U1 (dry-run) and U2 (real execution + snapshot diff)
+delivered; U3 (diff-driven rollback surface + docs polish) remaining. This
+document defines the `up` contract; verification evidence lands in
+`docs/audit/`.
 
 ## Goal
 
@@ -80,12 +82,15 @@ to that source.
 - **U1 (this card)**: registry + detection + `--dry-run` + `--only/--skip` +
   `--json`; zero writes, zero subprocess execution (commands are printed,
   never run). Fixture tests with a fake PATH.
-- U2: real execution + snapshot/diff/report + history + aggregate exit.
-  U2 acceptance additionally requires a structural executor boundary: all
-  manager command execution goes through a single constrained executor
-  package, and an import-guard test asserts the dry-run call chain cannot
-  reach `os/exec` command execution (deferred from U1 by recorded ruling —
-  see docs/09-decision-log.md, 2026-07-17).
+- **U2 (delivered)**: real execution + snapshot/diff/report + history +
+  aggregate exit. The structural executor boundary landed as required: all
+  manager command execution goes through the single constrained
+  `internal/orchestrate/executor` package, and an import-guard test asserts the
+  dry-run call chain cannot reach it (`go list -deps` shows `orchestrate` has no
+  dependency on the executor subpackage, plus a `go/parser` scan forbidding
+  `exec.Command`/`exec.CommandContext` in `orchestrate` outside that subpackage;
+  the behavioral stub-executor guard from U1 is retained as double insurance).
+  Deferred from U1 by recorded ruling — see docs/09-decision-log.md, 2026-07-17.
 - U3: diff-driven rollback surface + retention pruning + docs.
 
 ## Acceptance (U1)

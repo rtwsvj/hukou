@@ -82,17 +82,45 @@ hukou upgrade [name ...] [--all] [--dry-run] [--asset <substring>]
 
 A real upgrade re-checks inside the lock, then downloads and verifies the asset, writes the store, records the child activation, persists the before/after transaction, switches the active path, and updates the manifest; once the transaction is clean, old versions are cleaned up in two phases according to the current/original/pin/lineage protection set. Metadata selection follows the effective policy; by default SemVer never downgrades, while an exact pin can move explicitly forward or backward. `--dry-run` fails with a message when it finds a pending transaction, but does not auto-recover or write state.
 
-## `hukou up` (U1 slice, unreleased)
+## `hukou up`
 
 ```text
+hukou up [--only <mgr>...] [--skip <mgr>...] [--json]
 hukou up --dry-run [--only <mgr>...] [--skip <mgr>...] [--json]
-hukou up            # placeholder in this slice: prints a notice, exits 2
 ```
 
-One command that will upgrade everything on the machine (see
-`docs/specs/phase3-up.md`). The current slice, U1, ships only the read-only
-plan; real execution, the before/after inventory snapshot, and the diff report
-land in a later slice (U2+).
+One command that upgrades everything on the machine — the package managers hukou
+knows about plus hukou's own adopted tools — and reports exactly what changed
+(see `docs/specs/phase3-up.md`). A dry run prints the read-only plan; a real run
+executes the upgrades and diffs a full-machine inventory snapshot taken before
+and after.
+
+### Real run semantics (U2)
+
+- Takes a pre-snapshot (the read-only PATH scan), runs each available manager's
+  upgrade command in registry order, takes a post-snapshot, and prints a diff of
+  every added / removed / changed binary grouped by source. A binary counts as
+  *changed* when its version or its content hash (sha256) differs.
+- Every external manager subprocess is launched through a single constrained
+  executor package (`internal/orchestrate/executor`) — the only place in the
+  codebase that runs a manager subprocess. Output streams through with a `[name]`
+  prefix, each manager has a per-manager timeout (default 15m) that kills a hung
+  manager and marks it failed, and the run honors interruption (Ctrl-C).
+- A failing manager is reported and does **not** stop the rest; the overall exit
+  status is non-zero if any manager failed (same policy as `upgrade --all`), and
+  the report is still printed. The internal `hukou` step runs in-process via the
+  normal `upgrade --all` path and holds the normal mutation lock only for its own
+  duration; no hukou lock is held while external managers run.
+- The snapshot pair and diff are persisted under
+  `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, and `diff.json`,
+  written atomically (staged in a temp directory, then renamed into place) and
+  pruned to the most recent 10 runs (the run just written is never pruned).
+- Rollback surface (printed only; hukou executes none of it): a changed
+  `Source == hukou` entry links to a real `hukou rollback <name>`; a changed
+  foreign entry records its prior version and, where a standard one-liner exists,
+  the manager's own downgrade command (e.g. `npm i -g pkg@<prev>`).
+- `--json` emits `{"schema_version": 1, "managers": [{name, status, duration,
+  exit}...], "diff": {...}, "snapshot_dir": "..."}`.
 
 ### `--dry-run` semantics
 
@@ -105,13 +133,16 @@ land in a later slice (U2+).
   shared read-only scan), then the trailer
   `dry run: nothing was executed or written`.
 - Hard zero-side-effect guarantees, enforced by tests over the table, JSON,
-  filter, filter-error, and placeholder paths: no data root is created, no
-  subprocess is launched (detection is `LookPath` only; the execution seam is
-  asserted never reached on those paths), no lock is held, no network access.
-  `HOME` and the hukou data dir are verified byte-for-byte untouched in a
-  sandboxed run. A structural import-level guard around the executor is a
-  stated acceptance criterion of the next slice (U2), where real execution
-  code first appears.
+  filter, and filter-error paths: no data root is created, no subprocess is
+  launched (detection is `LookPath` only; a stub executor injected on every
+  dry-run path fails the test if ever reached), no lock is held, no network
+  access. `HOME` and the hukou data dir are verified byte-for-byte untouched in
+  a sandboxed run. This is backed by a structural guard (U2): `go list -deps`
+  proves the `orchestrate` package — the whole dry-run planning/diff computation
+  — has no transitive dependency on the executor subpackage, and a `go/parser`
+  scan asserts no `orchestrate` source file outside that subpackage invokes
+  `exec.Command`/`exec.CommandContext`, so command execution is confined to the
+  one executor package the dry-run chain cannot reach.
 
 ### `--only` / `--skip`
 
@@ -236,4 +267,4 @@ The report is generated offline and never uploaded; it contains only safe build/
 - Success is 0.
 - Argument, integrity, network, checksum, lock, filesystem, or partial-upgrade failures return non-zero.
 - For `upgrade --all`, even if other entries succeed, a single failing entry makes the overall result non-zero and prints the list of failures.
-- `up` without `--dry-run` is a documented placeholder in the U1 slice and exits 2 (see the `hukou up` section above); every other failure keeps the generic non-zero (1) convention.
+- `up` follows the same aggregate policy: any manager finishing non-OK (failed or timed out) makes the overall result non-zero (1) after the report is printed. The former exit-2 placeholder is retired now that `up` executes for real; every failure keeps the generic non-zero (1) convention.
