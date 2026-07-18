@@ -106,3 +106,21 @@ silently rewrite the historical rationale.
     never constructed or called, plus the `go list -deps` package guard and the
     U1 `forbidRunner` behavioral stub as depth. These are mechanical, not the
     earlier hand-waved argument.
+- 2026-07-18: U2 final review closeout (Fable, cited by the internal
+  multi-round review, which confirmed no real code defect remained). Applied
+  every documentation-consistency and guard-hardening item the review raised:
+  (1) removed the contradictory "interrupted run marks the remaining managers
+  canceled" summary and stated that only a successful internal-step result is
+  reclassified canceled (a failed one is left as-is); (2) documented that
+  snapshot `snapshot_dir` is empty on a write failure but non-empty when only
+  the afterward prune failed; (3) softened the fence claim from "mechanically
+  incapable" to "no in-repo source outside the executor package can launch a
+  subprocess" — the AST fence covers this repository's sources; third-party
+  execution capability is bounded by the zero-new-dependency policy and the
+  dep guards, not by the fence; (4) narrowed the `synthbad_` walker skip from a
+  repo-wide unconditional prefix skip to only a direct child of the plan
+  package directory whose contents are exclusively synthetic `package synthbad`
+  .go files (isEphemeralSynthPkg), so no committed or production code can hide
+  behind the prefix anywhere — verified adversarially (a synthbad_ dir elsewhere
+  and a plan-local synthbad_ holding a non-synthetic package are both scanned
+  and flagged).

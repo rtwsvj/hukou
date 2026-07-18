@@ -107,8 +107,8 @@ and after.
   prefix; each manager has a per-manager timeout (default 15m). Execution is
   deliberately plain: each command is `exec.CommandContext` with no process
   group, so the manager stays in hukou's foreground process group and a terminal
-  Ctrl-C reaches it directly. A timed-out manager is marked `timeout`; an
-  interrupted run marks the remaining managers `canceled`.
+  Ctrl-C reaches it directly. A timed-out manager is marked `timeout`;
+  interrupt handling is described below.
   - **Known limitation:** a timeout or interrupt kills only the manager's
     **direct child**. If a manager spawns a detached grandchild (a backgrounded
     daemon, say), that grandchild can be left running — exactly as it would if
@@ -125,9 +125,10 @@ and after.
   - **Known limitation:** the internal `hukou` step is an in-process, fast,
     WAL-transaction-protected operation, so an interrupt cannot break into it
     mid-flight — cancellation is observed only at its boundaries: before it
-    starts (it is skipped and recorded `canceled`) or after it returns (its
-    result is reclassified `canceled` so an interrupted run can never report
-    ok / exit 0). This is an intentional minimal semantic, unlike long-running
+    starts (it is skipped and recorded `canceled`) or after it returns (a
+    successful `ok` result is reclassified `canceled`; a `failed` result is
+    left as-is) so an interrupted run can never report ok / exit 0. This is an
+    intentional minimal semantic, unlike long-running
     external managers, whose direct child is killed on timeout/cancel.
 - The snapshot pair and diff are persisted under
   `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, and `diff.json`,
@@ -135,8 +136,10 @@ and after.
   pruned to the most recent 10 runs (the run just written is never pruned). A
   failure to persist this history is NOT silent: it is printed to stderr,
   recorded in the report (`snapshot: FAILED (...)` in the table,
-  `snapshot_error` in JSON with an empty `snapshot_dir`), and makes the overall
-  exit non-zero even when every manager succeeded.
+  `snapshot_error` in JSON), and makes the overall exit non-zero even when
+  every manager succeeded. `snapshot_dir` is empty when the new snapshot could
+  not be written at all; it holds the run's own directory when the snapshot
+  landed and only the afterward pruning of older runs failed.
 - Rollback surface (printed only; hukou executes none of it): a changed
   `Source == hukou` entry links to a real `hukou rollback <name>`; a changed
   foreign entry records its prior version and, where a standard one-liner exists,
@@ -167,9 +170,13 @@ and after.
   (`internal/orchestrate/execution_fence_test.go`): no non-test file outside
   `internal/orchestrate/executor` may use `exec.Command`/`exec.CommandContext`/
   the `exec.Cmd` type, `os.StartProcess`, or `syscall.Exec`/`ForkExec`. Since
-  command execution lives in exactly one package, the whole dry-run call chain
-  is mechanically incapable of launching a subprocess; a synthetic violating
-  package proves the fence fires. Depth: an injectable-dispatch test drives the
+  command execution lives in exactly one package, no in-repo source outside it
+  can launch a subprocess, so the dry-run call chain cannot reach execution
+  through this repository's own code; a synthetic violating package proves the
+  fence fires. (The fence covers this repository's sources; a third-party
+  dependency's execution capability is bounded instead by the
+  zero-new-dependency policy and the `go list -deps` guards below, not by the
+  AST fence.) Depth: an injectable-dispatch test drives the
   real cobra `up --dry-run` with a fatal-on-call fake executor and asserts it is
   never constructed or invoked; `go list -deps` proves the `orchestrate` and
   `plan` packages have no dependency on the executor subpackage or `os/exec`;

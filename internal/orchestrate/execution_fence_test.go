@@ -181,6 +181,7 @@ func TestNoExecutionPrimitivesOutsideExecutor(t *testing.T) {
 	root := moduleRoot(t)
 	execDir := filepath.Join(root, filepath.FromSlash(executorPkgRel))
 	vendorDir := filepath.Join(root, "vendor")
+	planPkgDir := filepath.Join(root, "internal", "orchestrate", "plan")
 
 	// The allowlist must name real files, or it silently guards nothing.
 	for rel := range osExecAllowlist {
@@ -202,15 +203,17 @@ func TestNoExecutionPrimitivesOutsideExecutor(t *testing.T) {
 				return filepath.SkipDir // the one package allowed to execute
 			}
 			// "synthbad_" is the reserved prefix for EPHEMERAL deliberately
-			// violating packages created at runtime by the concurrent guard
-			// tests (internal/orchestrate/plan/guard_test.go); the full suite
-			// runs test binaries in parallel, so this walker can otherwise
-			// catch one mid-existence and report a phantom violation. Skipping
-			// the prefix does not weaken the fence: it guards against
-			// accidental primitive use, and parking real code under a
-			// directory named synthbad_* would be deliberate evasion, which no
-			// in-repo static check can stop.
-			if strings.HasPrefix(d.Name(), "synthbad_") {
+			// violating packages that plan/guard_test.go creates at runtime via
+			// MkdirTemp(".", "synthbad_"); the suite runs test binaries in
+			// parallel, so this walker can otherwise catch one mid-existence and
+			// report a phantom violation. The skip is narrowed so it cannot mask
+			// real code: it applies ONLY to a direct child of the plan package
+			// directory whose contents are nothing but synthetic `package
+			// synthbad` .go files. A synthbad_-named directory anywhere else, or
+			// one holding any non-synthetic file, is scanned like any other.
+			if strings.HasPrefix(d.Name(), "synthbad_") &&
+				filepath.Dir(path) == planPkgDir &&
+				isEphemeralSynthPkg(path) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -239,6 +242,31 @@ func TestNoExecutionPrimitivesOutsideExecutor(t *testing.T) {
 		t.Fatalf("execution primitives found outside %s (they belong only there):\n  %s",
 			executorPkgRel, strings.Join(violations, "\n  "))
 	}
+}
+
+// isEphemeralSynthPkg reports whether dir is genuinely one of the throwaway
+// synthetic packages plan/guard_test.go creates: it must contain only regular
+// .go files (no subdirectories, no other file types) and every one of them
+// must declare `package synthbad`. Any tracked or production file — which would
+// carry a different package clause, or be a non-.go file, or sit in a nested
+// directory — makes this return false, so the walker scans the directory
+// normally and a real primitive there cannot hide behind the prefix.
+func isEphemeralSynthPkg(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			return false
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.PackageClauseOnly)
+		if err != nil || f.Name == nil || f.Name.Name != "synthbad" {
+			return false
+		}
+	}
+	return true
 }
 
 // TestExecutionFenceCatchesSyntheticViolations proves the fence bites, with
