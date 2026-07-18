@@ -69,3 +69,58 @@ silently rewrite the historical rationale.
   independent ways (a never-reached executor stub across the table/JSON/
   filter/error/placeholder paths, and a byte-for-byte sandbox tree snapshot
   including directory mtimes). The guard is a stated U2 acceptance criterion.
+- 2026-07-18: U2 `up` — process-group machinery removed by product ruling;
+  plain, provably-correct execution model adopted. This supersedes the earlier
+  same-day notes about a two-phase group SIGTERM/SIGKILL kill, a `reaped`-flag
+  race, and the claim that the `forbidRunner` stub "carried the guarantee" with
+  a "signal-0 second-order infinitesimal" residue — that whole design and its
+  reasoning are withdrawn as the wrong tree. Root cause: `Setpgid` moved each
+  manager out of hukou's foreground process group, which is what forced manual
+  signal forwarding (terminal Ctrl-C no longer reached the manager) and created
+  the escalation-timer/reap race in the first place. Deleting the process group
+  deletes the whole chain.
+  - Execution model: each manager command is `exec.CommandContext(ctx, argv…)`
+    with no `SysProcAttr`; the per-manager `ctx` is a `context.WithTimeout`
+    (default 15m). Managers stay in hukou's foreground process group, so a
+    terminal Ctrl-C reaches them naturally; the run's root context is a
+    `signal.NotifyContext` (SIGINT, plus SIGTERM on unix) as a second, portable
+    cancellation path. There is no process group, no signal forwarding, no
+    escalation, no reap bookkeeping.
+  - Known limitation, recorded honestly (docs/05, spec): a timeout or interrupt
+    kills only the DIRECT child. A manager that spawns a detached grandchild can
+    leave it running — identical to running that manager's command directly in a
+    shell. hukou does not chase the process tree and no longer pretends to.
+  - Interruption: the manager loop checks `ctx.Err()` before each manager (this
+    same check gates the internal in-process hukou step, which is the last loop
+    iteration); once canceled it stops launching managers, records a `canceled`
+    marker, and still snapshots/diffs/reports what already happened. Exit stays
+    0/1 (canceled and snapshot-persistence failure are both non-zero).
+  - Dry-run zero-execution guarantee: the PRIMARY guard is a repo-wide `go/ast`
+    execution-primitive fence (`internal/orchestrate/execution_fence_test.go`,
+    `TestNoExecutionPrimitivesOutsideExecutor`) — no non-test file outside
+    `internal/orchestrate/executor` may use `exec.Command`/`exec.CommandContext`/
+    `exec.Cmd`, `os.StartProcess`, or `syscall.Exec`/`ForkExec`; a synthetic
+    violating snapshot proves the fence fires. It is complemented by an
+    injectable-dispatch test (`up_dispatch_guard_test.go`) that drives the real
+    cobra `up --dry-run` with a fatal-on-call fake executor and asserts it is
+    never constructed or called, plus the `go list -deps` package guard and the
+    U1 `forbidRunner` behavioral stub as depth. These are mechanical, not the
+    earlier hand-waved argument.
+- 2026-07-18: U2 final review closeout (Fable, cited by the internal
+  multi-round review, which confirmed no real code defect remained). Applied
+  every documentation-consistency and guard-hardening item the review raised:
+  (1) removed the contradictory "interrupted run marks the remaining managers
+  canceled" summary and stated that only a successful internal-step result is
+  reclassified canceled (a failed one is left as-is); (2) documented that
+  snapshot `snapshot_dir` is empty on a write failure but non-empty when only
+  the afterward prune failed; (3) softened the fence claim from "mechanically
+  incapable" to "no in-repo source outside the executor package can launch a
+  subprocess" — the AST fence covers this repository's sources; third-party
+  execution capability is bounded by the zero-new-dependency policy and the
+  dep guards, not by the fence; (4) narrowed the `synthbad_` walker skip from a
+  repo-wide unconditional prefix skip to only a direct child of the plan
+  package directory whose contents are exclusively synthetic `package synthbad`
+  .go files (isEphemeralSynthPkg), so no committed or production code can hide
+  behind the prefix anywhere — verified adversarially (a synthbad_ dir elsewhere
+  and a plan-local synthbad_ holding a non-synthetic package are both scanned
+  and flagged).
