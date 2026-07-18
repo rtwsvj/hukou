@@ -70,6 +70,9 @@ func stubRunDeps(t *testing.T, lookPath orchestrate.LookPathFunc, exec orchestra
 		hasher:   func(string) string { return "" },
 		now:      func() time.Time { return time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC) },
 		dataRoot: func() string { return t.TempDir() },
+		baseContext: func() (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.Background())
+		},
 	}
 }
 
@@ -221,6 +224,66 @@ func TestUp_realRunAggregateExitOnManagerFailure(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "1 manager(s) failed: brew") {
 		t.Fatalf("stderr missing aggregate summary:\n%s", errb.String())
+	}
+}
+
+// cancelAfterExecutor wraps a fakeExecutor and cancels the run's context the
+// moment a chosen manager runs — simulating a Ctrl-C arriving mid-run.
+type cancelAfterExecutor struct {
+	fake     *fakeExecutor
+	cancelOn string
+	cancel   context.CancelFunc
+}
+
+func (c *cancelAfterExecutor) RunManager(ctx context.Context, name string, cmds [][]string) orchestrate.StepResult {
+	res := c.fake.RunManager(ctx, name, cmds)
+	if name == c.cancelOn {
+		c.cancel()
+	}
+	return res
+}
+
+// TestUp_interruptStopsSubsequentManagersAndSkipsHukou drives the interruption
+// fix: an injected context is canceled right after the first manager (brew)
+// runs. The loop's per-iteration ctx check must then stop launching further
+// managers — npm must not run and the internal hukou step must be skipped — and
+// the run must exit non-zero with a canceled marker in the report.
+func TestUp_interruptStopsSubsequentManagersAndSkipsHukou(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, binDir, "brew", "#!/bin/sh\n")
+	writeExecutable(t, binDir, "npm", "#!/bin/sh\n")
+
+	same := output.Report{Rows: []output.Row{row("brew", "/b/brew", "brew", "4.0")}}
+	fx := &fakeExecutor{}
+	var hukouCalled bool
+	deps := stubRunDeps(t, fakeLookPath(binDir), nil, &hukouCalled, same, same)
+
+	// Wire a context the wrapper can cancel, and inject the canceling executor.
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.baseContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
+	deps.exec = &cancelAfterExecutor{fake: fx, cancelOn: "brew", cancel: cancel}
+
+	var out, errb bytes.Buffer
+	err := doUpExecute(&out, &errb, upOptions{}, deps)
+	if err == nil {
+		t.Fatal("interrupted run must exit non-zero")
+	}
+	if ExitCode(err) != 1 {
+		t.Fatalf("ExitCode = %d, want 1", ExitCode(err))
+	}
+	// brew ran; npm did NOT (canceled before it); hukou step was skipped.
+	if got := strings.Join(fx.calls, ","); got != "brew" {
+		t.Fatalf("executor calls = %q, want only brew (npm must not run after cancel)", got)
+	}
+	if hukouCalled {
+		t.Fatal("internal hukou step ran despite cancellation before it")
+	}
+	// The report marks the run canceled and stderr names the not-completed set.
+	if !strings.Contains(out.String(), "canceled") {
+		t.Fatalf("report does not mark the run canceled:\n%s", out.String())
+	}
+	if !strings.Contains(errb.String(), "run canceled") {
+		t.Fatalf("stderr missing cancellation note:\n%s", errb.String())
 	}
 }
 

@@ -15,12 +15,12 @@ const executorImportPath = "github.com/rtwsvj/hukou/internal/orchestrate/executo
 // more: it asserts which cmd source files import the executor subpackage
 // (exactly one — up_exec.go). It does not analyze calls or reachability; a
 // file-level import list cannot prove what the dry-run path executes. The
-// PRIMARY guard is package-level and lives in
-// internal/orchestrate/plan/guard_test.go (TestPlanDepsExcludeExecutorAndOsExec):
-// the plan package holding all dry-run assembly/rendering has a transitive
-// dependency set free of both the executor subpackage and os/exec. Runtime
-// depth comes from the U1 behavioral stub (TestUp_dryRunNeverInvokesRunner in
-// up_test.go).
+// PRIMARY guard is the repo-wide go/ast execution-primitive fence
+// (internal/orchestrate/execution_fence_test.go,
+// TestNoExecutionPrimitivesOutsideExecutor); the dispatch guard
+// (up_dispatch_guard_test.go) proves the real cobra dry-run dispatch never
+// constructs or calls the executor; and the U1 behavioral stub
+// (TestUp_dryRunNeverInvokesRunner in up_test.go) is runtime depth.
 func TestOnlyUpExecImportsExecutor(t *testing.T) {
 	fset := token.NewFileSet()
 	entries, err := os.ReadDir(".")

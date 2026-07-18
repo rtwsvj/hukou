@@ -72,11 +72,19 @@ to that source.
   policy as `upgrade --all`; a failure to persist the snapshot history also
   makes the exit non-zero and is recorded in the report).
 - Subprocess output streams through with a `[mgr]` prefix; a per-manager
-  timeout (default 15m) kills a hung manager and marks it failed. On POSIX
-  each manager runs in its own process group and timeout/cancel kills the
-  whole group (SIGTERM, then SIGKILL after a grace window, default 5s), so
-  grandchildren cannot outlive their manager. In `--json` mode all streamed
-  output is routed to stderr; stdout carries only the final JSON document.
+  timeout (default 15m) kills a hung manager and marks it `timeout`. Execution
+  is plain and portable: `exec.CommandContext` with no process group, so the
+  manager stays in hukou's foreground group and a terminal Ctrl-C reaches it
+  directly. **Known limitation:** timeout/cancel kills only the direct child;
+  a detached grandchild a manager spawns may linger — the same outcome as
+  running that command directly in a shell. hukou does not chase the process
+  tree. In `--json` mode all streamed output is routed to stderr; stdout
+  carries only the final JSON document.
+- Interruption: the run's root context is a `signal.NotifyContext` (SIGINT,
+  plus SIGTERM on unix); the manager loop checks `ctx.Err()` before each
+  manager — external and the internal hukou step alike — so an interrupt stops
+  launching further managers, marks the rest `canceled`, and still snapshots,
+  diffs, and reports what already ran before exiting non-zero.
 - `up` holds no hukou mutation lock while foreign managers run (they do not
   touch hukou state); the internal hukou step uses the normal lock.
 - No network code in hukou itself beyond the existing ghrelease path; all
@@ -88,24 +96,23 @@ to that source.
   `--json`; zero writes, zero subprocess execution (commands are printed,
   never run). Fixture tests with a fake PATH.
 - **U2 (delivered)**: real execution + snapshot/diff/report + history +
-  aggregate exit. The dry-run planning/rendering logic lives in its own
-  package `internal/orchestrate/plan`, which imports neither the constrained
-  `internal/orchestrate/executor` package nor `os/exec`; command execution is
-  confined to the executor package (the only package launching manager
-  subprocesses), imported by exactly one cmd file (`cmd/up_exec.go`).
-  The dry-run zero-execution property is guaranteed by three layers, in
-  descending strength: (1) the U1 runtime behavioral stub `forbidRunner`,
-  which asserts the execution seam is never invoked on any dry-run path;
-  (2) a package-dependency guard — `go list -deps` proves `plan` has no
-  transitive dependency on `executor` or `os/exec`, with a synthetic
-  negative test (`TestGuardCatchesSyntheticViolations`) confirming the
-  assertion actually fires on a violating package; (3) an auxiliary
-  file-level check that only `up_exec.go` imports the executor. Full static
-  function-level reachability proof would require an `x/tools` call-graph
-  analysis, which the zero-third-party-dependency rule excludes; the runtime
-  behavioral stub carries the real guarantee instead. Recorded as an accepted
-  boundary — see docs/09-decision-log.md, 2026-07-18. (Deferral origin:
-  2026-07-17.)
+  aggregate exit + interruption. Execution is a plain `exec.CommandContext`
+  model with no process-group/signal-forwarding machinery (that whole design
+  was removed by product ruling — see docs/09-decision-log.md, 2026-07-18).
+  Command execution is confined to the `internal/orchestrate/executor` package
+  (the only package launching manager subprocesses), imported by exactly one
+  cmd file (`cmd/up_exec.go`). The dry-run zero-execution property is
+  guaranteed, primary-first: (1) a **repo-wide `go/ast` execution-primitive
+  fence** (`TestNoExecutionPrimitivesOutsideExecutor`) — no non-test file
+  outside the executor package may use `exec.Command`/`exec.CommandContext`/the
+  `exec.Cmd` type, `os.StartProcess`, or `syscall.Exec`/`ForkExec`; a synthetic
+  violating snapshot proves it fires; (2) an **injectable-dispatch test**
+  (`TestDryRunDispatchNeverConstructsOrCallsExecutor`) that drives the real
+  cobra `up --dry-run` with a fatal-on-call fake executor and asserts it is
+  never constructed or invoked; (3) `go list -deps` package guards that `plan`
+  and `orchestrate` pull in neither `executor` nor `os/exec`; (4) the U1
+  `forbidRunner` behavioral stub and the file-level import check, as depth.
+  (Deferral origin: 2026-07-17.)
 - U3: diff-driven rollback surface + retention pruning + docs.
 
 ## Acceptance (U1)

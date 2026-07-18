@@ -69,40 +69,40 @@ silently rewrite the historical rationale.
   independent ways (a never-reached executor stub across the table/JSON/
   filter/error/placeholder paths, and a byte-for-byte sandbox tree snapshot
   including directory mtimes). The guard is a stated U2 acceptance criterion.
-- 2026-07-18: U2 delivered the deferred guard at PACKAGE level after review
-  rejected file-level and pseudo-call-graph variants: all dry-run assembly and
-  rendering moved into `internal/orchestrate/plan`, whose transitive
-  dependency set is asserted by test to contain neither the executor
-  subpackage nor `os/exec` (`go list -deps`; a synthetic in-module violating
-  package proves the assertion fires). The U1 forbidRunner behavioral stub is
-  retained as runtime depth. Same review fixed the executor kill protocol:
-  each manager runs in its own process group, cancellation sends group
-  SIGTERM then SIGKILL after a grace, and — the recorded invariant — no code
-  path signals the pgid after the direct child is reaped (mutex-shared reaped
-  flag between escalation timer and reap path), accepting the documented
-  corner that a TERM-ignoring, fully pipe-detached grandchild can outlive a
-  quickly-exiting manager rather than risking a recycled-pgid mis-kill.
-  `up`'s exit contract is 0/1 only; failing to persist the snapshot history
-  is a run failure (non-zero exit, recorded in the report).
-- 2026-07-18: Two U2 `up` engineering boundaries were reviewed to a residue
-  that a portable, zero-third-party-dependency, standard-library implementation
-  cannot fully close, and are recorded as accepted (Fable ruling, cited by the
-  internal multi-round review):
-  (a) The dry-run structural guard proves at package granularity that the
-  planning package `internal/orchestrate/plan` cannot reach the executor or
-  `os/exec`. A fully static function-level reachability proof that the cobra
-  dispatch's dry-run branch cannot reach execution would require an `x/tools`
-  call-graph analysis (a third-party dependency, forbidden). The runtime
-  behavioral stub (`forbidRunner`) carries the real guarantee — it asserts the
-  execution seam is never invoked on any dry-run path — backed by U1's
-  byte-for-byte zero-side-effect sandbox snapshot. Static guard + behavioral
-  stub + file-level check are kept as layered defense.
-  (b) The escalation timer's SIGKILL(-pgid) has an unavoidable micro-window
-  between the kernel reaping the direct child inside `cmd.Wait` and `afterReap`
-  taking the shared lock to set `reaped`. Closing it completely needs
-  WNOWAIT-based manual reaping (rewriting the exec model) or a pidfd
-  (non-portable). The callback checks `reaped` under the lock and additionally
-  probes the group with signal 0 before SIGKILL, narrowing the harmful case to
-  the vanishing sliver where the pgid is recycled into a new group leader
-  between the probe and the kill. The mis-kill-free protocol invariant (no
-  signal after reap) plus the signal-0 probe is the accepted portable limit.
+- 2026-07-18: U2 `up` — process-group machinery removed by product ruling;
+  plain, provably-correct execution model adopted. This supersedes the earlier
+  same-day notes about a two-phase group SIGTERM/SIGKILL kill, a `reaped`-flag
+  race, and the claim that the `forbidRunner` stub "carried the guarantee" with
+  a "signal-0 second-order infinitesimal" residue — that whole design and its
+  reasoning are withdrawn as the wrong tree. Root cause: `Setpgid` moved each
+  manager out of hukou's foreground process group, which is what forced manual
+  signal forwarding (terminal Ctrl-C no longer reached the manager) and created
+  the escalation-timer/reap race in the first place. Deleting the process group
+  deletes the whole chain.
+  - Execution model: each manager command is `exec.CommandContext(ctx, argv…)`
+    with no `SysProcAttr`; the per-manager `ctx` is a `context.WithTimeout`
+    (default 15m). Managers stay in hukou's foreground process group, so a
+    terminal Ctrl-C reaches them naturally; the run's root context is a
+    `signal.NotifyContext` (SIGINT, plus SIGTERM on unix) as a second, portable
+    cancellation path. There is no process group, no signal forwarding, no
+    escalation, no reap bookkeeping.
+  - Known limitation, recorded honestly (docs/05, spec): a timeout or interrupt
+    kills only the DIRECT child. A manager that spawns a detached grandchild can
+    leave it running — identical to running that manager's command directly in a
+    shell. hukou does not chase the process tree and no longer pretends to.
+  - Interruption: the manager loop checks `ctx.Err()` before each manager (this
+    same check gates the internal in-process hukou step, which is the last loop
+    iteration); once canceled it stops launching managers, records a `canceled`
+    marker, and still snapshots/diffs/reports what already happened. Exit stays
+    0/1 (canceled and snapshot-persistence failure are both non-zero).
+  - Dry-run zero-execution guarantee: the PRIMARY guard is a repo-wide `go/ast`
+    execution-primitive fence (`internal/orchestrate/execution_fence_test.go`,
+    `TestNoExecutionPrimitivesOutsideExecutor`) — no non-test file outside
+    `internal/orchestrate/executor` may use `exec.Command`/`exec.CommandContext`/
+    `exec.Cmd`, `os.StartProcess`, or `syscall.Exec`/`ForkExec`; a synthetic
+    violating snapshot proves the fence fires. It is complemented by an
+    injectable-dispatch test (`up_dispatch_guard_test.go`) that drives the real
+    cobra `up --dry-run` with a fatal-on-call fake executor and asserts it is
+    never constructed or called, plus the `go list -deps` package guard and the
+    U1 `forbidRunner` behavioral stub as depth. These are mechanical, not the
+    earlier hand-waved argument.

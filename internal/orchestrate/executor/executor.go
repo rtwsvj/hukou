@@ -1,11 +1,24 @@
 // Package executor is the single place in hukou allowed to launch a manager's
-// upgrade subprocess. It wraps os/exec with streamed, prefixed output, a
-// per-manager timeout, and context cancellation, and it implements
-// orchestrate.StepExecutor so the rest of the program consumes it through that
-// interface. Because no other package (and, in particular, neither the
-// orchestrate package nor the dry-run call chain) imports this one, the absence
-// of command execution on the dry-run path is a structural, statically checkable
-// property — see internal/orchestrate/executor_boundary_test.go.
+// upgrade subprocess. It wraps os/exec with streamed, prefixed output and a
+// per-manager timeout, and implements orchestrate.StepExecutor so the rest of
+// the program consumes it through that interface.
+//
+// Execution model — deliberately plain and portable. Each command runs as
+// exec.CommandContext(ctx, argv[0], argv[1:]...) with NO SysProcAttr: the
+// manager stays in hukou's own foreground process group, so a terminal Ctrl-C
+// reaches it naturally (no manual signal forwarding), and cancellation/timeout
+// is delivered by CommandContext killing the direct child. There is no process
+// group, no two-phase SIGTERM/SIGKILL escalation, and no reap bookkeeping.
+//
+// Known limitation, stated honestly: a timeout or cancel kills only the DIRECT
+// child. A manager that spawns a detached grandchild (a backgrounded daemon,
+// say) can leave that grandchild running — exactly as it would if you ran the
+// manager's upgrade command directly in your shell. hukou does not chase the
+// process tree.
+//
+// The executor is the only package in the tree that launches a subprocess; a
+// repo-wide go/ast fence (internal/orchestrate/execution_fence_test.go) asserts
+// no other non-test file uses an execution primitive.
 package executor
 
 import (
@@ -25,27 +38,19 @@ import (
 // hung manager is killed once this elapses and reported as StatusTimeout.
 const DefaultTimeout = 15 * time.Minute
 
-// DefaultTermGrace is how long a cancelled/timed-out manager's process group
-// gets between the graceful SIGTERM and the follow-up group SIGKILL.
-const DefaultTermGrace = 5 * time.Second
-
-// defaultKillGrace is how long Wait may keep draining a killed process's pipes
-// before the descriptors are force-closed, so a lingering grandchild that
-// inherited stdout cannot wedge the run indefinitely.
-const defaultKillGrace = 10 * time.Second
+// waitDrainGrace bounds how long Wait keeps draining a finished (or killed)
+// command's inherited pipes before the descriptors are force-closed. This is
+// plain os/exec I/O bookkeeping, not process management: by the time it
+// matters the direct child is already gone, and any detached grandchild that
+// kept an output pipe open is deliberately left alone (see the package doc's
+// known limitation). Without it, such a grandchild could wedge Wait forever.
+const waitDrainGrace = 10 * time.Second
 
 // Executor runs manager commands as real subprocesses. The zero value is not
 // usable; construct it with New so writers are non-nil.
 type Executor struct {
 	// Timeout bounds each manager's whole run; <= 0 uses DefaultTimeout.
 	Timeout time.Duration
-	// TermGrace is the SIGTERM -> SIGKILL escalation window applied to the
-	// manager's whole process group on timeout/cancel; <= 0 uses
-	// DefaultTermGrace. POSIX only; elsewhere cancellation kills the direct
-	// child (see setupProcessControl).
-	TermGrace time.Duration
-	// KillGrace bounds pipe draining after a kill; <= 0 uses defaultKillGrace.
-	KillGrace time.Duration
 
 	stdout io.Writer
 	stderr io.Writer
@@ -114,35 +119,14 @@ func (e *Executor) RunManager(ctx context.Context, name string, commands [][]str
 
 // runOne launches a single command and streams its output. It returns the
 // process exit code (or -1 when the process never produced one) and a non-nil
-// error when the command failed, timed out, or was cancelled. On POSIX the
-// command runs in its own process group and cancellation/timeout kills the
-// whole group (SIGTERM, then SIGKILL after TermGrace) so grandchildren spawned
-// by a manager cannot outlive it.
-//
-// Output deliberately uses cmd.Stdout/cmd.Stderr writers rather than
-// StdoutPipe: with writers, Wait keeps draining until the pipes reach EOF (or
-// WaitDelay force-closes them), so a grandchild holding the inherited pipes
-// keeps the direct child UN-reaped long enough for the pre-reap group-kill
-// escalation to fire — the safety property the whole kill protocol rests on
-// (see proc_unix.go). StdoutPipe would let Wait return at reap and strand such
-// grandchildren.
+// error when the command failed, timed out, or was cancelled. Cancellation and
+// timeout are delivered by exec.CommandContext, which kills the direct child;
+// no process group is created and no descendant is chased.
 func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int, error) {
-	grace := e.KillGrace
-	if grace <= 0 {
-		grace = defaultKillGrace
-	}
-	termGrace := e.TermGrace
-	if termGrace <= 0 {
-		termGrace = DefaultTermGrace
-	}
-
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// WaitDelay bounds how long Wait blocks draining pipes after the process
-	// exits or is cancelled, so an inherited-stdout grandchild cannot wedge the
-	// run indefinitely.
-	cmd.WaitDelay = grace
-	// Platform-specific: own process group + group-wide TERM->KILL cancel.
-	afterReap := setupProcessControl(cmd, termGrace)
+	// WaitDelay bounds pipe draining after the process exits or is killed, so a
+	// detached grandchild holding an inherited pipe cannot wedge Wait forever.
+	cmd.WaitDelay = waitDrainGrace
 
 	// A shared mutex keeps stdout and stderr lines from interleaving mid-line,
 	// even when both writers point at the same buffer.
@@ -158,10 +142,6 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	}
 
 	waitErr := cmd.Wait()
-	// The child is reaped: under the shared lock, mark it so and cancel any
-	// still-pending escalation — after this point nothing may signal the pgid
-	// again (it could have been recycled). See proc_unix.go for the protocol.
-	afterReap()
 	// Wait has joined the internal copy goroutines; flush any trailing
 	// unterminated line from each stream.
 	outW.flush()
@@ -175,9 +155,8 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	}
 
 	if ctx.Err() != nil {
-		// The deadline or a parent cancellation ended the process. Report it as
-		// timeout when it was our per-manager deadline; a cancelled parent still
-		// surfaces as a failure with the context error.
+		// The deadline or a parent cancellation ended the process. Surface the
+		// context error; RunManager classifies it as timeout vs canceled.
 		return exitCodeOf(waitErr), fmt.Errorf("%w", ctx.Err())
 	}
 	if waitErr != nil {
@@ -186,11 +165,12 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	return 0, nil
 }
 
-// classifyCtx maps context state to a step status: a hit per-manager deadline is
-// a timeout; a cancelled parent context is a failure; otherwise OK.
+// classifyCtx maps context state to a step status: a cancelled PARENT is a
+// user/caller cancellation (StatusCanceled); a hit per-manager deadline (parent
+// still live) is StatusTimeout; any other cancelled runCtx is a failure.
 func classifyCtx(runCtx, parent context.Context) orchestrate.StepStatus {
 	if parent.Err() != nil {
-		return orchestrate.StatusFailed
+		return orchestrate.StatusCanceled
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return orchestrate.StatusTimeout

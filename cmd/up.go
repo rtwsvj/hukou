@@ -33,12 +33,13 @@ command in registry order (a failing manager is reported and does not stop the
 rest), takes a second snapshot, and prints a diff of every added, removed, or
 changed binary grouped by source. The snapshot pair and diff are persisted under
 <dataRoot>/snapshots/<timestamp>/. Every manager subprocess is launched through
-a single constrained executor with streamed output and a per-manager timeout
-that kills the manager's whole process group on expiry; hukou never mutates
-another manager's state beyond invoking its upgrade command. The exit status is
-non-zero if any manager fails or the snapshot history cannot be persisted. With
---json, stdout carries only the final JSON document; all streamed manager
-output goes to stderr.`,
+a single constrained executor with streamed output and a per-manager timeout;
+timeout or Ctrl-C kills the manager's direct child (a detached grandchild it
+spawned may linger, as it would in a shell). hukou never mutates another
+manager's state beyond invoking its upgrade command. The exit status is non-zero
+if any manager fails, the run is interrupted, or the snapshot history cannot be
+persisted. With --json, stdout carries only the final JSON document; all
+streamed manager output goes to stderr.`,
 	Args:          cobra.NoArgs,
 	SilenceErrors: true, // errors are printed once, here or via fail.
 	RunE:          runUp,

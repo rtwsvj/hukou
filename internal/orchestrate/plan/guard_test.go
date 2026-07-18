@@ -40,10 +40,11 @@ func forbiddenDeps(t *testing.T, dir, pattern string, forbidden ...string) []str
 	return hit
 }
 
-// TestPlanDepsExcludeExecutorAndOsExec is the primary U2 executor-boundary
-// guard (docs/09-decision-log.md, 2026-07-17): the plan package — the whole of
-// the dry-run assembly/rendering logic — must have a transitive dependency set
-// containing neither the executor subpackage (the only place that launches
+// TestPlanDepsExcludeExecutorAndOsExec is a defense-in-depth layer of the U2
+// executor boundary (the primary guard is the repo-wide go/ast fence in
+// internal/orchestrate/execution_fence_test.go): the plan package — the whole
+// of the dry-run assembly/rendering logic — must have a transitive dependency
+// set containing neither the executor subpackage (the only place that launches
 // manager subprocesses) nor os/exec itself. A package that cannot import
 // subprocess machinery cannot execute a command, whatever its call paths do.
 func TestPlanDepsExcludeExecutorAndOsExec(t *testing.T) {

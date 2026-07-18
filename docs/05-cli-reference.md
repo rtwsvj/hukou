@@ -104,15 +104,24 @@ and after.
 - Every external manager subprocess is launched through a single constrained
   executor package (`internal/orchestrate/executor`) — the only place in the
   codebase that runs a manager subprocess. Output streams through with a `[name]`
-  prefix; each manager has a per-manager timeout (default 15m). On POSIX every
-  manager runs in its own process group, and timeout/interruption kills the
-  whole group: SIGTERM first, then SIGKILL after a grace window (default 5s),
-  so helper grandchildren a manager spawned cannot outlive it. A timed-out
-  manager is marked failed; the run honors interruption (Ctrl-C).
+  prefix; each manager has a per-manager timeout (default 15m). Execution is
+  deliberately plain: each command is `exec.CommandContext` with no process
+  group, so the manager stays in hukou's foreground process group and a terminal
+  Ctrl-C reaches it directly. A timed-out manager is marked `timeout`; an
+  interrupted run marks the remaining managers `canceled`.
+  - **Known limitation:** a timeout or interrupt kills only the manager's
+    **direct child**. If a manager spawns a detached grandchild (a backgrounded
+    daemon, say), that grandchild can be left running — exactly as it would if
+    you ran the manager's upgrade command directly in your shell. hukou does not
+    chase the process tree.
 - A failing manager is reported and does **not** stop the rest; the report is
-  still printed. The internal `hukou` step runs in-process via the normal
-  `upgrade --all` path and holds the normal mutation lock only for its own
-  duration; no hukou lock is held while external managers run.
+  still printed. An interrupt (SIGINT/Ctrl-C, or SIGTERM on unix) stops the run:
+  no further manager — external or the internal `hukou` step — is launched, the
+  remaining ones are marked `canceled`, and the run still snapshots, diffs, and
+  reports what already happened before exiting non-zero. The internal `hukou`
+  step runs in-process via the normal `upgrade --all` path and holds the normal
+  mutation lock only for its own duration; no hukou lock is held while external
+  managers run.
 - The snapshot pair and diff are persisted under
   `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, and `diff.json`,
   written atomically (staged in a temp directory, then renamed into place) and
@@ -146,18 +155,18 @@ and after.
   filter, and filter-error paths: no data root is created, no subprocess is
   launched, no lock is held, no network access. `HOME` and the hukou data dir
   are verified byte-for-byte untouched in a sandboxed run.
-- Structurally, the dry-run call chain itself cannot reach execution. The `up`
-  command is split into two entry files: `cmd/up_plan.go` (the dry-run entry
-  `doUpPlan`; takes no execution seam at all) and `cmd/up_exec.go` (the real
-  run; the only cmd file allowed to import the executor subpackage). A
-  parser-level guard test (`cmd/up_guard_test.go`) walks the call graph
-  reachable from the dry-run entry and fails if any reachable function lives in
-  a file importing the executor package — so the guarded property is the actual
-  deferral requirement: the dry-run call chain cannot reach command execution.
-  Two further guards give depth: `go list -deps` proves the `orchestrate`
-  package (planning + diff computation) has no dependency on the executor
-  subpackage, and a `go/parser` scan asserts no `orchestrate` source file
-  outside that subpackage invokes `exec.Command`/`exec.CommandContext`.
+- Structurally, execution is fenced to one package. The **primary** guard is a
+  repo-wide `go/ast` execution-primitive fence
+  (`internal/orchestrate/execution_fence_test.go`): no non-test file outside
+  `internal/orchestrate/executor` may use `exec.Command`/`exec.CommandContext`/
+  the `exec.Cmd` type, `os.StartProcess`, or `syscall.Exec`/`ForkExec`. Since
+  command execution lives in exactly one package, the whole dry-run call chain
+  is mechanically incapable of launching a subprocess; a synthetic violating
+  package proves the fence fires. Depth: an injectable-dispatch test drives the
+  real cobra `up --dry-run` with a fatal-on-call fake executor and asserts it is
+  never constructed or invoked; `go list -deps` proves the `orchestrate` and
+  `plan` packages have no dependency on the executor subpackage or `os/exec`;
+  and a file-level import check confines the executor import to `cmd/up_exec.go`.
 
 ### `--only` / `--skip`
 

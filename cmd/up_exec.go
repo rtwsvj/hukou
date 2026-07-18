@@ -34,6 +34,20 @@ var errUpManagersFailed = errors.New("one or more managers failed")
 // is non-zero and the snapshot failure is recorded in the report itself.
 var errSnapshotPersist = errors.New("snapshot history persistence failed")
 
+// errRunCanceled is returned when an interrupt (SIGINT/SIGTERM) stopped the run
+// before it finished every manager. The report still prints; the exit is
+// non-zero.
+var errRunCanceled = errors.New("run canceled by signal")
+
+// newStepExecutor constructs the production subprocess executor. It is a
+// package var so a test can drive the REAL cobra dry-run dispatch with a
+// fatal-on-call fake and prove the dry-run path never constructs or calls it
+// (see cmd/up_dispatch_guard_test.go,
+// TestDryRunDispatchNeverConstructsOrCallsExecutor).
+var newStepExecutor = func(streamOut, stderr io.Writer) orchestrate.StepExecutor {
+	return executor.New(streamOut, stderr)
+}
+
 // snapshotRetention is how many past snapshot runs are kept under
 // <dataRoot>/snapshots; older runs are pruned after each real run (never the
 // run just written).
@@ -59,6 +73,10 @@ type upDeps struct {
 	now func() time.Time
 	// dataRoot resolves the hukou data directory that owns snapshots/.
 	dataRoot func() string
+	// baseContext builds the run's root context and its stop func. Production
+	// wires signal.NotifyContext so a terminal Ctrl-C cancels the run; tests
+	// inject a context they can cancel to exercise interruption.
+	baseContext func() (context.Context, context.CancelFunc)
 }
 
 // runUpExecute is the real-run entry dispatched from runUp. In --json mode the
@@ -79,11 +97,17 @@ func productionUpDeps(streamOut, stderr io.Writer) upDeps {
 	return upDeps{
 		lookPath:  nil,
 		inventory: defaultInventory,
-		exec:      executor.New(streamOut, stderr),
+		exec:      newStepExecutor(streamOut, stderr),
 		hukouStep: defaultHukouStep,
 		hasher:    hashFile,
 		now:       time.Now,
 		dataRoot:  dataRoot,
+		baseContext: func() (context.Context, context.CancelFunc) {
+			// Managers stay in hukou's foreground process group, so a terminal
+			// Ctrl-C reaches them directly; this context cancel is the second,
+			// portable half that also stops the loop and the internal hukou step.
+			return signal.NotifyContext(context.Background(), interruptSignals()...)
+		},
 	}
 }
 
@@ -125,7 +149,7 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 		streamOut = stderr
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := deps.baseContext()
 	defer stop()
 
 	preReport, err := deps.inventory()
@@ -139,6 +163,19 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 	for _, d := range detected {
 		if !d.Available {
 			continue
+		}
+		// Interrupt check, evaluated before EACH manager — external or the
+		// internal hukou step alike: once the run is canceled we stop launching
+		// managers, record a canceled marker for the one we would have run next,
+		// and fall through to still snapshot/diff/report what already happened.
+		if ctx.Err() != nil {
+			fmt.Fprintf(stderr, "run canceled before manager %s\n", d.Name)
+			results = append(results, orchestrate.StepResult{
+				Name:   d.Name,
+				Status: orchestrate.StatusCanceled,
+				Err:    ctx.Err(),
+			})
+			break
 		}
 		var res orchestrate.StepResult
 		if d.Internal {
@@ -203,15 +240,22 @@ func runInternalHukou(stdout, stderr io.Writer, step func(stdout, stderr io.Writ
 // can be present at once (errors.Join).
 func aggregateExit(stderr io.Writer, results []orchestrate.StepResult, snapErr error) error {
 	var errs []error
-	var failed []string
+	var failed, canceled []string
 	for _, r := range results {
-		if !r.OK() {
+		switch {
+		case r.Status == orchestrate.StatusCanceled:
+			canceled = append(canceled, r.Name)
+		case !r.OK():
 			failed = append(failed, r.Name)
 		}
 	}
 	if len(failed) > 0 {
 		fmt.Fprintf(stderr, "%d manager(s) failed: %s\n", len(failed), strings.Join(failed, ", "))
 		errs = append(errs, errUpManagersFailed)
+	}
+	if len(canceled) > 0 {
+		fmt.Fprintf(stderr, "run canceled; not completed: %s\n", strings.Join(canceled, ", "))
+		errs = append(errs, errRunCanceled)
 	}
 	if snapErr != nil {
 		errs = append(errs, fmt.Errorf("%w: %v", errSnapshotPersist, snapErr))
