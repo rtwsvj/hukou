@@ -69,9 +69,14 @@ to that source.
 
 - Managers run sequentially in registry order; a failing manager is reported
   and does not stop the rest (aggregate non-zero exit at the end, same
-  policy as `upgrade --all`).
+  policy as `upgrade --all`; a failure to persist the snapshot history also
+  makes the exit non-zero and is recorded in the report).
 - Subprocess output streams through with a `[mgr]` prefix; a per-manager
-  timeout (default 15m) kills a hung manager and marks it failed.
+  timeout (default 15m) kills a hung manager and marks it failed. On POSIX
+  each manager runs in its own process group and timeout/cancel kills the
+  whole group (SIGTERM, then SIGKILL after a grace window, default 5s), so
+  grandchildren cannot outlive their manager. In `--json` mode all streamed
+  output is routed to stderr; stdout carries only the final JSON document.
 - `up` holds no hukou mutation lock while foreign managers run (they do not
   touch hukou state); the internal hukou step uses the normal lock.
 - No network code in hukou itself beyond the existing ghrelease path; all
@@ -83,14 +88,21 @@ to that source.
   `--json`; zero writes, zero subprocess execution (commands are printed,
   never run). Fixture tests with a fake PATH.
 - **U2 (delivered)**: real execution + snapshot/diff/report + history +
-  aggregate exit. The structural executor boundary landed as required: all
-  manager command execution goes through the single constrained
-  `internal/orchestrate/executor` package, and an import-guard test asserts the
-  dry-run call chain cannot reach it (`go list -deps` shows `orchestrate` has no
+  aggregate exit. The structural executor boundary is aimed at the actual
+  deferral requirement — the dry-run CALL CHAIN cannot reach execution. The up
+  command is split into a plan-only entry file (`cmd/up_plan.go`, entry
+  `doUpPlan`, whose signature carries no execution seam at all) and an
+  execution entry file (`cmd/up_exec.go`, the only cmd file importing the
+  constrained `internal/orchestrate/executor` package, itself the only package
+  launching manager subprocesses). A parser-level guard
+  (`cmd/up_guard_test.go`) walks the call graph reachable from the dry-run
+  entry, fails if any reachable function is defined in an executor-importing
+  file, and verifies the cobra dispatch actually routes `--dry-run` to the
+  guarded entry. Defense in depth: `go list -deps` shows `orchestrate` has no
   dependency on the executor subpackage, plus a `go/parser` scan forbidding
-  `exec.Command`/`exec.CommandContext` in `orchestrate` outside that subpackage;
-  the behavioral stub-executor guard from U1 is retained as double insurance).
-  Deferred from U1 by recorded ruling — see docs/09-decision-log.md, 2026-07-17.
+  `exec.Command`/`exec.CommandContext` in `orchestrate` outside that
+  subpackage. Deferred from U1 by recorded ruling — see
+  docs/09-decision-log.md, 2026-07-17.
 - U3: diff-driven rollback surface + retention pruning + docs.
 
 ## Acceptance (U1)

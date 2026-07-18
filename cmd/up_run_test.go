@@ -98,7 +98,7 @@ func TestUp_realRunExecutesManagersDiffsAndPersists(t *testing.T) {
 	deps.dataRoot = func() string { return dataDir }
 
 	var out, errb bytes.Buffer
-	if err := doUp(&out, &errb, upOptions{json: true}, deps); err != nil {
+	if err := doUpExecute(&out, &errb, upOptions{json: true}, deps); err != nil {
 		t.Fatalf("real run returned error: %v\nstderr: %s", err, errb.String())
 	}
 
@@ -121,6 +121,9 @@ func TestUp_realRunExecutesManagersDiffsAndPersists(t *testing.T) {
 		if m.Status != "ok" {
 			t.Fatalf("manager %s status = %s, want ok", m.Name, m.Status)
 		}
+	}
+	if doc.SnapshotError != "" {
+		t.Fatalf("unexpected snapshot_error: %q", doc.SnapshotError)
 	}
 	// Diff carries the version change and the addition.
 	if len(doc.Diff.Changed) != 1 || doc.Diff.Changed[0].Name != "tsc" {
@@ -165,7 +168,7 @@ func TestUp_realRunTableShowsChangesAndRollbackHints(t *testing.T) {
 	deps := stubRunDeps(t, fakeLookPath(binDir), fx, &hukouCalled, pre, post)
 
 	var out, errb bytes.Buffer
-	if err := doUp(&out, &errb, upOptions{}, deps); err != nil {
+	if err := doUpExecute(&out, &errb, upOptions{}, deps); err != nil {
 		t.Fatalf("run error: %v", err)
 	}
 	s := out.String()
@@ -198,7 +201,7 @@ func TestUp_realRunAggregateExitOnManagerFailure(t *testing.T) {
 	deps := stubRunDeps(t, fakeLookPath(binDir), fx, &hukouCalled, same, same)
 
 	var out, errb bytes.Buffer
-	err := doUp(&out, &errb, upOptions{}, deps)
+	err := doUpExecute(&out, &errb, upOptions{}, deps)
 	if err == nil {
 		t.Fatal("expected aggregate failure error")
 	}
@@ -218,6 +221,69 @@ func TestUp_realRunAggregateExitOnManagerFailure(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "1 manager(s) failed: brew") {
 		t.Fatalf("stderr missing aggregate summary:\n%s", errb.String())
+	}
+}
+
+// TestUp_snapshotPersistFailureIsNonZeroAndReported drives P1-4: when the
+// snapshot history cannot be written, the run must exit non-zero even though
+// every manager succeeded, and the report must record the failure honestly
+// (snapshot_error in JSON, empty snapshot_dir; FAILED marker in the table).
+func TestUp_snapshotPersistFailureIsNonZeroAndReported(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, binDir, "brew", "#!/bin/sh\n")
+
+	same := output.Report{Rows: []output.Row{row("brew", "/b/brew", "brew", "4.0")}}
+	fx := &fakeExecutor{}
+	var hukouCalled bool
+	deps := stubRunDeps(t, fakeLookPath(binDir), fx, &hukouCalled, same, same)
+
+	// dataRoot resolves beneath a regular FILE, so MkdirAll on <root>/snapshots
+	// must fail: an unwritable snapshot destination.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps.dataRoot = func() string { return filepath.Join(blocker, "data") }
+
+	var out, errb bytes.Buffer
+	err := doUpExecute(&out, &errb, upOptions{json: true, only: []string{"brew"}}, deps)
+	if err == nil {
+		t.Fatal("snapshot persistence failure must make the run fail")
+	}
+	if ExitCode(err) != 1 {
+		t.Fatalf("ExitCode = %d, want 1", ExitCode(err))
+	}
+
+	var doc upRunJSON
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("decode run json: %v\n%s", err, out.String())
+	}
+	if doc.SnapshotError == "" {
+		t.Fatalf("snapshot_error missing from JSON report:\n%s", out.String())
+	}
+	if doc.SnapshotDir != "" {
+		t.Fatalf("snapshot_dir should be empty on persist failure, got %q", doc.SnapshotDir)
+	}
+	// All managers were fine; only the snapshot failed.
+	for _, m := range doc.Managers {
+		if m.Status != "ok" {
+			t.Fatalf("manager %s status = %s, want ok", m.Name, m.Status)
+		}
+	}
+	if !strings.Contains(errb.String(), "failed to persist snapshot history") {
+		t.Fatalf("stderr missing snapshot failure note:\n%s", errb.String())
+	}
+
+	// Same failure in table mode is reported in the report body too.
+	deps2 := stubRunDeps(t, fakeLookPath(binDir), &fakeExecutor{}, &hukouCalled, same, same)
+	deps2.dataRoot = func() string { return filepath.Join(blocker, "data") }
+	out.Reset()
+	errb.Reset()
+	if err := doUpExecute(&out, &errb, upOptions{only: []string{"brew"}}, deps2); err == nil {
+		t.Fatal("table-mode snapshot failure must also fail the run")
+	}
+	if !strings.Contains(out.String(), "snapshot: FAILED") {
+		t.Fatalf("table report does not mark the snapshot failure:\n%s", out.String())
 	}
 }
 
@@ -291,37 +357,22 @@ func TestPersistSnapshotHistory_NeverPrunesCurrentEvenIfOldest(t *testing.T) {
 	}
 }
 
-// TestUp_e2eSandboxRealExecutorProducesSnapshots drives the fully real wiring
-// (real read-only scan, real constrained executor) inside a HUKOU_DATA_DIR
-// sandbox: `up --only brew` runs a fake brew that mutates an existing tool on
-// PATH, and the pre/post/diff snapshot triple must land recording the resulting
-// content (sha256) change. This is the U2 end-to-end acceptance run.
-//
-// The fake brew uses only shell builtins (echo + `>>` redirection): the sandbox
-// PATH is fakeBin alone, so external coreutils like cat/chmod are unavailable,
-// and mutating an already-executable file keeps it visible to the scan without
-// needing chmod.
-func TestUp_e2eSandboxRealExecutorProducesSnapshots(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture brew is a POSIX shell script")
-	}
+// e2eSandbox builds the standard sandbox for full-wiring runs: an isolated
+// HOME/PATH/HUKOU_DATA_DIR with an existing "widget" tool and a fake brew whose
+// upgrade appends to it (builtins only — the sandbox PATH has no coreutils).
+func e2eSandbox(t *testing.T) (fakeBin, dataDir string) {
+	t.Helper()
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
-	dataDir := filepath.Join(root, "data")
-	fakeBin := filepath.Join(home, "bin")
+	dataDir = filepath.Join(root, "data")
+	fakeBin = filepath.Join(home, "bin")
 	for _, d := range []string{fakeBin, filepath.Join(home, ".local", "share"), dataDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-
-	// An existing tool on PATH whose bytes the "upgrade" will change.
 	writeExecutable(t, fakeBin, "widget", "#!/bin/sh\necho widget v1\n")
 	widget := filepath.Join(fakeBin, "widget")
-
-	// A fake brew that "upgrades" widget by appending a line (content -> new
-	// sha256), keeping it executable. It targets an absolute path because argv[0]
-	// under exec is the bare name, and uses only builtins so it needs no PATH.
 	brewBody := fmt.Sprintf("#!/bin/sh\necho '# upgraded by fake brew' >> %q\necho brew done\n", widget)
 	writeExecutable(t, fakeBin, "brew", brewBody)
 
@@ -331,10 +382,24 @@ func TestUp_e2eSandboxRealExecutorProducesSnapshots(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	t.Setenv("GOPATH", filepath.Join(home, "go"))
 	t.Setenv("GOBIN", "")
+	return fakeBin, dataDir
+}
+
+// TestUp_e2eSandboxRealExecutorProducesSnapshots drives the fully real wiring
+// (real read-only scan, real constrained executor) inside a HUKOU_DATA_DIR
+// sandbox: `up --only brew` runs a fake brew that mutates an existing tool on
+// PATH, and the pre/post/diff snapshot triple must land recording the resulting
+// content (sha256) change. This is the U2 end-to-end acceptance run.
+func TestUp_e2eSandboxRealExecutorProducesSnapshots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture brew is a POSIX shell script")
+	}
+	_, dataDir := e2eSandbox(t)
 
 	var out, errb bytes.Buffer
-	// Fully production deps; --only brew keeps the run offline (hukou excluded).
-	err := doUp(&out, &errb, upOptions{only: []string{"brew"}}, productionUpDeps(&out, &errb))
+	// Fully production wiring via the real-run entry; --only brew keeps the run
+	// offline (hukou excluded).
+	err := runUpExecute(&out, &errb, upOptions{only: []string{"brew"}})
 	if err != nil {
 		t.Fatalf("e2e run error: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), errb.String())
 	}
@@ -349,20 +414,7 @@ func TestUp_e2eSandboxRealExecutorProducesSnapshots(t *testing.T) {
 	}
 
 	// The snapshot triple landed under HUKOU_DATA_DIR/snapshots/<ts>/.
-	snapsDir := filepath.Join(dataDir, "snapshots")
-	runs, err := os.ReadDir(snapsDir)
-	if err != nil {
-		t.Fatalf("read snapshots dir: %v", err)
-	}
-	var runDir string
-	for _, e := range runs {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".tmp-snap-") {
-			runDir = filepath.Join(snapsDir, e.Name())
-		}
-	}
-	if runDir == "" {
-		t.Fatalf("no persisted snapshot run under %s", snapsDir)
-	}
+	runDir := singleSnapshotRun(t, dataDir)
 	for _, f := range []string{"pre.json", "post.json", "diff.json"} {
 		if _, err := os.Stat(filepath.Join(runDir, f)); err != nil {
 			t.Fatalf("missing %s in %s: %v", f, runDir, err)
@@ -382,6 +434,77 @@ func TestUp_e2eSandboxRealExecutorProducesSnapshots(t *testing.T) {
 	if !foundChanged {
 		t.Fatalf("persisted diff.json did not record widget as changed: %+v", diff)
 	}
+}
+
+// TestUp_e2eJSONStdoutIsPureJSON drives P1-3 with the fully real wiring: in
+// --json mode stdout must be exactly one parseable JSON document, while all
+// streamed manager output (and the internal hukou step, included via --only
+// brew,hukou against the empty sandbox manifest) appears on stderr instead.
+func TestUp_e2eJSONStdoutIsPureJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture brew is a POSIX shell script")
+	}
+	e2eSandbox(t)
+
+	var out, errb bytes.Buffer
+	// hukou is included: with the sandbox's empty manifest the internal step
+	// prints "No adopted tools" without any network access — and that line must
+	// land on stderr, not stdout.
+	err := runUpExecute(&out, &errb, upOptions{json: true, only: []string{"brew", "hukou"}})
+	if err != nil {
+		t.Fatalf("e2e json run error: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), errb.String())
+	}
+
+	// stdout is pure JSON: it must unmarshal as-is.
+	var doc upRunJSON
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not pure JSON: %v\n%s", err, out.String())
+	}
+	if doc.SchemaVersion != 1 || len(doc.Managers) != 2 {
+		t.Fatalf("unexpected run document: %+v", doc)
+	}
+	// No streamed output leaked onto stdout.
+	if strings.Contains(out.String(), "[brew]") || strings.Contains(out.String(), "No adopted tools") {
+		t.Fatalf("streamed output leaked into stdout:\n%s", out.String())
+	}
+	// The streams landed on stderr, still live and prefixed.
+	if !strings.Contains(errb.String(), "[brew] brew done") {
+		t.Fatalf("manager stream missing from stderr:\n%s", errb.String())
+	}
+	if !strings.Contains(errb.String(), "No adopted tools") {
+		t.Fatalf("internal hukou step output missing from stderr:\n%s", errb.String())
+	}
+	// And the snapshot trail still landed.
+	if doc.SnapshotError != "" {
+		t.Fatalf("unexpected snapshot error: %s", doc.SnapshotError)
+	}
+	if doc.SnapshotDir == "" {
+		t.Fatal("snapshot_dir empty in json report")
+	}
+	if _, err := os.Stat(filepath.Join(doc.SnapshotDir, "diff.json")); err != nil {
+		t.Fatalf("reported snapshot dir missing diff.json: %v", err)
+	}
+}
+
+// singleSnapshotRun returns the lone persisted run directory under
+// <dataDir>/snapshots, failing the test if none exists.
+func singleSnapshotRun(t *testing.T, dataDir string) string {
+	t.Helper()
+	snapsDir := filepath.Join(dataDir, "snapshots")
+	runs, err := os.ReadDir(snapsDir)
+	if err != nil {
+		t.Fatalf("read snapshots dir: %v", err)
+	}
+	var runDir string
+	for _, e := range runs {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".tmp-snap-") {
+			runDir = filepath.Join(snapsDir, e.Name())
+		}
+	}
+	if runDir == "" {
+		t.Fatalf("no persisted snapshot run under %s", snapsDir)
+	}
+	return runDir
 }
 
 func containsStr(s []string, want string) bool {

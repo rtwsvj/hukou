@@ -104,23 +104,33 @@ and after.
 - Every external manager subprocess is launched through a single constrained
   executor package (`internal/orchestrate/executor`) — the only place in the
   codebase that runs a manager subprocess. Output streams through with a `[name]`
-  prefix, each manager has a per-manager timeout (default 15m) that kills a hung
-  manager and marks it failed, and the run honors interruption (Ctrl-C).
-- A failing manager is reported and does **not** stop the rest; the overall exit
-  status is non-zero if any manager failed (same policy as `upgrade --all`), and
-  the report is still printed. The internal `hukou` step runs in-process via the
-  normal `upgrade --all` path and holds the normal mutation lock only for its own
+  prefix; each manager has a per-manager timeout (default 15m). On POSIX every
+  manager runs in its own process group, and timeout/interruption kills the
+  whole group: SIGTERM first, then SIGKILL after a grace window (default 5s),
+  so helper grandchildren a manager spawned cannot outlive it. A timed-out
+  manager is marked failed; the run honors interruption (Ctrl-C).
+- A failing manager is reported and does **not** stop the rest; the report is
+  still printed. The internal `hukou` step runs in-process via the normal
+  `upgrade --all` path and holds the normal mutation lock only for its own
   duration; no hukou lock is held while external managers run.
 - The snapshot pair and diff are persisted under
   `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, and `diff.json`,
   written atomically (staged in a temp directory, then renamed into place) and
-  pruned to the most recent 10 runs (the run just written is never pruned).
+  pruned to the most recent 10 runs (the run just written is never pruned). A
+  failure to persist this history is NOT silent: it is printed to stderr,
+  recorded in the report (`snapshot: FAILED (...)` in the table,
+  `snapshot_error` in JSON with an empty `snapshot_dir`), and makes the overall
+  exit non-zero even when every manager succeeded.
 - Rollback surface (printed only; hukou executes none of it): a changed
   `Source == hukou` entry links to a real `hukou rollback <name>`; a changed
   foreign entry records its prior version and, where a standard one-liner exists,
   the manager's own downgrade command (e.g. `npm i -g pkg@<prev>`).
 - `--json` emits `{"schema_version": 1, "managers": [{name, status, duration,
-  exit}...], "diff": {...}, "snapshot_dir": "..."}`.
+  exit}...], "diff": {...}, "snapshot_dir": "...", "snapshot_error": "..."}`
+  (the last field only on persistence failure). Stdout carries exactly that one
+  JSON document and nothing else: all streamed manager output and the internal
+  hukou step's output are routed to stderr in `--json` mode, so
+  `hukou up --json | jq .` always parses.
 
 ### `--dry-run` semantics
 
@@ -134,15 +144,20 @@ and after.
   `dry run: nothing was executed or written`.
 - Hard zero-side-effect guarantees, enforced by tests over the table, JSON,
   filter, and filter-error paths: no data root is created, no subprocess is
-  launched (detection is `LookPath` only; a stub executor injected on every
-  dry-run path fails the test if ever reached), no lock is held, no network
-  access. `HOME` and the hukou data dir are verified byte-for-byte untouched in
-  a sandboxed run. This is backed by a structural guard (U2): `go list -deps`
-  proves the `orchestrate` package — the whole dry-run planning/diff computation
-  — has no transitive dependency on the executor subpackage, and a `go/parser`
-  scan asserts no `orchestrate` source file outside that subpackage invokes
-  `exec.Command`/`exec.CommandContext`, so command execution is confined to the
-  one executor package the dry-run chain cannot reach.
+  launched, no lock is held, no network access. `HOME` and the hukou data dir
+  are verified byte-for-byte untouched in a sandboxed run.
+- Structurally, the dry-run call chain itself cannot reach execution. The `up`
+  command is split into two entry files: `cmd/up_plan.go` (the dry-run entry
+  `doUpPlan`; takes no execution seam at all) and `cmd/up_exec.go` (the real
+  run; the only cmd file allowed to import the executor subpackage). A
+  parser-level guard test (`cmd/up_guard_test.go`) walks the call graph
+  reachable from the dry-run entry and fails if any reachable function lives in
+  a file importing the executor package — so the guarded property is the actual
+  deferral requirement: the dry-run call chain cannot reach command execution.
+  Two further guards give depth: `go list -deps` proves the `orchestrate`
+  package (planning + diff computation) has no dependency on the executor
+  subpackage, and a `go/parser` scan asserts no `orchestrate` source file
+  outside that subpackage invokes `exec.Command`/`exec.CommandContext`.
 
 ### `--only` / `--skip`
 
@@ -172,12 +187,12 @@ Contract (deliberate asymmetry with the table):
 
 | Code | Meaning |
 |---|---|
-| 0 | `--dry-run` plan printed successfully |
-| 1 | Any other error (unknown `--only`/`--skip` name, scan failure, …) |
-| 2 | Invoked without `--dry-run`: placeholder prints `real execution lands in a later slice; use --dry-run` on stderr and nothing on stdout |
+| 0 | Dry-run plan printed, or real run completed with every manager OK and the snapshot history persisted |
+| 1 | Any failure: unknown `--only`/`--skip` name, scan failure, one or more managers failed or timed out, or the snapshot history could not be persisted |
 
-The exit-2 placeholder is part of the U1 contract (documented in `--help`):
-scripts may rely on it until U2 replaces that path with real execution.
+There are no other exit codes. A real run always prints its report (and, in
+`--json` mode, its JSON document) before exiting non-zero, so scripts can read
+the per-manager statuses and `snapshot_error` even on failure.
 
 ## `hukou rollback`
 
@@ -267,4 +282,4 @@ The report is generated offline and never uploaded; it contains only safe build/
 - Success is 0.
 - Argument, integrity, network, checksum, lock, filesystem, or partial-upgrade failures return non-zero.
 - For `upgrade --all`, even if other entries succeed, a single failing entry makes the overall result non-zero and prints the list of failures.
-- `up` follows the same aggregate policy: any manager finishing non-OK (failed or timed out) makes the overall result non-zero (1) after the report is printed. The former exit-2 placeholder is retired now that `up` executes for real; every failure keeps the generic non-zero (1) convention.
+- `up` follows the same aggregate policy: any manager finishing non-OK (failed or timed out), or a failure to persist the snapshot history, makes the overall result non-zero (1) after the report is printed. `up` has exactly two exit codes: 0 and 1 (see the `hukou up` section above).

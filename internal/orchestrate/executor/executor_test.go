@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -110,6 +111,7 @@ func TestRunManager_TimeoutKillsHungManager(t *testing.T) {
 	var out, errb lockedBuf
 	e := New(&out, &errb)
 	e.Timeout = 150 * time.Millisecond
+	e.TermGrace = 200 * time.Millisecond
 	e.KillGrace = 200 * time.Millisecond
 
 	start := time.Now()
@@ -125,6 +127,74 @@ func TestRunManager_TimeoutKillsHungManager(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("expected a timeout error")
 	}
+}
+
+// TestRunManager_TimeoutKillsWholeProcessTree is the P1-2 acceptance: a fake
+// manager spawns a background grandchild that ignores SIGTERM and writes a
+// heartbeat file forever. The per-manager timeout must kill the ENTIRE process
+// group — SIGTERM first, then the SIGKILL escalation — so the heartbeat stops.
+// Killing only the direct child would leave the grandchild beating and fail
+// this test.
+func TestRunManager_TimeoutKillsWholeProcessTree(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	hb := filepath.Join(dir, "heartbeat")
+	// The grandchild ignores TERM (trap '' TERM) and detaches from the output
+	// pipes, so only a group-wide SIGKILL can stop it.
+	body := fmt.Sprintf(`#!/bin/sh
+( trap '' TERM; while :; do echo beat >> %q; sleep 0.05; done ) >/dev/null 2>&1 &
+sleep 30
+`, hb)
+	tree := writeScript(t, dir, "treeslow.sh", body)
+
+	var out, errb lockedBuf
+	e := New(&out, &errb)
+	// Generous timeout: the first exec of a freshly written script can take
+	// hundreds of ms on macOS (syspolicyd scan); the grandchild must have time
+	// to start beating before the timeout fires.
+	e.Timeout = 1500 * time.Millisecond
+	e.TermGrace = 250 * time.Millisecond
+	e.KillGrace = 500 * time.Millisecond
+
+	res := e.RunManager(context.Background(), "brew", [][]string{{tree}})
+	if res.Status != orchestrate.StatusTimeout {
+		t.Fatalf("status = %s, want timeout (err=%v)", res.Status, res.Err)
+	}
+
+	// The grandchild must have run at all (heartbeats were written)...
+	if size := fileSize(t, hb); size == 0 {
+		t.Fatal("grandchild never produced a heartbeat; fixture is broken")
+	}
+	// ...and must now be dead: the heartbeat file stops growing. Poll until it
+	// freezes (kill delivery is asynchronous), then require it to stay frozen.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s1 := fileSize(t, hb)
+		time.Sleep(300 * time.Millisecond)
+		if fileSize(t, hb) == s1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("grandchild kept writing heartbeats after the process-group kill")
+		}
+	}
+	stable := fileSize(t, hb)
+	time.Sleep(400 * time.Millisecond)
+	if got := fileSize(t, hb); got != stable {
+		t.Fatalf("heartbeat resumed after apparent stop: %d -> %d bytes", stable, got)
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatal(err)
+	}
+	return info.Size()
 }
 
 func TestRunManager_MultiStepChainRunsInOrder(t *testing.T) {

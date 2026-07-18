@@ -16,13 +16,13 @@ const (
 	executorPkg    = "github.com/rtwsvj/hukou/internal/orchestrate/executor"
 )
 
-// TestExecutorNotInOrchestrateDeps is the primary structural guard for the U2
+// TestExecutorNotInOrchestrateDeps is a defense-in-depth layer of the U2
 // executor boundary (docs/09-decision-log.md, 2026-07-17; docs/specs/phase3-up.md
-// U2 acceptance). `go list -deps` proves the orchestrate package — which is the
-// entirety of the dry-run planning/diff computation — has no transitive
-// dependency on the executor subpackage, the sole place a manager subprocess is
-// launched. If the dry-run call chain can't even reach the executor package, it
-// cannot execute a manager command.
+// U2 acceptance); the primary guard, which covers the actual dry-run call chain
+// through the cmd package, is cmd/up_guard_test.go. Here `go list -deps` proves
+// the orchestrate package — the planning/diff computation the dry-run path is
+// built from — has no transitive dependency on the executor subpackage, the
+// sole place a manager subprocess is launched.
 func TestExecutorNotInOrchestrateDeps(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", orchestratePkg).CombinedOutput()
 	if err != nil {

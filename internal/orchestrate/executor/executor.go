@@ -25,6 +25,10 @@ import (
 // hung manager is killed once this elapses and reported as StatusTimeout.
 const DefaultTimeout = 15 * time.Minute
 
+// DefaultTermGrace is how long a cancelled/timed-out manager's process group
+// gets between the graceful SIGTERM and the follow-up group SIGKILL.
+const DefaultTermGrace = 5 * time.Second
+
 // defaultKillGrace is how long Wait may keep draining a killed process's pipes
 // before the descriptors are force-closed, so a lingering grandchild that
 // inherited stdout cannot wedge the run indefinitely.
@@ -35,6 +39,11 @@ const defaultKillGrace = 10 * time.Second
 type Executor struct {
 	// Timeout bounds each manager's whole run; <= 0 uses DefaultTimeout.
 	Timeout time.Duration
+	// TermGrace is the SIGTERM -> SIGKILL escalation window applied to the
+	// manager's whole process group on timeout/cancel; <= 0 uses
+	// DefaultTermGrace. POSIX only; elsewhere cancellation kills the direct
+	// child (see setupProcessControl).
+	TermGrace time.Duration
 	// KillGrace bounds pipe draining after a kill; <= 0 uses defaultKillGrace.
 	KillGrace time.Duration
 
@@ -105,11 +114,18 @@ func (e *Executor) RunManager(ctx context.Context, name string, commands [][]str
 
 // runOne launches a single command and streams its combined output. It returns
 // the process exit code (or -1 when the process never produced one) and a
-// non-nil error when the command failed, timed out, or was cancelled.
+// non-nil error when the command failed, timed out, or was cancelled. On POSIX
+// the command runs in its own process group and cancellation/timeout kills the
+// whole group (SIGTERM, then SIGKILL after TermGrace) so grandchildren spawned
+// by a manager cannot outlive it.
 func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int, error) {
 	grace := e.KillGrace
 	if grace <= 0 {
 		grace = defaultKillGrace
+	}
+	termGrace := e.TermGrace
+	if termGrace <= 0 {
+		termGrace = DefaultTermGrace
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -117,6 +133,8 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	// killed on ctx cancellation/timeout, so an inherited-stdout grandchild
 	// cannot hang the whole run.
 	cmd.WaitDelay = grace
+	// Platform-specific: own process group + group-wide TERM->KILL cancel.
+	finishKill := setupProcessControl(cmd, termGrace)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -142,6 +160,10 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 
 	waitErr := cmd.Wait()
 	wg.Wait()
+	// If a cancellation started the TERM->KILL escalation, make sure the group
+	// SIGKILL lands (now, if the escalation timer has not fired yet) so no
+	// TERM-surviving descendant lingers after RunManager returns.
+	finishKill()
 
 	if ctx.Err() != nil {
 		// The deadline or a parent cancellation ended the process. Report it as

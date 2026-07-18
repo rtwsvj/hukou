@@ -2,13 +2,11 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -16,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/orchestrate"
@@ -37,46 +34,6 @@ func fixtureInventory() (output.Report, error) {
 	}, nil
 }
 
-// forbidExecutor is a StepExecutor stub that fails the test the moment any
-// dry-run code path tries to launch a manager command. Every dry-run doUp test
-// injects it (via dryDeps), so "dry run launches zero subprocesses" is enforced
-// mechanically on every covered path — the behavior-layer half of the executor
-// boundary (the static half lives in the orchestrate package import-guard test).
-type forbidExecutor struct{ t *testing.T }
-
-func (f forbidExecutor) RunManager(_ context.Context, name string, commands [][]string) orchestrate.StepResult {
-	f.t.Helper()
-	f.t.Fatalf("dry run must never execute a manager command, but the executor ran: %s %v", name, commands)
-	return orchestrate.StepResult{}
-}
-
-// dryDeps builds upDeps whose every real-run seam fails the test if touched, so
-// the dry-run path is proven to only read (via inventory) and print.
-func dryDeps(t *testing.T, lookPath orchestrate.LookPathFunc, inventory func() (output.Report, error)) upDeps {
-	t.Helper()
-	return upDeps{
-		lookPath:  lookPath,
-		inventory: inventory,
-		exec:      forbidExecutor{t},
-		hukouStep: func(io.Writer, io.Writer) error {
-			t.Fatalf("dry run must never run the internal hukou step")
-			return nil
-		},
-		hasher: func(string) string {
-			t.Fatalf("dry run must never hash a binary")
-			return ""
-		},
-		now: func() time.Time {
-			t.Fatalf("dry run must never stamp a snapshot")
-			return time.Time{}
-		},
-		dataRoot: func() string {
-			t.Fatalf("dry run must never resolve the data root for writing")
-			return ""
-		},
-	}
-}
-
 // fakeLookPath resolves executables from a fake PATH dir, mirroring exec.LookPath.
 func fakeLookPath(dir string) orchestrate.LookPathFunc {
 	return func(file string) (string, error) {
@@ -92,6 +49,11 @@ func fakeLookPath(dir string) orchestrate.LookPathFunc {
 	}
 }
 
+// The dry-run entry doUpPlan takes no execution seam at all: there is nothing a
+// test (or production caller) could even pass that would let it run a command.
+// The structural proof that its whole call chain stays executor-free lives in
+// up_guard_test.go; the byte-for-byte sandbox test below proves zero writes.
+
 func TestUp_dryRunTableListsDetectedManagers(t *testing.T) {
 	dir := t.TempDir()
 	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
@@ -103,8 +65,8 @@ func TestUp_dryRunTableListsDetectedManagers(t *testing.T) {
 		return fakeLookPath(dir)(file)
 	}
 
-	var stdout, stderr bytes.Buffer
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, dryDeps(t, lookPath, fixtureInventory)); err != nil {
+	var stdout bytes.Buffer
+	if err := doUpPlan(&stdout, upOptions{dryRun: true}, lookPath, fixtureInventory); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -143,8 +105,8 @@ func TestUp_dryRunJSONParses(t *testing.T) {
 	dir := t.TempDir()
 	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
 
-	var stdout, stderr bytes.Buffer
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true, json: true}, dryDeps(t, fakeLookPath(dir), fixtureInventory)); err != nil {
+	var stdout bytes.Buffer
+	if err := doUpPlan(&stdout, upOptions{dryRun: true, json: true}, fakeLookPath(dir), fixtureInventory); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,7 +155,7 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 
 	// --only brew,hukou keeps just those two.
 	var out bytes.Buffer
-	if err := doUp(&out, &bytes.Buffer{}, upOptions{dryRun: true, json: true, only: []string{"brew", "hukou"}}, dryDeps(t, fakeLookPath(dir), fixtureInventory)); err != nil {
+	if err := doUpPlan(&out, upOptions{dryRun: true, json: true, only: []string{"brew", "hukou"}}, fakeLookPath(dir), fixtureInventory); err != nil {
 		t.Fatal(err)
 	}
 	var plan upPlanJSON
@@ -206,7 +168,7 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 
 	// --skip removes named managers from the set.
 	out.Reset()
-	if err := doUp(&out, &bytes.Buffer{}, upOptions{dryRun: true, json: true, skip: []string{"brew"}}, dryDeps(t, fakeLookPath(dir), fixtureInventory)); err != nil {
+	if err := doUpPlan(&out, upOptions{dryRun: true, json: true, skip: []string{"brew"}}, fakeLookPath(dir), fixtureInventory); err != nil {
 		t.Fatal(err)
 	}
 	plan = upPlanJSON{}
@@ -224,7 +186,7 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 }
 
 func TestUp_unknownManagerNameErrors(t *testing.T) {
-	err := doUp(&bytes.Buffer{}, &bytes.Buffer{}, upOptions{dryRun: true, only: []string{"bogus"}}, dryDeps(t, nil, fixtureInventory))
+	err := doUpPlan(&bytes.Buffer{}, upOptions{dryRun: true, only: []string{"bogus"}}, nil, fixtureInventory)
 	if err == nil {
 		t.Fatal("expected error for unknown manager name")
 	}
@@ -238,10 +200,10 @@ func TestUp_dryRunIsZeroWriteAgainstRealScan(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "missing-data-root")
 	t.Setenv("HUKOU_DATA_DIR", dataDir)
 
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
 	// nil lookPath uses the real exec.LookPath; defaultInventory runs the real
 	// read-only scan. Neither may create the data root or spawn a process.
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, dryDeps(t, nil, defaultInventory)); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true}, nil, defaultInventory); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "dry run: nothing was executed or written") {
@@ -249,34 +211,6 @@ func TestUp_dryRunIsZeroWriteAgainstRealScan(t *testing.T) {
 	}
 	if _, err := os.Lstat(dataDir); !os.IsNotExist(err) {
 		t.Fatalf("dry-run created the data root: %v", err)
-	}
-}
-
-// TestUp_dryRunNeverInvokesExecutor drives every dry-run code path of doUp with
-// a stub executor (and stubbed hukou/hash/history seams) that fail the test on
-// first invocation. Combined with the static import guard in the orchestrate
-// package, this turns "zero subprocess execution on the dry-run path" from prose
-// into a mechanical, commit-reproducible proof.
-func TestUp_dryRunNeverInvokesExecutor(t *testing.T) {
-	dir := t.TempDir()
-	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
-	writeExecutable(t, dir, "gh", "#!/bin/sh\n")
-
-	paths := []struct {
-		name string
-		opts upOptions
-	}{
-		{"dry-run table", upOptions{dryRun: true}},
-		{"dry-run json", upOptions{dryRun: true, json: true}},
-		{"dry-run only", upOptions{dryRun: true, only: []string{"brew", "hukou"}}},
-		{"dry-run skip", upOptions{dryRun: true, json: true, skip: []string{"npm"}}},
-		{"dry-run filter error", upOptions{dryRun: true, only: []string{"bogus"}}},
-	}
-	for _, tc := range paths {
-		var stdout, stderr bytes.Buffer
-		// The filter-error path returns an error; the only assertion here is that
-		// none of the forbidding seams fire (they fail the test themselves).
-		_ = doUp(&stdout, &stderr, tc.opts, dryDeps(t, fakeLookPath(dir), fixtureInventory))
 	}
 }
 
@@ -403,11 +337,11 @@ func TestUp_dryRunSandboxTreesAreByteForByteUnchanged(t *testing.T) {
 
 	// Full dry-run, twice (human table + JSON), with the REAL LookPath (nil)
 	// and the REAL read-only inventory scan.
-	var stdout, stderr bytes.Buffer
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, dryDeps(t, nil, defaultInventory)); err != nil {
+	var stdout bytes.Buffer
+	if err := doUpPlan(&stdout, upOptions{dryRun: true}, nil, defaultInventory); err != nil {
 		t.Fatal(err)
 	}
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true, json: true}, dryDeps(t, nil, defaultInventory)); err != nil {
+	if err := doUpPlan(&stdout, upOptions{dryRun: true, json: true}, nil, defaultInventory); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -451,6 +385,9 @@ func TestExitCode(t *testing.T) {
 	}
 	if ExitCode(errUpManagersFailed) != 1 {
 		t.Fatalf("ExitCode(errUpManagersFailed) = %d, want 1", ExitCode(errUpManagersFailed))
+	}
+	if ExitCode(errSnapshotPersist) != 1 {
+		t.Fatalf("ExitCode(errSnapshotPersist) = %d, want 1", ExitCode(errSnapshotPersist))
 	}
 	if ExitCode(errors.New("boom")) != 1 {
 		t.Fatalf("ExitCode(other) = %d, want 1", ExitCode(errors.New("boom")))
