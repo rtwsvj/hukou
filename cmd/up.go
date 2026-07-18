@@ -52,13 +52,23 @@ func init() {
 }
 
 func runUp(cmd *cobra.Command, _ []string) error {
+	// U1 wires no execution runner: nil means nothing in this binary can launch
+	// a manager subprocess even by accident. U2 replaces the nil with the real
+	// runner.
 	return doUp(cmd.OutOrStdout(), cmd.ErrOrStderr(), upOptions{
 		dryRun: upDryRun,
 		json:   upJSON,
 		only:   upOnly,
 		skip:   upSkip,
-	}, nil, defaultInventory)
+	}, nil, defaultInventory, nil)
 }
+
+// managerRunner launches one upgrade step (a single argv) for a named manager.
+// The U1 slice declares the seam without using it: no U1 code path invokes the
+// runner, and the tests inject a stub that fails the test on first call so the
+// guarantee stays mechanical (TestUp_dryRunNeverInvokesRunner). U2 plugs the
+// real subprocess runner into this parameter.
+type managerRunner func(name string, argv []string) error
 
 // upOptions captures one resolved `up` invocation.
 type upOptions struct {
@@ -75,11 +85,16 @@ func defaultInventory() (output.Report, error) {
 }
 
 // doUp is the testable core of `hukou up`. lookPath (nil = exec.LookPath)
-// resolves manager binaries and inventory supplies the read-only scan; both are
-// injectable so tests exercise the whole plan with a fake PATH and fixture
-// inventory. The dry-run path never creates the data root, launches a
-// subprocess, or holds a lock — it only reads and prints.
-func doUp(stdout, stderr io.Writer, opts upOptions, lookPath orchestrate.LookPathFunc, inventory func() (output.Report, error)) error {
+// resolves manager binaries, inventory supplies the read-only scan, and run is
+// the (future) execution seam; all are injectable so tests exercise the whole
+// plan with a fake PATH, a fixture inventory, and a runner stub that fails the
+// test if ever touched. The dry-run path never creates the data root, launches
+// a subprocess, or holds a lock — it only reads and prints.
+func doUp(stdout, stderr io.Writer, opts upOptions, lookPath orchestrate.LookPathFunc, inventory func() (output.Report, error), run managerRunner) error {
+	// U1 invariant: `run` is deliberately unused on every path below. Keep it
+	// that way until U2 wires real execution behind the non-dry-run branch.
+	_ = run
+
 	if !opts.dryRun {
 		// U1 placeholder: the contract is documented in --help.
 		fmt.Fprintln(stderr, errRealRun.Error())

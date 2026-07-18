@@ -2,14 +2,20 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/orchestrate"
 	"github.com/rtwsvj/hukou/internal/output"
 	"github.com/rtwsvj/hukou/internal/provenance"
@@ -26,6 +32,18 @@ func fixtureInventory() (output.Report, error) {
 		},
 		TotalWalked: 2,
 	}, nil
+}
+
+// forbidRunner returns a managerRunner stub that fails the test the moment any
+// U1 code path tries to execute a manager command. Every doUp test injects it,
+// so "dry run launches zero subprocesses" is enforced mechanically on every
+// covered path rather than asserted in prose.
+func forbidRunner(t *testing.T) managerRunner {
+	t.Helper()
+	return func(name string, argv []string) error {
+		t.Fatalf("U1 must never execute a manager command, but the runner was invoked: %s %v", name, argv)
+		return nil
+	}
 }
 
 // fakeLookPath resolves executables from a fake PATH dir, mirroring exec.LookPath.
@@ -45,7 +63,7 @@ func fakeLookPath(dir string) orchestrate.LookPathFunc {
 
 func TestUp_realRunIsPlaceholderExitTwo(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := doUp(&stdout, &stderr, upOptions{dryRun: false}, nil, fixtureInventory)
+	err := doUp(&stdout, &stderr, upOptions{dryRun: false}, nil, fixtureInventory, forbidRunner(t))
 	if !errors.Is(err, errRealRun) {
 		t.Fatalf("error = %v, want errRealRun", err)
 	}
@@ -72,7 +90,7 @@ func TestUp_dryRunTableListsDetectedManagers(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, lookPath, fixtureInventory); err != nil {
+	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, lookPath, fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	out := stdout.String()
@@ -112,7 +130,7 @@ func TestUp_dryRunJSONParses(t *testing.T) {
 	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
 
 	var stdout, stderr bytes.Buffer
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true, json: true}, fakeLookPath(dir), fixtureInventory); err != nil {
+	if err := doUp(&stdout, &stderr, upOptions{dryRun: true, json: true}, fakeLookPath(dir), fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,7 +179,7 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 
 	// --only brew,hukou keeps just those two.
 	var out bytes.Buffer
-	if err := doUp(&out, &bytes.Buffer{}, upOptions{dryRun: true, json: true, only: []string{"brew", "hukou"}}, fakeLookPath(dir), fixtureInventory); err != nil {
+	if err := doUp(&out, &bytes.Buffer{}, upOptions{dryRun: true, json: true, only: []string{"brew", "hukou"}}, fakeLookPath(dir), fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	var plan upPlanJSON
@@ -174,7 +192,7 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 
 	// --skip removes named managers from the set.
 	out.Reset()
-	if err := doUp(&out, &bytes.Buffer{}, upOptions{dryRun: true, json: true, skip: []string{"brew"}}, fakeLookPath(dir), fixtureInventory); err != nil {
+	if err := doUp(&out, &bytes.Buffer{}, upOptions{dryRun: true, json: true, skip: []string{"brew"}}, fakeLookPath(dir), fixtureInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	plan = upPlanJSON{}
@@ -192,7 +210,7 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 }
 
 func TestUp_unknownManagerNameErrors(t *testing.T) {
-	err := doUp(&bytes.Buffer{}, &bytes.Buffer{}, upOptions{dryRun: true, only: []string{"bogus"}}, nil, fixtureInventory)
+	err := doUp(&bytes.Buffer{}, &bytes.Buffer{}, upOptions{dryRun: true, only: []string{"bogus"}}, nil, fixtureInventory, forbidRunner(t))
 	if err == nil {
 		t.Fatal("expected error for unknown manager name")
 	}
@@ -209,7 +227,7 @@ func TestUp_dryRunIsZeroWriteAgainstRealScan(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	// nil lookPath uses the real exec.LookPath; defaultInventory runs the real
 	// read-only scan. Neither may create the data root or spawn a process.
-	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, nil, defaultInventory); err != nil {
+	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, nil, defaultInventory, forbidRunner(t)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(stdout.String(), "dry run: nothing was executed or written") {
@@ -217,6 +235,186 @@ func TestUp_dryRunIsZeroWriteAgainstRealScan(t *testing.T) {
 	}
 	if _, err := os.Lstat(dataDir); !os.IsNotExist(err) {
 		t.Fatalf("dry-run created the data root: %v", err)
+	}
+}
+
+// TestUp_dryRunNeverInvokesRunner drives every U1 code path of doUp with a
+// runner stub that fails the test on first invocation. Combined with the
+// forbidRunner injection in every other doUp test, this turns "zero subprocess
+// execution" from prose into a mechanical, commit-reproducible proof: the
+// execution seam exists (managerRunner) and provably nothing reaches it.
+func TestUp_dryRunNeverInvokesRunner(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "brew", "#!/bin/sh\n")
+	writeExecutable(t, dir, "gh", "#!/bin/sh\n")
+	forbidden := forbidRunner(t)
+
+	paths := []struct {
+		name string
+		opts upOptions
+	}{
+		{"dry-run table", upOptions{dryRun: true}},
+		{"dry-run json", upOptions{dryRun: true, json: true}},
+		{"dry-run only", upOptions{dryRun: true, only: []string{"brew", "hukou"}}},
+		{"dry-run skip", upOptions{dryRun: true, json: true, skip: []string{"npm"}}},
+		{"dry-run filter error", upOptions{dryRun: true, only: []string{"bogus"}}},
+		{"real-run placeholder", upOptions{dryRun: false}},
+	}
+	for _, tc := range paths {
+		var stdout, stderr bytes.Buffer
+		// Errors are expected on the last two paths; the only assertion here is
+		// that `forbidden` never fires (it fails the test itself if it does).
+		_ = doUp(&stdout, &stderr, tc.opts, fakeLookPath(dir), fixtureInventory, forbidden)
+	}
+}
+
+// treeSig is one filesystem node in a snapshot: everything that could reveal a
+// write — type, permissions, size, mtime, symlink target, and a full content
+// hash for regular files.
+type treeSig struct {
+	Mode    fs.FileMode
+	Size    int64
+	ModTime int64 // UnixNano
+	Link    string
+	SHA256  string
+}
+
+// snapshotTree records every node under root byte-for-byte (content hashed).
+// Directory mtimes are included deliberately: they catch even a temp file that
+// was created and deleted again inside the tree.
+func snapshotTree(t *testing.T, root string) map[string]treeSig {
+	t.Helper()
+	sigs := map[string]treeSig{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		sig := treeSig{Mode: info.Mode(), Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+		switch {
+		case info.Mode()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			sig.Link = link
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(data)
+			sig.SHA256 = hex.EncodeToString(sum[:])
+		case info.IsDir():
+			sig.Size = 0 // directory sizes are fs-dependent noise
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		sigs[rel] = sig
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return sigs
+}
+
+func diffTrees(before, after map[string]treeSig) []string {
+	var diffs []string
+	for path, b := range before {
+		a, ok := after[path]
+		if !ok {
+			diffs = append(diffs, "removed: "+path)
+			continue
+		}
+		if a != b {
+			diffs = append(diffs, fmt.Sprintf("modified: %s (before %+v, after %+v)", path, b, a))
+		}
+	}
+	for path := range after {
+		if _, ok := before[path]; !ok {
+			diffs = append(diffs, "added: "+path)
+		}
+	}
+	sort.Strings(diffs)
+	return diffs
+}
+
+// TestUp_dryRunSandboxTreesAreByteForByteUnchanged is the global zero-write
+// proof: HOME and HUKOU_DATA_DIR both point into a sandbox under t.TempDir,
+// PATH points at a fake bin dir inside that HOME, a full dry-run (table and
+// JSON) runs against the REAL exec.LookPath and the REAL read-only scan, and
+// afterwards both trees must match the pre-run snapshot node for node —
+// modes, sizes, mtimes, symlink targets, and content hashes all included.
+func TestUp_dryRunSandboxTreesAreByteForByteUnchanged(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	dataDir := filepath.Join(root, "data")
+	fakeBin := filepath.Join(home, "bin")
+
+	// A small but non-trivial HOME: fake PATH executables, XDG data, a dotfile.
+	for _, dir := range []string{fakeBin, filepath.Join(home, ".local", "share"), dataDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExecutable(t, fakeBin, "brew", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, fakeBin, "straytool", "#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("# sandbox\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A real (empty) manifest so the hukou detector's read path is exercised.
+	m := &manifest.Manifest{
+		SchemaVersion: manifest.CurrentSchemaVersion,
+		Retention:     manifest.DefaultRetentionPolicy(),
+		Entries:       []manifest.Entry{},
+	}
+	if err := m.Save(filepath.Join(dataDir, "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Redirect every root the scan and detection may derive into the sandbox.
+	t.Setenv("HOME", home)
+	t.Setenv("HUKOU_DATA_DIR", dataDir)
+	t.Setenv("PATH", fakeBin)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("GOPATH", filepath.Join(home, "go"))
+	t.Setenv("GOBIN", "")
+
+	homeBefore := snapshotTree(t, home)
+	dataBefore := snapshotTree(t, dataDir)
+
+	// Full dry-run, twice (human table + JSON), with the REAL LookPath (nil)
+	// and the REAL read-only inventory scan.
+	var stdout, stderr bytes.Buffer
+	if err := doUp(&stdout, &stderr, upOptions{dryRun: true}, nil, defaultInventory, forbidRunner(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := doUp(&stdout, &stderr, upOptions{dryRun: true, json: true}, nil, defaultInventory, forbidRunner(t)); err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "dry run: nothing was executed or written") {
+		t.Fatalf("missing zero-effect trailer:\n%s", out)
+	}
+	// The real LookPath found the sandbox brew; the real scan saw both fakes.
+	if !strings.Contains(out, "brew update && brew upgrade") {
+		t.Fatalf("sandbox brew was not detected via real LookPath:\n%s", out)
+	}
+	if !strings.Contains(out, "summary: total=2") {
+		t.Fatalf("real scan did not cover the sandbox PATH:\n%s", out)
+	}
+
+	if diffs := diffTrees(homeBefore, snapshotTree(t, home)); len(diffs) != 0 {
+		t.Fatalf("dry-run touched HOME:\n%s", strings.Join(diffs, "\n"))
+	}
+	if diffs := diffTrees(dataBefore, snapshotTree(t, dataDir)); len(diffs) != 0 {
+		t.Fatalf("dry-run touched HUKOU_DATA_DIR:\n%s", strings.Join(diffs, "\n"))
 	}
 }
 
