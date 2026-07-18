@@ -81,6 +81,11 @@ to that source.
   `--json`; zero writes, zero subprocess execution (commands are printed,
   never run). Fixture tests with a fake PATH.
 - U2: real execution + snapshot/diff/report + history + aggregate exit.
+  U2 acceptance additionally requires a structural executor boundary: all
+  manager command execution goes through a single constrained executor
+  package, and an import-guard test asserts the dry-run call chain cannot
+  reach `os/exec` command execution (deferred from U1 by recorded ruling —
+  see docs/09-decision-log.md, 2026-07-17).
 - U3: diff-driven rollback surface + retention pruning + docs.
 
 ## Acceptance (U1)

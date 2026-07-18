@@ -104,10 +104,14 @@ land in a later slice (U2+).
   `internal`), then the same inventory summary line as `hukou scan` (from the
   shared read-only scan), then the trailer
   `dry run: nothing was executed or written`.
-- Hard zero-side-effect guarantees, enforced by tests on every path: no data
-  root is created, no subprocess is launched (detection is `LookPath` only,
-  the execution seam is provably never reached), no lock is held, no network
-  access. `HOME` and the hukou data dir are byte-for-byte untouched.
+- Hard zero-side-effect guarantees, enforced by tests over the table, JSON,
+  filter, filter-error, and placeholder paths: no data root is created, no
+  subprocess is launched (detection is `LookPath` only; the execution seam is
+  asserted never reached on those paths), no lock is held, no network access.
+  `HOME` and the hukou data dir are verified byte-for-byte untouched in a
+  sandboxed run. A structural import-level guard around the executor is a
+  stated acceptance criterion of the next slice (U2), where real execution
+  code first appears.
 
 ### `--only` / `--skip`
 

@@ -61,3 +61,11 @@ Important, long-lived, or hard-to-reverse decisions are written to
 
 When a decision changes, add a new ADR or mark the old one Superseded; do not
 silently rewrite the historical rationale.
+- 2026-07-17: U1 (`up --dry-run`) review asked for a structural import-level
+  guard forbidding `os/exec` in the dry-run call chain. Ruled as deferred to
+  U2 and recorded here: the guard is unimplementable at U1 without a dedicated
+  refactor (detection itself uses `exec.LookPath`), U2 rebuilds the execution
+  boundary anyway, and U1's zero-side-effect property is already proven two
+  independent ways (a never-reached executor stub across the table/JSON/
+  filter/error/placeholder paths, and a byte-for-byte sandbox tree snapshot
+  including directory mtimes). The guard is a stated U2 acceptance criterion.
