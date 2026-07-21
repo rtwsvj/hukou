@@ -1,9 +1,9 @@
 # Phase 3 Spec: hukou up (upgrade orchestration + snapshot diff)
 
-Status: approved; U1 (dry-run) and U2 (real execution + snapshot diff)
-delivered; U3 (history read-back surface — scope re-derived 2026-07-21, see
-the U3 slice below) in flight. This document defines the `up` contract;
-verification evidence lands in `docs/audit/`.
+Status: approved; U1 (dry-run), U2 (real execution + snapshot diff), and U3
+(history read-back surface — scope re-derived 2026-07-21, see the U3 slice
+below) all delivered. This document defines the `up` contract; verification
+evidence lands in `docs/audit/`.
 
 ## Goal
 
@@ -123,7 +123,8 @@ to that source.
   and `orchestrate` pull in neither `executor` nor `os/exec`; (4) the U1
   `forbidRunner` behavioral stub and the file-level import check, as depth.
   (Deferral origin: 2026-07-17.)
-- **U3 (in flight; scope re-derived 2026-07-21, see docs/09-decision-log.md)**:
+- **U3 (delivered 2026-07-21; scope re-derived same day, see
+  docs/09-decision-log.md)**:
   the print-only rollback surface and the N=10 retention pruning originally
   listed here were absorbed into U2's delivery. What actually remained missing
   is the **read-back surface**: the persisted history was write-only, and the
