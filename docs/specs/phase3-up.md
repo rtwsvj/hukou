@@ -1,9 +1,9 @@
 # Phase 3 Spec: hukou up (upgrade orchestration + snapshot diff)
 
 Status: approved; U1 (dry-run) and U2 (real execution + snapshot diff)
-delivered; U3 (diff-driven rollback surface + docs polish) remaining. This
-document defines the `up` contract; verification evidence lands in
-`docs/audit/`.
+delivered; U3 (history read-back surface — scope re-derived 2026-07-21, see
+the U3 slice below) in flight. This document defines the `up` contract;
+verification evidence lands in `docs/audit/`.
 
 ## Goal
 
@@ -22,6 +22,8 @@ for everything else.
 
 ```
 hukou up [--dry-run] [--only <mgr>...] [--skip <mgr>...] [--json]
+hukou up history [--json]
+hukou up show [<id>] [--json]
 ```
 
 - `--dry-run`: read-only. Detect available managers, print the exact commands
@@ -57,8 +59,10 @@ to that source.
 - Diff keys on (Name, Path): classify added / removed / changed
   (version or sha256 delta), grouped by Source.
 - Report: human table + `--json`; snapshot pair persisted under
-  `<dataRoot>/snapshots/<timestamp>/` (pre.json, post.json, diff.json),
-  pruned to the last N=10 runs.
+  `<dataRoot>/snapshots/<timestamp>/` (pre.json, post.json, diff.json;
+  U3 adds run.json with the manager results), pruned to the last N=10 runs.
+  U3 adds the read-back surface: `up history` lists persisted runs and
+  `up show` re-renders one, including its rollback hints.
 - Rollback surface: for `Source == hukou` entries the diff links to real
   `hukou rollback <name>`; for foreign sources the diff records prior
   versions and prints the manager's own downgrade suggestion where one
@@ -119,7 +123,32 @@ to that source.
   and `orchestrate` pull in neither `executor` nor `os/exec`; (4) the U1
   `forbidRunner` behavioral stub and the file-level import check, as depth.
   (Deferral origin: 2026-07-17.)
-- U3: diff-driven rollback surface + retention pruning + docs.
+- **U3 (in flight; scope re-derived 2026-07-21, see docs/09-decision-log.md)**:
+  the print-only rollback surface and the N=10 retention pruning originally
+  listed here were absorbed into U2's delivery. What actually remained missing
+  is the **read-back surface**: the persisted history was write-only, and the
+  manager results were not persisted at all — once the terminal scrolls, "what
+  changed and how do I roll it back" is gone. U3 delivers:
+  - `run.json` joins pre/post/diff in each snapshot directory (manager
+    results: name/status/exit/duration, plus the run's stamp;
+    `schema_version` 1), written inside the same atomic stage-then-rename.
+  - `hukou up history [--json]` — read-only, newest-first list of persisted
+    runs: id (directory name), diff counts (changed/added/removed), manager
+    ok/failed summary (`-` for pre-U3 directories without run.json). A
+    missing snapshots directory prints "no up runs recorded" and exits 0.
+    Creates nothing (no data root, no lock), launches nothing.
+  - `hukou up show [<id>] [--json]` — re-render a stored run (default: the
+    newest): manager table (when run.json exists), diff table, rollback
+    hints recomputed from the stored diff (DowngradeSuggestion is a pure
+    function), and the snapshot path. Unknown id, empty history, or an
+    incomplete directory (no parseable diff.json) is an error (non-zero).
+    `<id>` must exactly match a directory name listed under snapshots/ —
+    path traversal or separators are rejected before any filesystem join.
+  - Both subcommands ignore `.tmp-snap-*` staging directories, exactly as
+    pruneSnapshots does. Ordering is lexicographic on directory names (the
+    same RFC3339-sorts-chronologically assumption pruning already relies
+    on).
+  - Docs: 05-cli-reference sections for both subcommands; this spec.
 
 ## Acceptance (U1)
 

@@ -124,3 +124,19 @@ silently rewrite the historical rationale.
   behind the prefix anywhere — verified adversarially (a synthbad_ dir elsewhere
   and a plan-local synthbad_ holding a non-synthetic package are both scanned
   and flagged).
+- 2026-07-21: U3 scope re-derivation (Fable). The spec's original U3 line
+  ("diff-driven rollback surface + retention pruning + docs") was written
+  before U2 was cut; U2's delivery absorbed both items wholesale
+  (writeRollbackHints/DowngradeSuggestion and pruneSnapshots with
+  snapshotRetention=10 shipped in the U2 merge). Re-doing them would be
+  fake work. The genuinely missing piece of a "diff-driven rollback
+  surface" is that the persisted history was WRITE-ONLY: nothing could
+  list or re-render past runs, and manager results were never persisted —
+  the rollback surface evaporated the moment the terminal scrolled. U3 is
+  therefore the read-back surface: run.json persisted alongside
+  pre/post/diff, plus read-only `up history` and `up show [<id>]`
+  subcommands that re-surface the stored diff and its rollback hints.
+  Both are read-only by contract: no data-root creation, no lock, no
+  subprocesses (the execution fence applies unchanged). Pre-U3 snapshot
+  directories (no run.json) remain listable and showable with manager
+  results marked unavailable.
