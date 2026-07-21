@@ -39,7 +39,10 @@ spawned may linger, as it would in a shell). hukou never mutates another
 manager's state beyond invoking its upgrade command. The exit status is non-zero
 if any manager fails, the run is interrupted, or the snapshot history cannot be
 persisted. With --json, stdout carries only the final JSON document; all
-streamed manager output goes to stderr.`,
+streamed manager output goes to stderr.
+
+The read-only "up history" and "up show" subcommands list and re-render the runs
+a real run persisted, including each run's diff and rollback hints.`,
 	Args:          cobra.NoArgs,
 	SilenceErrors: true, // errors are printed once, here or via fail.
 	RunE:          runUp,

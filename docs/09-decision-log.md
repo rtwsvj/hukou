@@ -140,3 +140,25 @@ silently rewrite the historical rationale.
   subprocesses (the execution fence applies unchanged). Pre-U3 snapshot
   directories (no run.json) remain listable and showable with manager
   results marked unavailable.
+- 2026-07-21: U3 review round (Fable). The Codex verification layer was
+  unavailable for this card (CLI version skew, then the provider-side usage
+  cap, resetting 2026-07-25); the documented pre-review layers served as the
+  independent gate instead: a 3-perspective read-only review panel
+  (correctness / spec conformance / test honesty) plus a fourth blind-spot
+  review. Zero real defects. One finding was convergent across two
+  independent reviewers and was fixed, not just noted: a run.json that
+  exists but cannot be parsed was mislabeled as a pre-U3 run (corruption
+  masked behind a wrong explanation). readSnapshotRun now distinguishes
+  fs.ErrNotExist (pre-U3, tolerated) from unreadable/unparseable (surfaced
+  as "(run.json unreadable)" in history and show, run_json_error in both
+  JSON docs). Also applied from the round: `up show` on empty history errors
+  with "no up runs recorded to show" (distinct from history's exit-0 text);
+  the "-N collision suffix sorts later" claim is softened to its true bound
+  (exact for single-digit suffixes; >=11 same-second runs would mis-order —
+  shared with pruneSnapshots and unreachable for real runs; implementation
+  intentionally kept consistent with pruning rather than diverging); the
+  lock-free read-back race against a live run's prune is documented; test
+  pins hardened (show create-nothing on empty history, incomplete-run and
+  traversal error texts, real-run run.json manager names + stamp equality).
+  A retroactive Codex pass over the merged diff is queued for when the
+  quota resets.

@@ -87,13 +87,16 @@ A real upgrade re-checks inside the lock, then downloads and verifies the asset,
 ```text
 hukou up [--only <mgr>...] [--skip <mgr>...] [--json]
 hukou up --dry-run [--only <mgr>...] [--skip <mgr>...] [--json]
+hukou up history [--json]
+hukou up show [<id>] [--json]
 ```
 
 One command that upgrades everything on the machine — the package managers hukou
 knows about plus hukou's own adopted tools — and reports exactly what changed
 (see `docs/specs/phase3-up.md`). A dry run prints the read-only plan; a real run
 executes the upgrades and diffs a full-machine inventory snapshot taken before
-and after.
+and after. The read-only `history` and `show` subcommands re-surface the runs a
+real run persisted (see below).
 
 ### Real run semantics (U2)
 
@@ -130,10 +133,13 @@ and after.
     left as-is) so an interrupted run can never report ok / exit 0. This is an
     intentional minimal semantic, unlike long-running
     external managers, whose direct child is killed on timeout/cancel.
-- The snapshot pair and diff are persisted under
-  `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, and `diff.json`,
-  written atomically (staged in a temp directory, then renamed into place) and
-  pruned to the most recent 10 runs (the run just written is never pruned). A
+- The snapshot pair, diff, and manager results are persisted under
+  `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, `diff.json`, and
+  `run.json`, written atomically (staged in a temp directory, then renamed into
+  place) and pruned to the most recent 10 runs (the run just written is never
+  pruned). `run.json` (`{"schema_version": 1, "time": "<RFC3339>", "managers":
+  [{name, status, duration, exit}...]}`) is what lets `up history`/`up show`
+  re-render a past run after the terminal has scrolled. A
   failure to persist this history is NOT silent: it is printed to stderr,
   recorded in the report (`snapshot: FAILED (...)` in the table,
   `snapshot_error` in JSON), and makes the overall exit non-zero even when
@@ -216,6 +222,80 @@ Contract (deliberate asymmetry with the table):
 There are no other exit codes. A real run always prints its report (and, in
 `--json` mode, its JSON document) before exiting non-zero, so scripts can read
 the per-manager statuses and `snapshot_error` even on failure.
+
+## `hukou up history`
+
+```text
+hukou up history [--json]
+```
+
+Lists the runs a real `hukou up` persisted under `<dataRoot>/snapshots`, newest
+first. **Read-only by contract:** it creates neither the data root nor the
+snapshots directory, takes no state lock, and launches no subprocess.
+
+- One row per run: its **id** (the run's timestamped directory name), the diff
+  counts (**changed / added / removed** read from `diff.json`), and a manager
+  **ok / failed** summary read from `run.json`.
+- A run recorded before `run.json` existed (a pre-U3 directory) shows `-` for the
+  manager summary. A `run.json` that exists but is unreadable or unparseable is
+  reported as `(run.json unreadable)` — corruption is never mislabeled as
+  pre-U3. A run whose `diff.json` is missing or unparseable is marked
+  `(incomplete)` and its counts are shown as `-`.
+- In-progress `.tmp-snap-*` staging directories and any non-directory entries are
+  ignored. Ordering is lexicographic descending on the directory name (RFC3339
+  names sort chronologically; a `-N` collision suffix sorts as the later run of
+  the same second) — the same assumption snapshot pruning relies on. That
+  assumption is exact for the single-digit suffixes reachable in practice;
+  eleven-plus runs completing in the same wall-clock second would mis-order
+  (`-10` before `-2`), a bound shared with pruning that a real run's double
+  full scan cannot hit.
+- `history` and `show` take no lock by design, so they can race a live `up`
+  run's prune: a just-deleted run may transiently list as `(incomplete)` or
+  fail a `show` — re-running converges on the settled state.
+- A missing snapshots directory (or a missing data root) is the normal
+  "nothing recorded yet" state: the human form prints `no up runs recorded` and
+  exits 0 without creating anything.
+- `--json` emits `{"schema_version": 1, "runs": [{id, incomplete?, changed,
+  added, removed, managers}...]}`, newest first. `managers` is `{"ok": N,
+  "failed": M}` for a run with `run.json` and `null` for a pre-U3 run;
+  `incomplete` is present (`true`) only for a run with no parseable `diff.json`.
+  `runs` is always an array (empty when nothing is recorded), and stdout carries
+  exactly that one JSON document. A corrupt `run.json` additionally sets
+  `run_json_error: true` on its entry (omitted otherwise), with `managers`
+  still `null`.
+
+## `hukou up show`
+
+```text
+hukou up show [<id>] [--json]
+```
+
+Re-renders one persisted run, defaulting to the newest, from its stored
+`diff.json` and (when present) `run.json`. **Read-only by contract:** same
+guarantees as `up history` — no data root creation, no lock, no subprocess. The
+rollback hints are recomputed from the stored diff (a pure function), never
+re-derived from a fresh scan.
+
+- With no `<id>` the newest run is shown. Otherwise `<id>` must **exactly** match
+  one of the run directory names listed under `snapshots/`; the argument is
+  compared against those names before any path is joined, so a value containing a
+  path separator, `..`, or an absolute path matches nothing and is rejected as an
+  unknown id (it can never escape `snapshots/`).
+- Human output: a `run: <id>` header, the manager results table (`NAME / STATUS /
+  EXIT / DURATION`) when `run.json` parses — otherwise a notice: `manager
+  results unavailable for this run (recorded before run.json)` for a pre-U3 run,
+  or `... (run.json unreadable)` for a corrupt one — then the diff table, the
+  recomputed rollback hints, and the snapshot directory path. Both cases still
+  render the diff and rollback hints.
+- Errors (exit 1): an empty history (or missing snapshots directory — the error
+  reads `no up runs recorded to show`, deliberately distinct from `history`'s
+  exit-0 empty-state text), an unknown id, or a run whose `diff.json` is
+  missing or unparseable (`incomplete run`).
+- `--json` emits `{"schema_version": 1, "id": "...", "run": {...}, "diff":
+  {...}}`. `run` is the stored `run.json` object, or `null` for a pre-U3 run —
+  a corrupt `run.json` also yields `null` plus `run_json_error: true` (omitted
+  otherwise); `diff` is the stored diff. Stdout carries exactly that one JSON
+  document.
 
 ## `hukou rollback`
 

@@ -213,7 +213,7 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 	snapDir, snapErr := persistSnapshotHistory(deps.dataRoot(), deps.now(),
 		upSnapshot{Time: stamp, Report: preReport, Items: preItems},
 		upSnapshot{Time: stamp, Report: postReport, Items: postItems},
-		diff)
+		diff, results)
 	if snapErr != nil {
 		// The failure is surfaced three ways: immediately on stderr, in the
 		// report's snapshot field, and in the aggregate (non-zero) exit below.
@@ -303,11 +303,14 @@ type upSnapshot struct {
 	Items  []orchestrate.SnapItem `json:"items"`
 }
 
-// persistSnapshotHistory writes the pre/post/diff triple under
+// persistSnapshotHistory writes the pre/post/diff/run quadruple under
 // <root>/snapshots/<RFC3339>/ atomically (built in a temp dir, then renamed into
 // place so a reader never sees a half-written run), then prunes to the last N
 // runs — never deleting the run just written. It returns the final directory.
-func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, diff orchestrate.Diff) (string, error) {
+// run.json (the manager results plus the run's stamp) joins the same atomic
+// stage so `up history`/`up show` can re-render what a run did after the
+// terminal has scrolled; results may be nil for a run with no managers.
+func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, diff orchestrate.Diff, results []orchestrate.StepResult) (string, error) {
 	snapsDir := filepath.Join(root, "snapshots")
 	if err := os.MkdirAll(snapsDir, 0o755); err != nil {
 		return "", err
@@ -328,6 +331,9 @@ func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, di
 	if err != nil {
 		return "", err
 	}
+	// run.json records the logical stamp (the RFC3339 that names the directory,
+	// pre-collision-suffix), consistent with pre/post's Time field.
+	run := upRunDoc{SchemaVersion: 1, Time: stamp, Managers: toManagerJSONs(results)}
 	writeErr := func() error {
 		if err := writeJSONFile(filepath.Join(tmpDir, "pre.json"), pre); err != nil {
 			return err
@@ -335,7 +341,10 @@ func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, di
 		if err := writeJSONFile(filepath.Join(tmpDir, "post.json"), post); err != nil {
 			return err
 		}
-		return writeJSONFile(filepath.Join(tmpDir, "diff.json"), diff)
+		if err := writeJSONFile(filepath.Join(tmpDir, "diff.json"), diff); err != nil {
+			return err
+		}
+		return writeJSONFile(filepath.Join(tmpDir, "run.json"), run)
 	}()
 	if writeErr != nil {
 		_ = os.RemoveAll(tmpDir)
@@ -395,12 +404,40 @@ func writeJSONFile(path string, v any) error {
 	return f.Close()
 }
 
-// upRunManagerJSON is one manager's outcome in the real-run report.
+// upRunManagerJSON is one manager's outcome, shared by the live-run report and
+// the persisted run.json (read back by `up show`/`up history`).
 type upRunManagerJSON struct {
 	Name     string `json:"name"`
 	Status   string `json:"status"`
 	Duration string `json:"duration"`
 	Exit     int    `json:"exit"`
+}
+
+// upRunDoc is the persisted run.json: the manager results plus the run's stamp,
+// staged atomically alongside pre/post/diff. schema_version is 1. Persisting the
+// manager outcomes is what lets a past run's "what changed and how do I roll it
+// back" survive the terminal scrolling; pre-U3 directories predate it and are
+// tolerated as absent by the read-back surface.
+type upRunDoc struct {
+	SchemaVersion int                `json:"schema_version"`
+	Time          string             `json:"time"`
+	Managers      []upRunManagerJSON `json:"managers"`
+}
+
+// toManagerJSONs projects step results into the serialized manager shape shared
+// by the live report, run.json, and the `up show` re-render (so the rounded
+// duration string and status text read identically everywhere).
+func toManagerJSONs(results []orchestrate.StepResult) []upRunManagerJSON {
+	managers := make([]upRunManagerJSON, 0, len(results))
+	for _, r := range results {
+		managers = append(managers, upRunManagerJSON{
+			Name:     r.Name,
+			Status:   string(r.Status),
+			Duration: r.Duration.Round(time.Millisecond).String(),
+			Exit:     r.ExitCode,
+		})
+	}
+	return managers
 }
 
 // upRunJSON is the `up --json` (real run) document. SnapshotError is empty on
@@ -417,20 +454,12 @@ type upRunJSON struct {
 func writeUpRunJSON(w io.Writer, results []orchestrate.StepResult, diff orchestrate.Diff, snapDir string, snapErr error) error {
 	doc := upRunJSON{
 		SchemaVersion: 1,
-		Managers:      make([]upRunManagerJSON, 0, len(results)),
+		Managers:      toManagerJSONs(results),
 		Diff:          diff,
 		SnapshotDir:   snapDir,
 	}
 	if snapErr != nil {
 		doc.SnapshotError = snapErr.Error()
-	}
-	for _, r := range results {
-		doc.Managers = append(doc.Managers, upRunManagerJSON{
-			Name:     r.Name,
-			Status:   string(r.Status),
-			Duration: r.Duration.Round(time.Millisecond).String(),
-			Exit:     r.ExitCode,
-		})
 	}
 	return output.WriteJSONValue(w, doc)
 }
@@ -439,13 +468,7 @@ func writeUpRunJSON(w io.Writer, results []orchestrate.StepResult, diff orchestr
 // the classified inventory diff grouped by source, the print-only rollback
 // hints, and the snapshot location (or its persistence failure).
 func writeUpRunTable(w io.Writer, results []orchestrate.StepResult, diff orchestrate.Diff, snapDir string, snapErr error) error {
-	fmt.Fprintln(w, "upgrade results:")
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATUS\tEXIT\tDURATION")
-	for _, r := range results {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", r.Name, r.Status, r.ExitCode, r.Duration.Round(time.Millisecond))
-	}
-	if err := tw.Flush(); err != nil {
+	if err := writeManagerResultsTable(w, toManagerJSONs(results)); err != nil {
 		return err
 	}
 
@@ -473,6 +496,19 @@ func writeUpRunTable(w io.Writer, results []orchestrate.StepResult, diff orchest
 		}
 	}
 	return nil
+}
+
+// writeManagerResultsTable renders the NAME/STATUS/EXIT/DURATION table shared by
+// the live real-run report and the `up show` re-render, so a run reads the same
+// whether printed as it happens or replayed from run.json later.
+func writeManagerResultsTable(w io.Writer, managers []upRunManagerJSON) error {
+	fmt.Fprintln(w, "upgrade results:")
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATUS\tEXIT\tDURATION")
+	for _, m := range managers {
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", m.Name, m.Status, m.Exit, m.Duration)
+	}
+	return tw.Flush()
 }
 
 // writeDiffTable prints changed entries (NAME/SOURCE/BEFORE->AFTER) followed by
