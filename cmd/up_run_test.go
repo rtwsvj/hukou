@@ -160,8 +160,14 @@ func TestUp_realRunExecutesManagersDiffsAndPersists(t *testing.T) {
 	if len(runDoc.Managers) != 3 {
 		t.Fatalf("run.json managers = %d, want 3 (brew,npm,hukou): %+v", len(runDoc.Managers), runDoc.Managers)
 	}
-	if runDoc.Time == "" {
-		t.Fatal("run.json time stamp is empty")
+	for i, want := range []string{"brew", "npm", "hukou"} {
+		if runDoc.Managers[i].Name != want {
+			t.Fatalf("run.json manager[%d] = %q, want %q: %+v", i, runDoc.Managers[i].Name, want, runDoc.Managers)
+		}
+	}
+	// The stamp is the pre-collision-suffix RFC3339 that names the directory.
+	if runDoc.Time == "" || runDoc.Time != filepath.Base(doc.SnapshotDir) {
+		t.Fatalf("run.json time = %q, want the snapshot dir stamp %q", runDoc.Time, filepath.Base(doc.SnapshotDir))
 	}
 }
 

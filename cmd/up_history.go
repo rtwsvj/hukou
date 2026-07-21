@@ -38,7 +38,8 @@ var upHistoryCmd = &cobra.Command{
 
 Each row shows the run id (its timestamped directory name), the inventory diff
 counts (changed/added/removed), and a manager ok/failed summary. Runs recorded
-before run.json existed show "-" for the manager summary; a run missing or with
+before run.json existed show "-" for the manager summary; a corrupt run.json is
+reported as unreadable, never mislabeled as pre-run.json; a run missing or with
 an unparseable diff.json is marked incomplete.
 
 This is read-only: it creates no data root, takes no lock, and launches no
@@ -61,7 +62,8 @@ run directory names under <dataRoot>/snapshots (names containing a path
 separator or "..", or an unknown id, are rejected). An empty history or a run
 whose diff.json is missing or unparseable is an error (non-zero exit). Runs
 recorded before run.json existed still render their diff and rollback hints,
-with the manager results noted as unavailable.
+with the manager results noted as unavailable; a corrupt run.json is reported
+as unreadable rather than mislabeled as pre-run.json.
 
 This is read-only: it creates no data root, takes no lock, and launches no
 subprocess. With --json, stdout carries only the JSON document.`,
@@ -118,6 +120,9 @@ type upHistoryEntryJSON struct {
 	Added      int               `json:"added"`
 	Removed    int               `json:"removed"`
 	Managers   *upManagerSummary `json:"managers"`
+	// RunJSONError marks a run whose run.json exists but is unreadable or
+	// unparseable — corruption, distinct from the pre-U3 null-managers state.
+	RunJSONError bool `json:"run_json_error,omitempty"`
 }
 
 // upHistoryJSONDoc is the `up history --json` document (schema_version 1). Runs
@@ -128,11 +133,13 @@ type upHistoryJSONDoc struct {
 }
 
 // upShowJSONDoc is the `up show --json` document (schema_version 1): the run id,
-// the stored run.json (null when absent — a pre-U3 run), and the stored diff.
+// the stored run.json (null when absent — a pre-U3 run — or unreadable, which
+// run_json_error then distinguishes), and the stored diff.
 type upShowJSONDoc struct {
 	SchemaVersion int              `json:"schema_version"`
 	ID            string           `json:"id"`
 	Run           *upRunDoc        `json:"run"`
+	RunJSONError  bool             `json:"run_json_error,omitempty"`
 	Diff          orchestrate.Diff `json:"diff"`
 }
 
@@ -173,7 +180,10 @@ func readHistoryEntry(snapsDir, id string) upHistoryEntryJSON {
 		entry.Removed = len(diff.Removed)
 	}
 
-	if run, err := readSnapshotRun(runDir); err == nil {
+	switch run, err := readSnapshotRun(runDir); {
+	case err != nil:
+		entry.RunJSONError = true
+	case run != nil:
 		entry.Managers = managerSummary(run.Managers)
 	}
 	return entry
@@ -203,7 +213,10 @@ func writeHistoryTable(w io.Writer, entries []upHistoryEntryJSON) error {
 			continue
 		}
 		managers := "-"
-		if e.Managers != nil {
+		switch {
+		case e.RunJSONError:
+			managers = "(run.json unreadable)"
+		case e.Managers != nil:
 			managers = fmt.Sprintf("%d ok / %d failed", e.Managers.OK, e.Managers.Failed)
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\n", e.ID, e.Changed, e.Added, e.Removed, managers)
@@ -220,8 +233,10 @@ func doUpShow(stdout io.Writer, snapsDir, id string, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	// Distinct from history's exit-0 empty-state text, so a message consumer can
+	// tell the success form from this error without inspecting the exit code.
 	if len(ids) == 0 {
-		return errors.New("no up runs recorded")
+		return errors.New("no up runs recorded to show")
 	}
 
 	target := ids[0] // newest (ids are sorted newest first)
@@ -245,32 +260,38 @@ func doUpShow(stdout io.Writer, snapsDir, id string, asJSON bool) error {
 	if err != nil {
 		return fmt.Errorf("incomplete run %q: %w", target, err)
 	}
-	run, _ := readSnapshotRun(runDir) // nil for a pre-U3 run (tolerated)
+	// run is nil for a pre-U3 run (no run.json, runErr nil — tolerated) and for a
+	// corrupt one (runErr non-nil — reported as corruption, never as pre-U3).
+	run, runErr := readSnapshotRun(runDir)
 
 	if asJSON {
 		return output.WriteJSONValue(stdout, upShowJSONDoc{
 			SchemaVersion: 1,
 			ID:            target,
 			Run:           run,
+			RunJSONError:  runErr != nil,
 			Diff:          diff,
 		})
 	}
-	return writeShowTable(stdout, target, run, diff, runDir)
+	return writeShowTable(stdout, target, run, runErr, diff, runDir)
 }
 
 // writeShowTable re-renders a stored run for humans, reusing the live-run
 // renderers so a replayed run reads identically to when it happened: the manager
 // results (or an unavailable notice for a pre-U3 run), the diff, the recomputed
 // rollback hints, and the snapshot path.
-func writeShowTable(w io.Writer, id string, run *upRunDoc, diff orchestrate.Diff, runDir string) error {
+func writeShowTable(w io.Writer, id string, run *upRunDoc, runErr error, diff orchestrate.Diff, runDir string) error {
 	if _, err := fmt.Fprintf(w, "run: %s\n", id); err != nil {
 		return err
 	}
-	if run != nil {
+	switch {
+	case run != nil:
 		if err := writeManagerResultsTable(w, run.Managers); err != nil {
 			return err
 		}
-	} else {
+	case runErr != nil:
+		fmt.Fprintln(w, "manager results unavailable for this run (run.json unreadable)")
+	default:
 		fmt.Fprintln(w, "manager results unavailable for this run (recorded before run.json)")
 	}
 
@@ -291,8 +312,11 @@ func writeShowTable(w io.Writer, id string, run *upRunDoc, diff orchestrate.Diff
 // listSnapshotRunNames returns the run directory names under snapsDir, newest
 // first (lexicographic descending — RFC3339 names sort chronologically and a
 // "-N" collision suffix sorts after its base, the same assumption pruning relies
-// on). A missing snapsDir yields an empty list and no error: it is never created
-// here. Non-directories and in-progress .tmp-snap-* staging dirs are ignored,
+// on; exact for the single-digit suffixes reachable in practice, while eleven-plus
+// same-second runs would mis-order "-10" before "-2" — a bound shared with
+// pruneSnapshots that a real run's double full scan cannot hit). A missing
+// snapsDir yields an empty list and no error: it is never created here.
+// Non-directories and in-progress .tmp-snap-* staging dirs are ignored,
 // exactly as pruneSnapshots does.
 func listSnapshotRunNames(snapsDir string) ([]string, error) {
 	entries, err := os.ReadDir(snapsDir)
@@ -327,11 +351,16 @@ func readSnapshotDiff(runDir string) (orchestrate.Diff, error) {
 	return diff, nil
 }
 
-// readSnapshotRun reads and parses a run's run.json. A missing run.json (a pre-U3
-// run) returns an error the callers treat as "unavailable" — the run is still
-// listable and showable, just without its manager results.
+// readSnapshotRun reads and parses a run's run.json. A MISSING run.json is the
+// pre-U3 state and returns (nil, nil): the run stays listable and showable,
+// just without its manager results. Any other failure — unreadable or
+// unparseable — is returned as an error so callers can report corruption as
+// corruption instead of mislabeling the run as pre-U3.
 func readSnapshotRun(runDir string) (*upRunDoc, error) {
 	data, err := os.ReadFile(filepath.Join(runDir, "run.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

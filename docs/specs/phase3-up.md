@@ -134,7 +134,9 @@ to that source.
     `schema_version` 1), written inside the same atomic stage-then-rename.
   - `hukou up history [--json]` — read-only, newest-first list of persisted
     runs: id (directory name), diff counts (changed/added/removed), manager
-    ok/failed summary (`-` for pre-U3 directories without run.json). A
+    ok/failed summary (`-` for pre-U3 directories without run.json; a
+    run.json that exists but cannot be parsed is reported as unreadable —
+    `run_json_error` in JSON — never mislabeled pre-U3). A
     missing snapshots directory prints "no up runs recorded" and exits 0.
     Creates nothing (no data root, no lock), launches nothing.
   - `hukou up show [<id>] [--json]` — re-render a stored run (default: the

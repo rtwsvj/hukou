@@ -237,12 +237,21 @@ snapshots directory, takes no state lock, and launches no subprocess.
   counts (**changed / added / removed** read from `diff.json`), and a manager
   **ok / failed** summary read from `run.json`.
 - A run recorded before `run.json` existed (a pre-U3 directory) shows `-` for the
-  manager summary. A run whose `diff.json` is missing or unparseable is marked
+  manager summary. A `run.json` that exists but is unreadable or unparseable is
+  reported as `(run.json unreadable)` — corruption is never mislabeled as
+  pre-U3. A run whose `diff.json` is missing or unparseable is marked
   `(incomplete)` and its counts are shown as `-`.
 - In-progress `.tmp-snap-*` staging directories and any non-directory entries are
   ignored. Ordering is lexicographic descending on the directory name (RFC3339
   names sort chronologically; a `-N` collision suffix sorts as the later run of
-  the same second) — the same assumption snapshot pruning relies on.
+  the same second) — the same assumption snapshot pruning relies on. That
+  assumption is exact for the single-digit suffixes reachable in practice;
+  eleven-plus runs completing in the same wall-clock second would mis-order
+  (`-10` before `-2`), a bound shared with pruning that a real run's double
+  full scan cannot hit.
+- `history` and `show` take no lock by design, so they can race a live `up`
+  run's prune: a just-deleted run may transiently list as `(incomplete)` or
+  fail a `show` — re-running converges on the settled state.
 - A missing snapshots directory (or a missing data root) is the normal
   "nothing recorded yet" state: the human form prints `no up runs recorded` and
   exits 0 without creating anything.
@@ -251,7 +260,9 @@ snapshots directory, takes no state lock, and launches no subprocess.
   "failed": M}` for a run with `run.json` and `null` for a pre-U3 run;
   `incomplete` is present (`true`) only for a run with no parseable `diff.json`.
   `runs` is always an array (empty when nothing is recorded), and stdout carries
-  exactly that one JSON document.
+  exactly that one JSON document. A corrupt `run.json` additionally sets
+  `run_json_error: true` on its entry (omitted otherwise), with `managers`
+  still `null`.
 
 ## `hukou up show`
 
@@ -271,15 +282,20 @@ re-derived from a fresh scan.
   path separator, `..`, or an absolute path matches nothing and is rejected as an
   unknown id (it can never escape `snapshots/`).
 - Human output: a `run: <id>` header, the manager results table (`NAME / STATUS /
-  EXIT / DURATION`) when `run.json` exists — otherwise the notice `manager
-  results unavailable for this run (recorded before run.json)` — then the diff
-  table, the recomputed rollback hints, and the snapshot directory path. A pre-U3
-  run still renders its diff and rollback hints.
-- Errors (exit 1): an empty history (or missing snapshots directory), an unknown
-  id, or a run whose `diff.json` is missing or unparseable (`incomplete run`).
+  EXIT / DURATION`) when `run.json` parses — otherwise a notice: `manager
+  results unavailable for this run (recorded before run.json)` for a pre-U3 run,
+  or `... (run.json unreadable)` for a corrupt one — then the diff table, the
+  recomputed rollback hints, and the snapshot directory path. Both cases still
+  render the diff and rollback hints.
+- Errors (exit 1): an empty history (or missing snapshots directory — the error
+  reads `no up runs recorded to show`, deliberately distinct from `history`'s
+  exit-0 empty-state text), an unknown id, or a run whose `diff.json` is
+  missing or unparseable (`incomplete run`).
 - `--json` emits `{"schema_version": 1, "id": "...", "run": {...}, "diff":
-  {...}}`. `run` is the stored `run.json` object, or `null` for a pre-U3 run;
-  `diff` is the stored diff. Stdout carries exactly that one JSON document.
+  {...}}`. `run` is the stored `run.json` object, or `null` for a pre-U3 run —
+  a corrupt `run.json` also yields `null` plus `run_json_error: true` (omitted
+  otherwise); `diff` is the stored diff. Stdout carries exactly that one JSON
+  document.
 
 ## `hukou rollback`
 

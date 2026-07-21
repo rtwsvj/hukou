@@ -292,18 +292,28 @@ func TestUpShow_DefaultNewestAndExplicitID(t *testing.T) {
 
 // TestUpShow_EmptyHistoryAndUnknownIDError proves both non-zero cases.
 func TestUpShow_EmptyHistoryAndUnknownIDError(t *testing.T) {
-	// Empty history (missing snapshots dir).
-	missing := filepath.Join(t.TempDir(), "data", "snapshots")
+	// Empty history (missing snapshots dir). The error text is distinct from
+	// history's exit-0 empty-state message, and — like history — show must not
+	// bring the data root into existence.
+	missingRoot := filepath.Join(t.TempDir(), "data")
+	missing := filepath.Join(missingRoot, "snapshots")
 	var out bytes.Buffer
-	if err := doUpShow(&out, missing, "", false); err == nil {
+	err := doUpShow(&out, missing, "", false)
+	if err == nil {
 		t.Fatal("show over an empty history must error")
+	}
+	if !strings.Contains(err.Error(), "no up runs recorded to show") {
+		t.Fatalf("empty-history error = %v, want 'no up runs recorded to show'", err)
+	}
+	if _, statErr := os.Stat(missingRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("show over an empty history must not create the data root: %v", statErr)
 	}
 
 	// Unknown id.
 	snapsDir := t.TempDir()
 	seedRun(t, snapsDir, "2026-07-18T12:00:00Z", diffFixture(0, 0, 0), runDocFixture(mgr("brew", "ok")))
 	out.Reset()
-	err := doUpShow(&out, snapsDir, "2099-01-01T00:00:00Z", false)
+	err = doUpShow(&out, snapsDir, "2099-01-01T00:00:00Z", false)
 	if err == nil {
 		t.Fatal("show of an unknown id must error")
 	}
@@ -331,6 +341,9 @@ func TestUpShow_TraversalIDsRejectedWithoutEscaping(t *testing.T) {
 		err := doUpShow(&out, snapsDir, bad, false)
 		if err == nil {
 			t.Fatalf("traversal id %q was accepted; must be rejected", bad)
+		}
+		if !strings.Contains(err.Error(), "unknown up run") {
+			t.Fatalf("traversal id %q error = %v, want an 'unknown up run' rejection", bad, err)
 		}
 		if strings.Contains(out.String(), "evil") {
 			t.Fatalf("traversal id %q escaped snapshots/ and rendered the planted run:\n%s", bad, out.String())
@@ -363,8 +376,12 @@ func TestUpShow_IncompleteRunErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := doUpShow(&out, snapsDir, "2026-07-19T12:00:00Z", false); err == nil {
+	err = doUpShow(&out, snapsDir, "2026-07-19T12:00:00Z", false)
+	if err == nil {
 		t.Fatal("show of a run with an unparseable diff.json must error")
+	}
+	if !strings.Contains(err.Error(), "incomplete run") {
+		t.Fatalf("unparseable-diff error = %v, want an 'incomplete run' message", err)
 	}
 }
 
@@ -440,6 +457,67 @@ func TestUpShow_JSONEmbedsRunAndDiff(t *testing.T) {
 	}
 	if len(doc.Diff.Added) != 1 {
 		t.Fatalf("pre-U3 show json diff added = %d, want 1", len(doc.Diff.Added))
+	}
+}
+
+// TestUpHistoryShow_CorruptRunJSONReportedNotMislabeled proves a run whose
+// run.json exists but cannot be parsed is reported as corruption — the
+// unreadable marker in history, run_json_error in both JSON docs, a distinct
+// notice in show — and never mislabeled as a pre-U3 run.
+func TestUpHistoryShow_CorruptRunJSONReportedNotMislabeled(t *testing.T) {
+	snapsDir := t.TempDir()
+	seedRun(t, snapsDir, "2026-07-18T12:00:00Z", diffFixture(0, 0, 0), nil)
+	corrupt := filepath.Join(snapsDir, "2026-07-18T12:00:00Z", "run.json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// history: the unreadable marker, not the pre-U3 "-".
+	var out bytes.Buffer
+	if err := doUpHistory(&out, snapsDir, false); err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if !strings.Contains(out.String(), "(run.json unreadable)") {
+		t.Fatalf("history did not mark the corrupt run.json:\n%s", out.String())
+	}
+
+	// history --json: run_json_error true, managers null.
+	out.Reset()
+	if err := doUpHistory(&out, snapsDir, true); err != nil {
+		t.Fatalf("history --json: %v", err)
+	}
+	var hist upHistoryJSONDoc
+	if err := json.Unmarshal(out.Bytes(), &hist); err != nil {
+		t.Fatalf("decode history json: %v\n%s", err, out.String())
+	}
+	if len(hist.Runs) != 1 || !hist.Runs[0].RunJSONError || hist.Runs[0].Managers != nil {
+		t.Fatalf("history json = %+v, want run_json_error=true + null managers", hist.Runs)
+	}
+
+	// show: the unreadable notice, never the pre-U3 wording; diff still renders.
+	out.Reset()
+	if err := doUpShow(&out, snapsDir, "", false); err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "(run.json unreadable)") {
+		t.Fatalf("show did not report the corrupt run.json:\n%s", s)
+	}
+	if strings.Contains(s, "recorded before run.json") {
+		t.Fatalf("corrupt run.json mislabeled as pre-U3:\n%s", s)
+	}
+
+	// show --json: run null + run_json_error true.
+	out.Reset()
+	if err := doUpShow(&out, snapsDir, "", true); err != nil {
+		t.Fatalf("show --json: %v", err)
+	}
+	var show upShowJSONDoc
+	if err := json.Unmarshal(out.Bytes(), &show); err != nil {
+		t.Fatalf("decode show json: %v\n%s", err, out.String())
+	}
+	if show.Run != nil || !show.RunJSONError {
+		t.Fatalf("show json = %+v, want null run + run_json_error=true", show)
 	}
 }
 
