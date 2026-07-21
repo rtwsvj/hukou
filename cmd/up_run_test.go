@@ -140,7 +140,7 @@ func TestUp_realRunExecutesManagersDiffsAndPersists(t *testing.T) {
 	if doc.SnapshotDir == "" {
 		t.Fatal("run json has empty snapshot_dir")
 	}
-	for _, f := range []string{"pre.json", "post.json", "diff.json"} {
+	for _, f := range []string{"pre.json", "post.json", "diff.json", "run.json"} {
 		if _, err := os.Stat(filepath.Join(doc.SnapshotDir, f)); err != nil {
 			t.Fatalf("missing snapshot file %s: %v", f, err)
 		}
@@ -150,6 +150,18 @@ func TestUp_realRunExecutesManagersDiffsAndPersists(t *testing.T) {
 	readJSON(t, filepath.Join(doc.SnapshotDir, "diff.json"), &onDisk)
 	if len(onDisk.Added) != 1 || onDisk.Added[0].Name != "newtool" {
 		t.Fatalf("persisted diff.json added = %+v", onDisk.Added)
+	}
+	// run.json on disk carries schema_version 1 and every manager result.
+	var runDoc upRunDoc
+	readJSON(t, filepath.Join(doc.SnapshotDir, "run.json"), &runDoc)
+	if runDoc.SchemaVersion != 1 {
+		t.Fatalf("run.json schema_version = %d, want 1", runDoc.SchemaVersion)
+	}
+	if len(runDoc.Managers) != 3 {
+		t.Fatalf("run.json managers = %d, want 3 (brew,npm,hukou): %+v", len(runDoc.Managers), runDoc.Managers)
+	}
+	if runDoc.Time == "" {
+		t.Fatal("run.json time stamp is empty")
 	}
 }
 
@@ -410,7 +422,7 @@ func TestPersistSnapshotHistory_AtomicAndPruned(t *testing.T) {
 	var lastDir string
 	for i := 0; i < 12; i++ {
 		now := base.Add(time.Duration(i) * time.Minute)
-		dir, err := persistSnapshotHistory(root, now, pre, post, diff)
+		dir, err := persistSnapshotHistory(root, now, pre, post, diff, nil)
 		if err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
@@ -453,7 +465,7 @@ func TestPersistSnapshotHistory_NeverPrunesCurrentEvenIfOldest(t *testing.T) {
 	}
 
 	oldNow := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	dir, err := persistSnapshotHistory(root, oldNow, upSnapshot{}, upSnapshot{}, orchestrate.Diff{})
+	dir, err := persistSnapshotHistory(root, oldNow, upSnapshot{}, upSnapshot{}, orchestrate.Diff{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +473,7 @@ func TestPersistSnapshotHistory_NeverPrunesCurrentEvenIfOldest(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("current run was pruned despite the never-delete-current guard: %v", err)
 	}
-	for _, f := range []string{"pre.json", "post.json", "diff.json"} {
+	for _, f := range []string{"pre.json", "post.json", "diff.json", "run.json"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Fatalf("current run missing %s after prune: %v", f, err)
 		}
