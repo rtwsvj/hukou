@@ -1,0 +1,29 @@
+.DS_Store
+.env
+.env.*
+*.log
+
+node_modules/
+dist/
+build/
+coverage/
+coverage.out
+*.coverprofile
+.cache/
+
+DerivedData/
+.build/
+*.xcuserstate
+xcuserdata/
+*.xcuserdatad/
+
+.vscode/
+.idea/
+bin/
+
+# Local working notes (untracked)
+CARD-P2-DONE.md
+
+# Local working notes (never public)
+REPORT*.md
+RELEASE-CHECKLIST.md
