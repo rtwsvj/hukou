@@ -1,0 +1,22 @@
+{
+  "name": "hukou-linux-arm64",
+  "version": "0.3.0",
+  "description": "hukou platform binary for linux/arm64",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rtwsvj/hukou"
+  },
+  "bin": {
+    "hukou": "bin/hukou"
+  },
+  "files": [
+    "bin"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

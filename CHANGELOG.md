@@ -12,7 +12,10 @@ GitHub with reproducible archives for four platforms, checksums, an SPDX SBOM,
 and Sigstore build-provenance attestations from the hosted release workflow.
 `make verify` (fmt, vet, unit, race, coverage, build, license, installer,
 release-script checks) is green on both Ubuntu and macOS, and `govulncheck`
-is clean with the Go 1.26.6 toolchain.
+is clean with the Go 1.26.6 toolchain. Distribution channels: the official
+installer, the Homebrew tap `rtwsvj/hukou` (submitted upstream as
+homebrew-core PR #299130), and npm (`@rtwsvj/hukou` plus four per-platform
+binary packages).
 
 ### Added
 

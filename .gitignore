@@ -27,3 +27,7 @@ CARD-P2-DONE.md
 # Local working notes (never public)
 REPORT*.md
 RELEASE-CHECKLIST.md
+
+# npm platform packages (assembled by npm/build.sh from dist/)
+npm/platforms/*/bin/
+npm/platforms/*/LICENSE

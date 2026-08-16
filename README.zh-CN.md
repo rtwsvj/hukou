@@ -32,6 +32,13 @@ hukou     负责收编无人认领的黑户
 curl -fsSL https://raw.githubusercontent.com/rtwsvj/hukou/main/scripts/install.sh | sh
 ```
 
+其他方式：
+
+```sh
+brew tap rtwsvj/hukou && brew trust rtwsvj/hukou && brew install hukou   # Homebrew tap
+npm install -g @rtwsvj/hukou                                            # npm
+```
+
 安装器会下载最新 Release 归档，对同源 `checksums.txt` 校验，并在检测到已认证的
 [`gh`](https://cli.github.com/) CLI 时，先按锚定的签名者身份验证归档的 GitHub
 build-provenance（Sigstore）attestation，再解包。设置

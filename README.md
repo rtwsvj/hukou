@@ -35,6 +35,13 @@ hukou     adopts the strays nothing else owns
 curl -fsSL https://raw.githubusercontent.com/rtwsvj/hukou/main/scripts/install.sh | sh
 ```
 
+Other options:
+
+```sh
+brew tap rtwsvj/hukou && brew trust rtwsvj/hukou && brew install hukou   # Homebrew tap
+npm install -g @rtwsvj/hukou                                            # npm
+```
+
 The installer downloads the latest release archive, verifies it against a
 same-origin `checksums.txt`, and — when an authenticated [`gh`](https://cli.github.com/)
 CLI is present — verifies the archive's GitHub build-provenance (Sigstore)

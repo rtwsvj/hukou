@@ -1,6 +1,8 @@
 # hukou Homebrew 配方（人话版）
 
-> 状态：本地配方已备好、未提交。正式提交到 Homebrew 官方仓库需要**你在场拍板**——那是"对外发布"动作，与 A 队"让全世界看到"同性质。
+> 状态：**已上架（2026-08-16）**。v0.3.0 正式发布后：四个真实指纹已填入配方；
+> tap `rtwsvj/hukou` 已公开（`brew tap rtwsvj/hukou && brew trust rtwsvj/hukou &&
+> brew install hukou`）；homebrew-core 官方仓库 PR #299130 已提交待审。
 
 ## 现状
 

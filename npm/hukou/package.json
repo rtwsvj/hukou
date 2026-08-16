@@ -1,0 +1,38 @@
+{
+  "name": "@rtwsvj/hukou",
+  "version": "0.3.0",
+  "description": "Household registry for your stray binaries: find, adopt, upgrade, and roll back the CLI tools no package manager owns",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rtwsvj/hukou"
+  },
+  "homepage": "https://github.com/rtwsvj/hukou",
+  "bin": {
+    "hukou": "bin/hukou.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "keywords": [
+    "cli",
+    "package-manager",
+    "binary",
+    "upgrade",
+    "rollback",
+    "hukou"
+  ],
+  "optionalDependencies": {
+    "hukou-darwin-arm64": "0.3.0",
+    "hukou-darwin-amd64": "0.3.0",
+    "hukou-linux-arm64": "0.3.0",
+    "hukou-linux-amd64": "0.3.0"
+  }
+}
