@@ -350,7 +350,9 @@ UNPACK=${TMP_DIR}/unpack
 mkdir "$UNPACK"
 tar -xzf "$ARCHIVE_PATH" -C "$UNPACK" "$TARGET_MEMBER" || die "cannot extract hukou from $ARCHIVE"
 SOURCE=${UNPACK}/${TARGET_MEMBER}
-[ -f "$SOURCE" ] && [ ! -L "$SOURCE" ] || die "archive does not contain a regular hukou binary"
+if [ ! -f "$SOURCE" ] || [ -L "$SOURCE" ]; then
+  die "archive does not contain a regular hukou binary"
+fi
 [ -x "$SOURCE" ] || die "archive hukou binary is not executable"
 
 mkdir -p "$DEST_DIR"

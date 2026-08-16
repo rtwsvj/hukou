@@ -83,7 +83,12 @@ func TestResolveLocaleFollowsMacOSGUILanguage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	// Hermetic locale environment: hosted CI runners carry LC_ALL in the
+	// environment, and a leftover value would shadow the GUI fallback being
+	// tested here (env precedence is a documented behavior, not a bug).
+	t.Setenv("LC_ALL", "")
 	t.Setenv("LANG", "") // terminal default on macOS: GUI language decides
+	t.Setenv("HUKOU_LANG", "")
 	if got := ResolveLocale(func(k string) string { return os.Getenv(k) }); got != ZH {
 		t.Fatalf("GUI language should decide when env is unset: got %q", got)
 	}
