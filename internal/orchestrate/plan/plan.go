@@ -32,6 +32,10 @@ type ManagerRow struct {
 	Available bool
 	// Internal marks hukou's own in-process step.
 	Internal bool
+	// Timeout is the effective per-manager timeout as a display string (e.g.
+	// "15m0s"); empty for the internal hukou row, which runs in-process and is
+	// never bounded by the executor.
+	Timeout string
 }
 
 // ManagerJSON is the stable JSON shape for one registry manager.
@@ -40,6 +44,7 @@ type ManagerJSON struct {
 	Binary    string     `json:"binary"`
 	Commands  [][]string `json:"commands"`
 	Available bool       `json:"available"`
+	Timeout   string     `json:"timeout,omitempty"`
 }
 
 // Document is the `up --dry-run --json` document.
@@ -63,6 +68,7 @@ func WriteJSON(w io.Writer, rows []ManagerRow, summary output.Summary) error {
 			Binary:    r.Binary,
 			Commands:  r.Commands,
 			Available: r.Available,
+			Timeout:   r.Timeout,
 		})
 	}
 	return output.WriteJSONValue(w, doc)
@@ -73,7 +79,7 @@ func WriteJSON(w io.Writer, rows []ManagerRow, summary output.Summary) error {
 // have run output.Summarize on the report.
 func WriteTable(w io.Writer, rows []ManagerRow, report output.Report) error {
 	fmt.Fprintln(w, i18n.T("managers detected (dry run):"))
-	t := output.NewTable(w, i18n.T("NAME"), i18n.T("SOURCE-BINARY"), i18n.T("COMMANDS"))
+	t := output.NewTable(w, i18n.T("NAME"), i18n.T("SOURCE-BINARY"), i18n.T("COMMANDS"), i18n.T("TIMEOUT"))
 	shown := 0
 	for _, r := range rows {
 		if !r.Available {
@@ -83,11 +89,15 @@ func WriteTable(w io.Writer, rows []ManagerRow, report output.Report) error {
 		if r.Internal {
 			source = "internal"
 		}
-		t.Row(r.Name, source, renderCommands(r.Commands))
+		timeout := r.Timeout
+		if timeout == "" {
+			timeout = "-"
+		}
+		t.Row(r.Name, source, renderCommands(r.Commands), timeout)
 		shown++
 	}
 	if shown == 0 {
-		t.Row("(none)", "", "")
+		t.Row("(none)", "", "", "")
 	}
 	if err := t.Flush(); err != nil {
 		return err

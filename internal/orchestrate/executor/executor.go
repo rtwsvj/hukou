@@ -3,18 +3,17 @@
 // per-manager timeout, and implements orchestrate.StepExecutor so the rest of
 // the program consumes it through that interface.
 //
-// Execution model — deliberately plain and portable. Each command runs as
-// exec.CommandContext(ctx, argv[0], argv[1:]...) with NO SysProcAttr: the
-// manager stays in hukou's own foreground process group, so a terminal Ctrl-C
-// reaches it naturally (no manual signal forwarding), and cancellation/timeout
-// is delivered by CommandContext killing the direct child. There is no process
-// group, no two-phase SIGTERM/SIGKILL escalation, and no reap bookkeeping.
-//
-// Known limitation, stated honestly: a timeout or cancel kills only the DIRECT
-// child. A manager that spawns a detached grandchild (a backgrounded daemon,
-// say) can leave that grandchild running — exactly as it would if you ran the
-// manager's upgrade command directly in your shell. hukou does not chase the
-// process tree.
+// Execution model. Each command runs as exec.CommandContext(ctx, argv[0],
+// argv[1:]...). On unix the command is placed in its OWN process group
+// (SysProcAttr.Setpgid) and context cancellation — a per-manager timeout, or
+// an interrupt propagated through signal.NotifyContext — terminates the whole
+// group: SIGTERM first, SIGKILL after a short grace (procgroup_unix.go), so a
+// grandchild the manager spawned (brew's curl, say) dies with it instead of
+// being orphaned. Off unix there are no process groups and cancellation kills
+// only the direct child (procgroup_other.go), the plain CommandContext
+// default. The child's environment comes from buildChildEnv (env.go), which
+// passes the OS system proxy through unless the environment already
+// configures a proxy or opts out.
 //
 // The executor is the only package in the tree that launches a subprocess; a
 // repo-wide go/ast fence (internal/orchestrate/execution_fence_test.go) asserts
@@ -42,9 +41,10 @@ const DefaultTimeout = 15 * time.Minute
 // waitDrainGrace bounds how long Wait keeps draining a finished (or killed)
 // command's inherited pipes before the descriptors are force-closed. This is
 // plain os/exec I/O bookkeeping, not process management: by the time it
-// matters the direct child is already gone, and any detached grandchild that
-// kept an output pipe open is deliberately left alone (see the package doc's
-// known limitation). Without it, such a grandchild could wedge Wait forever.
+// matters the child is already gone, and any grandchild that kept an output
+// pipe open past the group kill is deliberately left alone (a killed process
+// cannot hold hukou's Wait hostage either way). Without it, such a grandchild
+// could wedge Wait forever.
 const waitDrainGrace = 10 * time.Second
 
 // Executor runs manager commands as real subprocesses. The zero value is not
@@ -52,6 +52,11 @@ const waitDrainGrace = 10 * time.Second
 type Executor struct {
 	// Timeout bounds each manager's whole run; <= 0 uses DefaultTimeout.
 	Timeout time.Duration
+
+	// Timeouts overrides Timeout for individual managers by registry name
+	// (e.g. {"brew": 45m} for a slow brew on a slow network). Names not
+	// present fall back to Timeout.
+	Timeouts map[string]time.Duration
 
 	stdout io.Writer
 	stderr io.Writer
@@ -73,16 +78,26 @@ func New(stdout, stderr io.Writer) *Executor {
 // compile-time proof the Executor satisfies the constrained execution seam.
 var _ orchestrate.StepExecutor = (*Executor)(nil)
 
+// TimeoutFor resolves the effective timeout for manager name: a per-name
+// override from Timeouts first, then the executor-wide Timeout, then
+// DefaultTimeout. Non-positive entries are treated as unset.
+func (e *Executor) TimeoutFor(name string) time.Duration {
+	if d, ok := e.Timeouts[name]; ok && d > 0 {
+		return d
+	}
+	if e.Timeout > 0 {
+		return e.Timeout
+	}
+	return DefaultTimeout
+}
+
 // RunManager runs the manager's commands in registry order. It stops at the
 // first command that fails (matching the `&&` chaining the registry encodes),
 // enforces a single per-manager timeout across all commands, and honors ctx
 // cancellation between and during commands. Output from every command streams
 // through with a "[name] " prefix on each line.
 func (e *Executor) RunManager(ctx context.Context, name string, commands [][]string) orchestrate.StepResult {
-	timeout := e.Timeout
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
+	timeout := e.TimeoutFor(name)
 	// One deadline covers the whole manager, not each command, so a manager that
 	// dribbles across many slow steps still cannot exceed its budget.
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -121,13 +136,27 @@ func (e *Executor) RunManager(ctx context.Context, name string, commands [][]str
 // runOne launches a single command and streams its output. It returns the
 // process exit code (or -1 when the process never produced one) and a non-nil
 // error when the command failed, timed out, or was cancelled. Cancellation and
-// timeout are delivered by exec.CommandContext, which kills the direct child;
-// no process group is created and no descendant is chased.
+// timeout are delivered through ctx: on unix the command runs in its own
+// process group and the whole group is terminated (configureProc), off unix
+// CommandContext kills the direct child.
 func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// Process-group setup decides what cancellation kills (see procgroup_*).
+	configureProc(cmd)
 	// WaitDelay bounds pipe draining after the process exits or is killed, so a
 	// detached grandchild holding an inherited pipe cannot wedge Wait forever.
 	cmd.WaitDelay = waitDrainGrace
+
+	env, proxyHost, fullPassthru := buildChildEnv()
+	cmd.Env = env
+	if fullPassthru {
+		fmt.Fprintf(e.stderr, "[%s] HUKOU_UP_ENV_PASSTHRU=*: passing the full parent environment to the subprocess\n", name)
+	}
+	if proxyHost != "" {
+		// Host (with port) only: the proxy URL may carry credentials in its
+		// userinfo, which must never land in a streamed log line.
+		fmt.Fprintf(e.stderr, "[%s] using system proxy %s\n", name, proxyHost)
+	}
 
 	// A shared mutex keeps stdout and stderr lines from interleaving mid-line,
 	// even when both writers point at the same buffer.
@@ -166,11 +195,14 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	return 0, nil
 }
 
-// classifyCtx maps context state to a step status: a cancelled PARENT is a
-// user/caller cancellation (StatusCanceled); a hit per-manager deadline (parent
-// still live) is StatusTimeout; any other cancelled runCtx is a failure.
+// classifyCtx maps context state to a step status: an explicitly cancelled
+// parent (a Ctrl-C via signal.NotifyContext) is StatusCanceled; a hit
+// deadline is StatusTimeout — whether it is the executor's own per-manager
+// budget or an earlier caller-supplied deadline (a retry loop sharing one
+// budget across attempts relies on WithTimeout honoring the earlier parent
+// deadline); any other cancelled runCtx is a failure.
 func classifyCtx(runCtx, parent context.Context) orchestrate.StepStatus {
-	if parent.Err() != nil {
+	if errors.Is(parent.Err(), context.Canceled) {
 		return orchestrate.StatusCanceled
 	}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {

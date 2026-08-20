@@ -102,9 +102,9 @@ func TestRunManager_FailingCommandStopsChainAndReportsExit(t *testing.T) {
 }
 
 // TestRunManager_TimeoutKillsHungManager: a manager that sleeps far past its
-// per-manager timeout is killed (direct child) by exec.CommandContext and
-// reported as StatusTimeout, promptly. No process-tree guarantees are made or
-// tested — only the direct child.
+// per-manager timeout is killed and reported as StatusTimeout, promptly. (On
+// unix the kill covers the whole process group; that guarantee has its own
+// test in procgroup_unix_test.go.)
 func TestRunManager_TimeoutKillsHungManager(t *testing.T) {
 	skipOnWindows(t)
 	dir := t.TempDir()
@@ -126,6 +126,52 @@ func TestRunManager_TimeoutKillsHungManager(t *testing.T) {
 	}
 	if res.Err == nil {
 		t.Fatal("expected a timeout error")
+	}
+}
+
+func TestTimeoutFor_ResolutionOrder(t *testing.T) {
+	e := New(nil, nil)
+	if got := e.TimeoutFor("brew"); got != DefaultTimeout {
+		t.Fatalf("zero-value resolution = %s, want DefaultTimeout %s", got, DefaultTimeout)
+	}
+	e.Timeout = 5 * time.Minute
+	if got := e.TimeoutFor("brew"); got != 5*time.Minute {
+		t.Fatalf("executor-wide timeout = %s, want 5m", got)
+	}
+	e.Timeouts = map[string]time.Duration{"brew": 45 * time.Minute, "npm": 0}
+	if got := e.TimeoutFor("brew"); got != 45*time.Minute {
+		t.Fatalf("per-name override = %s, want 45m", got)
+	}
+	// A non-positive override is treated as unset and falls through.
+	if got := e.TimeoutFor("npm"); got != 5*time.Minute {
+		t.Fatalf("non-positive override = %s, want executor-wide 5m", got)
+	}
+	// Other names are untouched by the override map.
+	if got := e.TimeoutFor("uv"); got != 5*time.Minute {
+		t.Fatalf("unrelated manager = %s, want executor-wide 5m", got)
+	}
+}
+
+// TestRunManager_PerNameTimeoutOverride: a manager-specific timeout bounds
+// that manager alone — a hung brew with a 45m-style override dies on the
+// override, not on the executor-wide budget.
+func TestRunManager_PerNameTimeoutOverride(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	slow := writeScript(t, dir, "slow.sh", "#!/bin/sh\nexec sleep 30\n")
+
+	var out, errb lockedBuf
+	e := New(&out, &errb)
+	e.Timeout = 10 * time.Second // would let the sleep run far longer
+	e.Timeouts = map[string]time.Duration{"brew": 150 * time.Millisecond}
+
+	start := time.Now()
+	res := e.RunManager(context.Background(), "brew", [][]string{{slow}})
+	if res.Status != orchestrate.StatusTimeout {
+		t.Fatalf("status = %s, want timeout (err=%v)", res.Status, res.Err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("per-name override did not kill promptly: took %s", elapsed)
 	}
 }
 
@@ -185,5 +231,25 @@ func TestNew_NilWritersDoNotPanic(t *testing.T) {
 	e.Timeout = 5 * time.Second
 	if res := e.RunManager(context.Background(), "brew", [][]string{{ok}}); res.Status != orchestrate.StatusOK {
 		t.Fatalf("status = %s, want ok", res.Status)
+	}
+}
+
+// TestRunManager_SharedDeadlineClassifiedAsTimeout: when the caller supplies
+// the deadline (a retry loop sharing one budget across attempts), hitting it
+// is a timeout, not a cancellation — classifyCtx distinguishes the two.
+func TestRunManager_SharedDeadlineClassifiedAsTimeout(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	slow := writeScript(t, dir, "slow.sh", "#!/bin/sh\nexec sleep 30\n")
+
+	var out, errb lockedBuf
+	e := New(&out, &errb)
+	e.Timeout = time.Minute // the caller's earlier deadline fires first
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	res := e.RunManager(ctx, "brew", [][]string{{slow}})
+	if res.Status != orchestrate.StatusTimeout {
+		t.Fatalf("status = %s, want timeout for a caller-supplied deadline (err=%v)", res.Status, res.Err)
 	}
 }

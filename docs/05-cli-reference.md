@@ -101,7 +101,8 @@ A real upgrade re-checks inside the lock, then downloads and verifies the asset,
 ## `hukou up`
 
 ```text
-hukou up [--only <mgr>...] [--skip <mgr>...] [--json]
+hukou up [--only <mgr>...] [--skip <mgr>...] [--json] [--retry <n>]
+         [--timeout <dur>] [--manager-timeout <name>=<dur>...]
 hukou up --dry-run [--only <mgr>...] [--skip <mgr>...] [--json]
 hukou up history [--json]
 hukou up show [<id>] [--json]
@@ -116,6 +117,9 @@ real run persisted (see below).
 
 ### Real run semantics (U2)
 
+- The whole real run holds a cross-process lock (`<dataRoot>/up.lock`,
+  non-blocking): a second concurrent `hukou up` fails immediately. Dry-run
+  takes no lock.
 - Takes a pre-snapshot (the read-only PATH scan), runs each available manager's
   upgrade command in registry order, takes a post-snapshot, and prints a diff of
   every added / removed / changed binary grouped by source. A binary counts as
@@ -123,16 +127,34 @@ real run persisted (see below).
 - Every external manager subprocess is launched through a single constrained
   executor package (`internal/orchestrate/executor`) — the only place in the
   codebase that runs a manager subprocess. Output streams through with a `[name]`
-  prefix; each manager has a per-manager timeout (default 15m). Execution is
-  deliberately plain: each command is `exec.CommandContext` with no process
-  group, so the manager stays in hukou's foreground process group and a terminal
-  Ctrl-C reaches it directly. A timed-out manager is marked `timeout`;
-  interrupt handling is described below.
-  - **Known limitation:** a timeout or interrupt kills only the manager's
-    **direct child**. If a manager spawns a detached grandchild (a backgrounded
-    daemon, say), that grandchild can be left running — exactly as it would if
-    you ran the manager's upgrade command directly in your shell. hukou does not
-    chase the process tree.
+  prefix; each manager has a per-manager timeout (default 15m) configurable via
+  `--timeout <duration>`, the `HUKOU_UP_TIMEOUT` environment variable (the flag
+  wins), or per manager with the repeatable `--manager-timeout <name>=<duration>`
+  (unknown names and the internal `hukou` step are rejected; the dry-run plan
+  shows the effective timeout per manager). A timed-out manager is marked
+  `timeout` and is never retried; with `--retry`, all attempts of one manager
+  share a single timeout budget (a retry restarts the work, not the clock).
+  Interrupt handling is described below.
+  - **Process model (unix):** each manager command runs in its own process
+    group (`Setpgid`). A timeout or interrupt terminates the whole group —
+    SIGTERM first, SIGKILL after a 2s grace — so a grandchild the manager
+    spawned (brew's `curl`, say) is killed with it instead of orphaned. On
+    non-unix platforms only the direct child is killed.
+  - **Proxy inheritance:** when the environment has no explicit
+    `HTTPS_PROXY`/`https_proxy`, the executor injects the OS system proxy
+    (where the platform reports one, currently macOS) as `HTTP_PROXY`,
+    `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms, preserving any
+    `NO_PROXY`. `HUKOU_UP_NO_PROXY_INHERIT=1` disables this; injection is
+    announced on stderr with the proxy's host:port only (never credentials).
+  - **Environment allowlist:** manager subprocesses do NOT inherit the full
+    parent environment (it may carry `GITHUB_TOKEN`, `AWS_*` and other
+    secrets that brew formulas or npm lifecycle scripts must never see). Only
+    an allowlist passes: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
+    `TMPDIR`/`TEMP`/`TMP`, `LANG`, `TERM`, `COLORTERM`, `CI`, `XDG_*`,
+    `LC_*`, `HOMEBREW_*`, `NO_PROXY`/`no_proxy`, and the proxy variables.
+    `HUKOU_UP_ENV_PASSTHRU=FOO,BAR` passes additional named variables;
+    `HUKOU_UP_ENV_PASSTHRU=*` restores full inheritance (announced on
+    stderr).
 - A failing manager is reported and does **not** stop the rest; the report is
   still printed. An interrupt (SIGINT/Ctrl-C, or SIGTERM on unix) stops the run:
   no further manager — external or the internal `hukou` step — is launched (the
@@ -144,16 +166,23 @@ real run persisted (see below).
   - **Known limitation:** the internal `hukou` step is an in-process, fast,
     WAL-transaction-protected operation, so an interrupt cannot break into it
     mid-flight — cancellation is observed only at its boundaries: before it
-    starts (it is skipped and recorded `canceled`) or after it returns (a
+    starts (it is skipped and recorded `canceled`), at its per-tool
+    boundaries (its own soft budget, same magnitude as an external manager's
+    timeout, skips the remaining tools), or after it returns (a
     successful `ok` result is reclassified `canceled`; a `failed` result is
     left as-is) so an interrupted run can never report ok / exit 0. This is an
     intentional minimal semantic, unlike long-running
-    external managers, whose direct child is killed on timeout/cancel.
+    external managers, whose process group is terminated on timeout/cancel
+    (unix; direct child only elsewhere).
 - The snapshot pair, diff, and manager results are persisted under
   `<dataRoot>/snapshots/<RFC3339>/` as `pre.json`, `post.json`, `diff.json`, and
   `run.json`, written atomically (staged in a temp directory, then renamed into
   place) and pruned to the most recent 10 runs (the run just written is never
-  pruned). `run.json` (`{"schema_version": 1, "time": "<RFC3339>", "managers":
+  pruned, and only hukou-generated RFC3339 stamp directories participate —
+  directories archived into `snapshots/` by hand are neither counted nor
+  deleted; abandoned `.tmp-snap-*` staging dirs older than 24h are cleaned in
+  passing). A prune failure after a successful persist is a stderr warning,
+  not a persistence failure. `run.json` (`{"schema_version": 1, "time": "<RFC3339>", "managers":
   [{name, status, duration, exit}...]}`) is what lets `up history`/`up show`
   re-render a past run after the terminal has scrolled. A
   failure to persist this history is NOT silent: it is printed to stderr,
@@ -465,6 +494,11 @@ hukou import <FILE> [--dry-run] [--force] [--only name,...] [--json]
 - Already-adopted tools are skipped with a warning; local entries are skipped
   with a warning; a missing executable is a per-tool error. The exported
   update policy is re-applied when it differs from the adopt default.
+- The exported `sha256` is verified against the actual binary on PATH: on
+  mismatch (common version skew, or a malicious list claiming e.g. `v999.0.0`
+  to freeze upgrades) import prints a warning with both hashes and records
+  the ACTUAL version — the Go build info version when the binary carries one,
+  otherwise the neutral tag `imported` — never the list's tag.
 - `--dry-run` prints the whole plan and writes nothing. `--only` restricts the
   run to the named tools. `--json` emits a stable report envelope.
 - The exit status is non-zero when any tool fails.

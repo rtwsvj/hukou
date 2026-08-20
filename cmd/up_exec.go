@@ -15,11 +15,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/orchestrate"
 	"github.com/rtwsvj/hukou/internal/orchestrate/executor"
 	"github.com/rtwsvj/hukou/internal/output"
+	"github.com/rtwsvj/hukou/internal/state"
 	"github.com/rtwsvj/hukou/internal/verify"
 )
 
@@ -43,15 +45,93 @@ var errRunCanceled = i18n.Errorf("run canceled by signal")
 // package var so a test can drive the REAL cobra dry-run dispatch with a
 // fatal-on-call fake and prove the dry-run path never constructs or calls it
 // (see cmd/up_dispatch_guard_test.go,
-// TestDryRunDispatchNeverConstructsOrCallsExecutor).
-var newStepExecutor = func(streamOut, stderr io.Writer) orchestrate.StepExecutor {
-	return executor.New(streamOut, stderr)
+// TestDryRunDispatchNeverConstructsOrCallsExecutor). timeout and timeouts are
+// the already-resolved upOptions values (0 = executor default).
+var newStepExecutor = func(streamOut, stderr io.Writer, timeout time.Duration, timeouts map[string]time.Duration) orchestrate.StepExecutor {
+	e := executor.New(streamOut, stderr)
+	e.Timeout = timeout
+	e.Timeouts = timeouts
+	return e
+}
+
+// resolveUpTimeout resolves the base per-manager timeout for `up`: an explicit
+// --timeout flag wins, then the HUKOU_UP_TIMEOUT environment variable; 0 means
+// "unset", which the entry points normalize to the executor default. An
+// explicit but invalid value is an error — a mistyped duration must never
+// silently fall back to the default.
+func resolveUpTimeout(flag time.Duration, getenv func(string) string) (time.Duration, error) {
+	if flag != 0 {
+		if flag < 0 {
+			return 0, i18n.Errorf("--timeout must be positive, got %s", flag)
+		}
+		return flag, nil
+	}
+	if v := getenv("HUKOU_UP_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return 0, i18n.Errorf("invalid HUKOU_UP_TIMEOUT %q: must be a positive duration (e.g. 30m)", v)
+		}
+		return d, nil
+	}
+	return 0, nil
+}
+
+// parseManagerTimeouts parses the repeatable --manager-timeout name=duration
+// flag into a per-manager override map. Names are validated against the
+// registry so a typo errors out instead of silently matching nothing; the
+// internal hukou step is rejected because it never runs through the executor.
+func parseManagerTimeouts(entries []string) (map[string]time.Duration, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	known := make(map[string]bool) // registry name → internal?
+	for _, m := range orchestrate.Registry() {
+		known[m.Name] = m.Internal
+	}
+	out := make(map[string]time.Duration, len(entries))
+	for _, entry := range entries {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name == "" || value == "" {
+			return nil, i18n.Errorf("invalid --manager-timeout %q: want name=duration (e.g. brew=45m)", entry)
+		}
+		internal, exists := known[name]
+		if !exists {
+			return nil, &orchestrate.UnknownManagerError{Name: name}
+		}
+		if internal {
+			return nil, i18n.Errorf("--manager-timeout does not apply to the internal %s step", name)
+		}
+		d, err := time.ParseDuration(value)
+		if err != nil || d <= 0 {
+			return nil, i18n.Errorf("invalid --manager-timeout %q: must be a positive duration (e.g. 45m)", entry)
+		}
+		out[name] = d
+	}
+	return out, nil
+}
+
+// effectiveTimeout resolves the timeout one manager will actually run under:
+// its per-name override, else the base timeout, else the executor default. It
+// lives here (not in up_plan.go) so the plan path never imports the executor
+// package, while the dry-run table can still show the enforced value.
+func effectiveTimeout(opts upOptions, name string) time.Duration {
+	if d, ok := opts.managerTimeouts[name]; ok && d > 0 {
+		return d
+	}
+	if opts.timeout > 0 {
+		return opts.timeout
+	}
+	return executor.DefaultTimeout
 }
 
 // snapshotRetention is how many past snapshot runs are kept under
 // <dataRoot>/snapshots; older runs are pruned after each real run (never the
 // run just written).
 const snapshotRetention = 10
+
+// tmpSnapStaleAge is how old a .tmp-snap-* staging directory must be before
+// pruneSnapshots treats it as abandoned crash residue and removes it.
+const tmpSnapStaleAge = 24 * time.Hour
 
 // upDeps are the injectable seams of the real `up` run. Every side-effecting
 // capability is a field so tests can drive the whole flow with a fake PATH, a
@@ -65,8 +145,8 @@ type upDeps struct {
 	exec orchestrate.StepExecutor
 	// hukouStep runs the internal, in-process `upgrade --all` (holds the normal
 	// mutation lock for its own duration; no lock is held while external
-	// managers run).
-	hukouStep func(stdout, stderr io.Writer) error
+	// managers run). The ctx carries the step's soft budget.
+	hukouStep func(ctx context.Context, stdout, stderr io.Writer) error
 	// hasher content-hashes a binary path for snapshot diffing ("" on failure).
 	hasher func(path string) string
 	// now stamps the snapshot history directory.
@@ -87,25 +167,28 @@ func runUpExecute(stdout, stderr io.Writer, opts upOptions) error {
 	if opts.json {
 		streamOut = stderr
 	}
-	return doUpExecute(stdout, stderr, opts, productionUpDeps(streamOut, stderr))
+	return doUpExecute(stdout, stderr, opts, productionUpDeps(streamOut, stderr, opts))
 }
 
 // productionUpDeps wires the real seams: the shared read-only inventory, the
-// constrained subprocess executor (streaming to streamOut/stderr), the
-// in-process hukou upgrade step, real content hashing, and the real data root.
-func productionUpDeps(streamOut, stderr io.Writer) upDeps {
+// constrained subprocess executor (streaming to streamOut/stderr, with the
+// resolved timeout policy), the in-process hukou upgrade step, real content
+// hashing, and the real data root.
+func productionUpDeps(streamOut, stderr io.Writer, opts upOptions) upDeps {
 	return upDeps{
 		lookPath:  nil,
 		inventory: defaultInventory,
-		exec:      newStepExecutor(streamOut, stderr),
+		exec:      newStepExecutor(streamOut, stderr, opts.timeout, opts.managerTimeouts),
 		hukouStep: defaultHukouStep,
 		hasher:    hashFile,
 		now:       time.Now,
 		dataRoot:  dataRoot,
 		baseContext: func() (context.Context, context.CancelFunc) {
-			// Managers stay in hukou's foreground process group, so a terminal
-			// Ctrl-C reaches them directly; this context cancel is the second,
-			// portable half that also stops the loop and the internal hukou step.
+			// On unix each manager runs in its OWN process group, so a terminal
+			// Ctrl-C no longer reaches it via the tty; this NotifyContext cancel
+			// is what delivers the interrupt, and the executor's Cancel hook then
+			// terminates the manager's whole group. The same cancel also stops
+			// the manager loop and the internal hukou step.
 			return signal.NotifyContext(context.Background(), interruptSignals()...)
 		},
 	}
@@ -113,10 +196,11 @@ func productionUpDeps(streamOut, stderr io.Writer) upDeps {
 
 // defaultHukouStep runs hukou's own adopted-tool upgrade in-process (the same
 // path as `hukou upgrade --all`), which acquires the normal mutation lock only
-// for its own duration.
-func defaultHukouStep(stdout, stderr io.Writer) error {
+// for its own duration. ctx carries the step's soft budget, checked at tool
+// boundaries inside doUpgradeCtx.
+func defaultHukouStep(ctx context.Context, stdout, stderr io.Writer) error {
 	client := ghrelease.New(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
-	return doUpgrade(stdout, stderr, nil, true, false, "", client, false)
+	return doUpgradeCtx(ctx, stdout, stderr, nil, true, false, "", client, false)
 }
 
 // hashFile returns the SHA-256 of path, or "" when the file cannot be read (an
@@ -136,13 +220,29 @@ func hashFile(path string) string {
 // available manager in registry order, post-snapshot, diff, persist history,
 // report, and aggregate the exit status. In --json mode all live output
 // (manager streams and the internal hukou step) goes to stderr; stdout carries
-// only the final JSON document.
+// only the final JSON document. The whole run holds the cross-process up lock
+// (dry-run takes none — see doUpPlan).
 func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 	managers, err := orchestrate.Filter(orchestrate.Registry(), opts.only, opts.skip)
 	if err != nil {
 		return fail(err)
 	}
 	detected := orchestrate.Detect(managers, deps.lookPath)
+
+	// Lock ordering is unidirectional: up.lock first, the internal hukou
+	// step's state.lock (acquireMutationLock) later and strictly nested, so
+	// the two locks can never deadlock. The lock is taken only after flag
+	// validation and detection, so `up --only typo` errors without creating
+	// the data root or the lock file.
+	upLock, err := acquireUpLock(deps.dataRoot())
+	if err != nil {
+		return fail(err)
+	}
+	defer func() {
+		if err := upLock.Release(); err != nil {
+			fmt.Fprintf(stderr, "warning: failed to release the hukou up lock: %v\n", err)
+		}
+	}()
 
 	streamOut := stdout
 	if opts.json {
@@ -187,14 +287,16 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 		}
 		var res orchestrate.StepResult
 		if d.Internal {
-			res = runInternalHukou(streamOut, stderr, deps.hukouStep)
+			res = runInternalHukou(ctx, streamOut, stderr, deps.hukouStep, effectiveTimeout(opts, d.Name))
 			// Known limitation, deliberate (docs/05, spec): the internal hukou
 			// step is an in-process, WAL-protected batch that cannot be safely
 			// interrupted mid-transaction, so cancellation is observed only at
-			// its boundaries — before it starts (the loop check above) and here,
-			// after it returns. If the run was canceled while it ran, an "ok"
-			// result is reclassified as canceled so the run can never report
-			// success / exit 0 after an interrupt.
+			// its boundaries — before it starts (the loop check above), at its
+			// per-tool boundaries (its own soft budget, enforced inside
+			// doUpgradeCtx), and here, after it returns. If the run was
+			// canceled while it ran, an "ok" result is reclassified as
+			// canceled so the run can never report success / exit 0 after an
+			// interrupt.
 			if ctx.Err() != nil && res.Status == orchestrate.StatusOK {
 				res.Status = orchestrate.StatusCanceled
 				res.Err = ctx.Err()
@@ -203,12 +305,17 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 			// Retry policy: an external manager failure is retried up to
 			// --retry times while the run context is still live; the internal
 			// in-process step is deliberately never retried (its WAL semantics
-			// make an immediate re-run deterministic, not corrective).
-			res = deps.exec.RunManager(ctx, d.Name, d.Commands)
-			for attempt := 1; attempt <= opts.retries && !res.OK() && ctx.Err() == nil; attempt++ {
+			// make an immediate re-run deterministic, not corrective). All
+			// attempts of one manager share ONE timeout budget (mgrCtx): a
+			// retry restarts the work, not the clock, and a manager that hit
+			// its timeout is never retried.
+			mgrCtx, mgrCancel := context.WithTimeout(ctx, effectiveTimeout(opts, d.Name))
+			res = deps.exec.RunManager(mgrCtx, d.Name, d.Commands)
+			for attempt := 1; attempt <= opts.retries && !res.OK() && res.Status != orchestrate.StatusTimeout && mgrCtx.Err() == nil; attempt++ {
 				fmt.Fprintf(stderr, "%s\n", i18n.T("   retry %d/%d for %s", attempt, opts.retries, d.Name))
-				res = deps.exec.RunManager(ctx, d.Name, d.Commands)
+				res = deps.exec.RunManager(mgrCtx, d.Name, d.Commands)
 			}
+			mgrCancel()
 		}
 		switch {
 		case res.Status == orchestrate.StatusCanceled:
@@ -237,7 +344,7 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 	snapDir, snapErr := persistSnapshotHistory(deps.dataRoot(), deps.now(),
 		upSnapshot{Time: stamp, Report: preReport, Items: preItems},
 		upSnapshot{Time: stamp, Report: postReport, Items: postItems},
-		diff, results)
+		diff, results, stderr)
 	if snapErr != nil {
 		// The failure is surfaced three ways: immediately on stderr, in the
 		// report's snapshot field, and in the aggregate (non-zero) exit below.
@@ -255,15 +362,44 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 	return aggregateExit(stderr, results, snapErr)
 }
 
+// acquireUpLock takes the cross-process `hukou up` lock (non-blocking): a
+// second concurrent up run fails immediately instead of interleaving manager
+// upgrades and snapshot history with the first. Dry-run never comes here.
+func acquireUpLock(root string) (*state.Lock, error) {
+	if err := durablefs.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(root, "up.lock")
+	lock, err := state.Acquire(lockPath)
+	if err != nil {
+		if errors.Is(err, state.ErrLocked) {
+			return nil, i18n.Errorf("another `hukou up` is already running (lock: %s)", lockPath)
+		}
+		return nil, err
+	}
+	return lock, nil
+}
+
 // runInternalHukou runs the in-process hukou upgrade step and captures it as a
-// StepResult so it joins the aggregate report and exit policy like any manager.
-func runInternalHukou(stdout, stderr io.Writer, step func(stdout, stderr io.Writer) error) orchestrate.StepResult {
+// StepResult so it joins the aggregate report and exit policy like any
+// manager. The step gets its own soft budget (same magnitude as an external
+// manager's timeout): enforcement happens only at tool boundaries inside
+// doUpgradeCtx — a running tool's WAL transaction is never interrupted — so
+// an expired budget shows up here as a canceled result, mirroring the
+// parent-cancel reclassification in doUpExecute.
+func runInternalHukou(ctx context.Context, stdout, stderr io.Writer, step func(ctx context.Context, stdout, stderr io.Writer) error, budget time.Duration) orchestrate.StepResult {
+	stepCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	start := time.Now()
 	res := orchestrate.StepResult{Name: "hukou", Status: orchestrate.StatusOK}
-	if err := step(stdout, stderr); err != nil {
+	if err := step(stepCtx, stdout, stderr); err != nil {
 		res.Status = orchestrate.StatusFailed
 		res.Err = err
 		res.ExitCode = 1
+	}
+	if stepCtx.Err() != nil && res.Status == orchestrate.StatusOK {
+		res.Status = orchestrate.StatusCanceled
+		res.Err = stepCtx.Err()
 	}
 	res.Duration = time.Since(start)
 	return res
@@ -333,8 +469,10 @@ type upSnapshot struct {
 // runs — never deleting the run just written. It returns the final directory.
 // run.json (the manager results plus the run's stamp) joins the same atomic
 // stage so `up history`/`up show` can re-render what a run did after the
-// terminal has scrolled; results may be nil for a run with no managers.
-func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, diff orchestrate.Diff, results []orchestrate.StepResult) (string, error) {
+// terminal has scrolled; results may be nil for a run with no managers. A
+// prune failure after a successful persist is housekeeping, not a persistence
+// failure: it is a stderr warning, never the returned error.
+func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, diff orchestrate.Diff, results []orchestrate.StepResult, stderr io.Writer) (string, error) {
 	snapsDir := filepath.Join(root, "snapshots")
 	if err := os.MkdirAll(snapsDir, 0o755); err != nil {
 		return "", err
@@ -380,7 +518,9 @@ func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, di
 	}
 
 	if err := pruneSnapshots(snapsDir, filepath.Base(finalDir), snapshotRetention); err != nil {
-		return finalDir, err
+		// The snapshot itself landed; a prune failure downgrades to a warning
+		// and must not poison the run's exit status (aggregateExit's snapErr).
+		fmt.Fprintf(stderr, "%s\n", i18n.T("warning: failed to prune old snapshots: %v", err))
 	}
 	return finalDir, nil
 }
@@ -388,6 +528,10 @@ func persistSnapshotHistory(root string, now time.Time, pre, post upSnapshot, di
 // pruneSnapshots keeps the newest `keep` snapshot directories (RFC3339 names
 // sort chronologically) and removes the rest, never removing keepBase (the run
 // just written) and ignoring in-progress .tmp-snap-* staging directories.
+// Only hukou-generated stamp directories participate: a foreign directory
+// archived into snapshots/ by hand is never counted or deleted. Staging
+// directories older than tmpSnapStaleAge are abandoned crash residue and are
+// cleaned up here in passing.
 func pruneSnapshots(snapsDir, keepBase string, keep int) error {
 	entries, err := os.ReadDir(snapsDir)
 	if err != nil {
@@ -395,7 +539,22 @@ func pruneSnapshots(snapsDir, keepBase string, keep int) error {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".tmp-snap-") {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".tmp-snap-") {
+			// A staging dir that outlived its writer is residue; a fresh one
+			// may belong to a persist in flight (impossible under the up
+			// lock, but the 24h margin makes the race theoretical anyway).
+			info, statErr := e.Info()
+			if statErr == nil && time.Since(info.ModTime()) > tmpSnapStaleAge {
+				if err := os.RemoveAll(filepath.Join(snapsDir, e.Name())); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !isSnapshotStampDir(e.Name()) {
 			continue
 		}
 		names = append(names, e.Name())
@@ -413,6 +572,30 @@ func pruneSnapshots(snapsDir, keepBase string, keep int) error {
 		}
 	}
 	return nil
+}
+
+// isSnapshotStampDir reports whether name is a hukou-generated snapshot
+// directory name: an RFC3339 UTC stamp, optionally with the -N collision
+// suffix persistSnapshotHistory appends on a same-second clash.
+func isSnapshotStampDir(name string) bool {
+	base := name
+	if i := strings.LastIndexByte(name, '-'); i >= 0 && isDigits(name[i+1:]) {
+		base = name[:i]
+	}
+	_, err := time.Parse(time.RFC3339, base)
+	return err == nil
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // writeJSONFile writes v as house-style indented JSON to path.

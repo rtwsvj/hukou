@@ -119,9 +119,13 @@ command in registry order (a failing manager is reported and does not stop the
 rest), takes a second snapshot, and prints a diff of every added, removed, or
 changed binary grouped by source. The snapshot pair and diff are persisted under
 <dataRoot>/snapshots/<timestamp>/. Every manager subprocess is launched through
-a single constrained executor with streamed output and a per-manager timeout;
-timeout or Ctrl-C kills the manager's direct child (a detached grandchild it
-spawned may linger, as it would in a shell). hukou never mutates another
+a single constrained executor with streamed output and a per-manager timeout
+(default 15m; set it globally with --timeout or HUKOU_UP_TIMEOUT, or per manager
+with --manager-timeout name=duration). On unix a timeout or Ctrl-C terminates
+the manager's whole process group (SIGTERM, then SIGKILL after a grace period);
+on other platforms only the direct child is killed. A manager inherits the OS
+system proxy when the environment does not already configure one
+(HUKOU_UP_NO_PROXY_INHERIT=1 opts out). hukou never mutates another
 manager's state beyond invoking its upgrade command. The exit status is non-zero
 if any manager fails, the run is interrupted, or the snapshot history cannot be
 persisted. With --json, stdout carries only the final JSON document; all
@@ -132,7 +136,7 @@ a real run persisted, including each run's diff and rollback hints.`: `升级本
 
 dry-run（--dry-run）检测 PATH 上存在的管理器，打印将要执行的命令与只读盘点摘要，并保证零写入、零子进程。
 
-真实运行先做整机盘点快照，按注册表顺序执行每个管理器的升级命令（某个失败会被报告但不会中断其余），再做第二次快照，并按来源分组打印所有新增、移除、变化程序的差异。快照对与差异保存在 <数据目录>/snapshots/<时间戳>/ 下。每个管理器子进程都经由同一个受限执行器启动，输出流式转发，并有单管理器超时；超时或 Ctrl-C 只杀掉直接子进程（其脱离的孙进程可能残留，与在 shell 里直接运行一致）。hukou 除调用各管理器自己的升级命令外，绝不改动其状态。任一管理器失败、运行被中断、或快照历史无法持久化时，退出码非零。--json 时 stdout 只承载最终 JSON 文档，流式管理器输出全部走 stderr。
+真实运行先做整机盘点快照，按注册表顺序执行每个管理器的升级命令（某个失败会被报告但不会中断其余），再做第二次快照，并按来源分组打印所有新增、移除、变化程序的差异。快照对与差异保存在 <数据目录>/snapshots/<时间戳>/ 下。每个管理器子进程都经由同一个受限执行器启动，输出流式转发，并有单管理器超时（默认 15m；可用 --timeout 或 HUKOU_UP_TIMEOUT 全局设置，或用 --manager-timeout 名称=时长 按管理器覆盖）。在 unix 上，超时或 Ctrl-C 会终止该管理器的整个进程组（先 SIGTERM，宽限期后 SIGKILL）；其他平台只杀直接子进程。环境中没有显式代理配置时，管理器子进程会继承操作系统级系统代理（HUKOU_UP_NO_PROXY_INHERIT=1 可关闭）。hukou 除调用各管理器自己的升级命令外，绝不改动其状态。任一管理器失败、运行被中断、或快照历史无法持久化时，退出码非零。--json 时 stdout 只承载最终 JSON 文档，流式管理器输出全部走 stderr。
 
 只读的 "up history" 与 "up show" 子命令列出并重新展示真实运行保存的记录，包括每次的差异与回滚提示。`,
 	`List the up runs persisted under <dataRoot>/snapshots, newest first.
@@ -284,8 +288,9 @@ errors and always exit non-zero after the report is written.`: `receipt 从本�
 	"sha256 rollback source: %w":                                                                                                   "计算回滚来源指纹：%w",
 	"prepare rollback activation: %w":                                                                                              "准备回滚激活：%w",
 	"rollback source SHA-256 does not match activation history: got %s want %s":                                                    "回滚来源指纹与激活历史不符：实际 %s，应为 %s",
-	"encode rollback manifest: %w":                                                                                                 "编码回滚账本：%w",
-	"prepare rollback transaction: %w":                                                                                             "准备回滚事务：%w",
+	"original backup SHA-256 does not match the adoption anchor: got %s want %s; the store may have been tampered with, run `hukou doctor`": "原始备份指纹与收编锚点不符：实际 %s，应为 %s；仓库可能被篡改，请运行 `hukou doctor`",
+	"encode rollback manifest: %w":     "编码回滚账本：%w",
+	"prepare rollback transaction: %w": "准备回滚事务：%w",
 	"current file changed before activation or the target could not be activated; refusing overwrite: activate %s: %w": "激活前当前文件发生变化或目标无法激活；拒绝覆盖：激活 %s：%w",
 	"manifest changed during rollback; refusing overwrite: %w":                                                         "回滚期间账本发生变化；拒绝覆盖：%w",
 	"commit rollback transaction: %w":                                                                                  "提交回滚事务：%w",
@@ -394,6 +399,7 @@ errors and always exit non-zero after the report is written.`: `receipt 从本�
 	"managers detected (dry run):":                                                                                            "检测到的管理器（dry-run）：",
 	"SOURCE-BINARY":                                                                                                           "来源二进制",
 	"COMMANDS":                                                                                                                "命令",
+	"TIMEOUT":                                                                                                                 "超时",
 	"dry run: nothing was executed or written":                                                                                "dry-run：未执行、未写入任何内容",
 	"(none)": "（无）",
 
@@ -994,19 +1000,38 @@ you re-run adopt yourself with the repository you choose.`: `suggest 在 GitHub 
 	"highest eligible semantic version is already active": "已是最高的符合条件语义化版本",
 	"higher eligible semantic version is available":       "有更高的符合条件语义化版本可用",
 	// ---- up step trail (B4) ----
-	"retry each failed external manager this many times (default 0)": "每个失败的外部管理器重试次数（默认 0）",
-	"==> %s: skipped (not found on PATH)":                            "==> %s：跳过（PATH 上未找到）",
-	"run canceled before manager %s":                                 "运行在管理器 %s 前被取消",
-	"==> %s: in-process upgrade":                                     "==> %s：进程内升级",
-	"==> %s: %s":                                                     "==> %s：%s",
-	"   retry %d/%d for %s":                                          "   重试 %d/%d：%s",
-	"   canceled %s":                                                 "   已取消 %s",
-	"   ok %s (%s)":                                                  "   成功 %s（%s）",
-	"   FAILED %s (exit %d)":                                         "   失败 %s（退出码 %d）",
-	"manager %s %s: %v":                                              "管理器 %s %s：%v",
-	"error: failed to persist snapshot history: %v":                  "错误：快照历史持久化失败：%v",
-	"%d manager(s) failed: %s":                                       "%d 个管理器失败：%s",
-	"run canceled; not completed: %s":                                "运行已取消；未完成：%s",
+	"retry each failed external manager this many times (default 0)":                                 "每个失败的外部管理器重试次数（默认 0）",
+	"per-manager timeout for external managers (e.g. 30m); overrides HUKOU_UP_TIMEOUT (default 15m)": "外部管理器的单管理器超时（如 30m）；覆盖 HUKOU_UP_TIMEOUT（默认 15m）",
+	"override the timeout for one external manager, name=duration (repeatable, e.g. brew=45m)":       "按名覆盖某个外部管理器的超时，名称=时长（可重复，如 brew=45m）",
+	"--timeout must be positive, got %s":                                                             "--timeout 必须为正，当前为 %s",
+	"invalid HUKOU_UP_TIMEOUT %q: must be a positive duration (e.g. 30m)":                            "无效的 HUKOU_UP_TIMEOUT %q：必须为正时长（如 30m）",
+	"invalid --manager-timeout %q: want name=duration (e.g. brew=45m)":                               "无效的 --manager-timeout %q：应为 名称=时长（如 brew=45m）",
+	"invalid --manager-timeout %q: must be a positive duration (e.g. 45m)":                           "无效的 --manager-timeout %q：时长必须为正（如 45m）",
+	"--manager-timeout does not apply to the internal %s step":                                       "--manager-timeout 不适用于内部 %s 步骤",
+	"hash binary on PATH: %v":                          "PATH 上二进制哈希失败：%v",
+	"another `hukou up` is already running (lock: %s)": "另一个 `hukou up` 正在运行（锁：%s）",
+	"warning: failed to prune old snapshots: %v":       "警告：清理旧快照失败：%v",
+	"canceled %s (step budget expired)":                "已取消 %s（步骤时限已到）",
+	"cannot determine the hukou data directory: neither HOME nor XDG_DATA_HOME is set; set HUKOU_DATA_DIR explicitly": "无法确定 hukou 数据目录：HOME 与 XDG_DATA_HOME 均未设置；请显式设置 HUKOU_DATA_DIR",
+	"toolset list output path is not a regular file: %s":                                                              "工具集清单输出路径不是普通文件：%s",
+	"toolset list is not a regular file: %s":                                                                          "工具集清单不是普通文件：%s",
+	"toolset list exceeds the %d-byte limit: %s":                                                                      "工具集清单超过 %d 字节上限：%s",
+	"stat toolset list output path: %w":                                                                               "读取工具集清单输出路径状态失败：%w",
+	"stat toolset list: %w":                                                                                           "读取工具集清单状态失败：%w",
+	"%w (lock directory: %s; remove it manually if the owning process is gone)":                                       "%w（锁目录：%s；若属主进程已退出，请手动删除）",
+	"warning: %s: binary on PATH (sha256 %s) differs from the exported list (%s); recording actual version %q instead of tag %q": "警告：%s：PATH 上的二进制（sha256 %s）与导出清单（%s）不一致；改记实际版本 %q，而非清单标签 %q",
+	"==> %s: skipped (not found on PATH)":           "==> %s：跳过（PATH 上未找到）",
+	"run canceled before manager %s":                "运行在管理器 %s 前被取消",
+	"==> %s: in-process upgrade":                    "==> %s：进程内升级",
+	"==> %s: %s":                                    "==> %s：%s",
+	"   retry %d/%d for %s":                         "   重试 %d/%d：%s",
+	"   canceled %s":                                "   已取消 %s",
+	"   ok %s (%s)":                                 "   成功 %s（%s）",
+	"   FAILED %s (exit %d)":                        "   失败 %s（退出码 %d）",
+	"manager %s %s: %v":                             "管理器 %s %s：%v",
+	"error: failed to persist snapshot history: %v": "错误：快照历史持久化失败：%v",
+	"%d manager(s) failed: %s":                      "%d 个管理器失败：%s",
+	"run canceled; not completed: %s":               "运行已取消；未完成：%s",
 	"original backup does not match the adoption anchor (possible store tampering): got %s want %s": "原始备份与收编锚定指纹不符（版本库可能被篡改）：实际 %s，应为 %s",
 	"invalid adopted SHA-256": "收编锚定指纹无效",
 

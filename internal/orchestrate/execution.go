@@ -13,8 +13,8 @@ const (
 	StatusOK StepStatus = "ok"
 	// StatusFailed means a command exited non-zero (or could not start).
 	StatusFailed StepStatus = "failed"
-	// StatusTimeout means the manager exceeded its per-manager timeout and its
-	// direct child was killed.
+	// StatusTimeout means the manager exceeded its per-manager timeout and was
+	// killed (its whole process group on unix; the direct child elsewhere).
 	StatusTimeout StepStatus = "timeout"
 	// StatusCanceled means the run was interrupted (SIGINT/SIGTERM or a caller
 	// cancel) before or during this manager; subsequent managers do not run.

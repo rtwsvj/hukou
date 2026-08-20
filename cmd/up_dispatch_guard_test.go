@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rtwsvj/hukou/internal/orchestrate"
 )
@@ -37,7 +38,7 @@ func TestDryRunDispatchNeverConstructsOrCallsExecutor(t *testing.T) {
 
 	var constructed int32
 	origNew := newStepExecutor
-	newStepExecutor = func(streamOut, stderr io.Writer) orchestrate.StepExecutor {
+	newStepExecutor = func(streamOut, stderr io.Writer, timeout time.Duration, timeouts map[string]time.Duration) orchestrate.StepExecutor {
 		atomic.AddInt32(&constructed, 1)
 		return fatalExecutor{t}
 	}
@@ -46,8 +47,10 @@ func TestDryRunDispatchNeverConstructsOrCallsExecutor(t *testing.T) {
 	// Reset the package-level up flags cobra may have left set by other tests,
 	// and restore rootCmd's I/O afterwards.
 	upDryRun, upJSON, upOnly, upSkip = false, false, nil, nil
+	upRetry, upTimeout, upManagerTimeouts = 0, 0, nil
 	t.Cleanup(func() {
 		upDryRun, upJSON, upOnly, upSkip = false, false, nil, nil
+		upRetry, upTimeout, upManagerTimeouts = 0, 0, nil
 		rootCmd.SetArgs(nil)
 		rootCmd.SetOut(os.Stdout)
 		rootCmd.SetErr(os.Stderr)

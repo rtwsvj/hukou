@@ -46,7 +46,7 @@ func doUpPlan(stdout io.Writer, opts upOptions, lookPath orchestrate.LookPathFun
 	}
 	output.Summarize(&report)
 
-	rows := planRows(detected)
+	rows := planRows(detected, opts)
 	if opts.json {
 		return fail(plan.WriteJSON(stdout, rows, report.Summary))
 	}
@@ -54,17 +54,25 @@ func doUpPlan(stdout io.Writer, opts upOptions, lookPath orchestrate.LookPathFun
 }
 
 // planRows converts detection results into the plan package's own row type;
-// plan cannot import orchestrate (that would pull os/exec into its deps).
-func planRows(detected []orchestrate.Detected) []plan.ManagerRow {
+// plan cannot import orchestrate (that would pull os/exec into its deps). Each
+// external row also carries the timeout it would actually run under (resolved
+// in up_exec.go, the one file allowed to know the executor's default); the
+// internal hukou row gets none — it runs in-process, never through the
+// executor.
+func planRows(detected []orchestrate.Detected, opts upOptions) []plan.ManagerRow {
 	rows := make([]plan.ManagerRow, 0, len(detected))
 	for _, d := range detected {
-		rows = append(rows, plan.ManagerRow{
+		row := plan.ManagerRow{
 			Name:      d.Name,
 			Binary:    d.DetectBinary,
 			Commands:  d.Commands,
 			Available: d.Available,
 			Internal:  d.Internal,
-		})
+		}
+		if !d.Internal {
+			row.Timeout = effectiveTimeout(opts, d.Name).String()
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }

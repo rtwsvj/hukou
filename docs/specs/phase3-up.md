@@ -76,13 +76,16 @@ to that source.
   policy as `upgrade --all`; a failure to persist the snapshot history also
   makes the exit non-zero and is recorded in the report).
 - Subprocess output streams through with a `[mgr]` prefix; a per-manager
-  timeout (default 15m) kills a hung manager and marks it `timeout`. Execution
-  is plain and portable: `exec.CommandContext` with no process group, so the
-  manager stays in hukou's foreground group and a terminal Ctrl-C reaches it
-  directly. **Known limitation:** timeout/cancel kills only the direct child;
-  a detached grandchild a manager spawns may linger — the same outcome as
-  running that command directly in a shell. hukou does not chase the process
-  tree. In `--json` mode all streamed output is routed to stderr; stdout
+  timeout (default 15m; `--timeout` / `HUKOU_UP_TIMEOUT` globally,
+  `--manager-timeout <name>=<duration>` per manager) kills a hung manager and
+  marks it `timeout`. On unix each manager command runs in its own process
+  group (`Setpgid`): timeout/cancel terminates the whole group — SIGTERM,
+  then SIGKILL after a 2s grace — so a grandchild the manager spawned (e.g.
+  brew's `curl`) dies with it instead of being orphaned. On non-unix
+  platforms only the direct child is killed. When the environment has no
+  explicit proxy, the OS system proxy is injected into the child's
+  environment (`HUKOU_UP_NO_PROXY_INHERIT=1` opts out). In `--json` mode all
+  streamed output is routed to stderr; stdout
   carries only the final JSON document.
 - Interruption: the run's root context is a `signal.NotifyContext` (SIGINT,
   plus SIGTERM on unix); the manager loop checks `ctx.Err()` before each
@@ -94,9 +97,13 @@ to that source.
   observed only at its boundaries — skipped (and marked `canceled`) before it
   starts, or reclassified `canceled` after it returns if the run was canceled
   while it ran — never mid-flight. Intentional minimal semantics; external
-  managers, by contrast, have their direct child killed on cancel.
+  managers, by contrast, have their process group terminated on cancel
+  (unix; direct child only elsewhere).
 - `up` holds no hukou mutation lock while foreign managers run (they do not
-  touch hukou state); the internal hukou step uses the normal lock.
+  touch hukou state); the internal hukou step uses the normal lock. The whole
+  real run additionally holds a cross-process `<dataRoot>/up.lock`
+  (non-blocking): a concurrent second `hukou up` fails immediately; dry-run
+  takes no lock.
 - No network code in hukou itself beyond the existing ghrelease path; all
   foreign upgrades are the managers' own subprocesses.
 

@@ -380,7 +380,7 @@ func TestUpCommandRegistered(t *testing.T) {
 	if command != upCmd {
 		t.Fatalf("up command not registered: %v", command)
 	}
-	for _, flag := range []string{"dry-run", "json", "only", "skip"} {
+	for _, flag := range []string{"dry-run", "json", "only", "skip", "timeout", "manager-timeout"} {
 		if upCmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("up flag %q is not registered", flag)
 		}
