@@ -5,6 +5,80 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.4.0] — 2026-08-20
+
+Reliability and trust-boundary release, driven by an adversarial review round
+plus a real-world failure: on a slow network, `hukou up`'s brew step hit the
+hard 15-minute timeout, only the direct child was killed (orphaning brew's
+curl grandchild), and the machine's working system proxy never reached the
+subprocess.
+
+### Added
+
+- `hukou up --timeout <duration>` and the `HUKOU_UP_TIMEOUT` environment
+  variable set the base per-manager budget; the repeatable
+  `--manager-timeout <name>=<duration>` overrides it per manager (unknown
+  names are rejected), and the dry-run plan shows each manager's effective
+  timeout.
+- Manager subprocesses inherit the OS system proxy when the environment does
+  not configure one (macOS SystemConfiguration, falling back to the standard
+  proxy environment variables elsewhere); injection is announced on stderr
+  with host:port only (never credentials), and `HUKOU_UP_NO_PROXY_INHERIT=1`
+  opts out.
+- `hukou up` real runs hold a cross-process lock (`<dataRoot>/up.lock`), so a
+  concurrent run fails immediately instead of interleaving upgrades and
+  snapshot history.
+
+### Changed
+
+- Manager subprocesses run with an allowlisted environment (PATH, HOME,
+  toolchain/locale variables, `HOMEBREW_*`, proxy variables) instead of the
+  full parent environment, so secrets like `GITHUB_TOKEN` or `AWS_*` cannot
+  leak into brew formulas or npm lifecycle scripts;
+  `HUKOU_UP_ENV_PASSTHRU=FOO,BAR` (or `*`) is the escape hatch.
+- On unix, a timeout or Ctrl-C terminates the manager's whole process group
+  (SIGTERM, then SIGKILL after a grace period), so grandchildren such as
+  brew's curl die with the manager instead of being orphaned.
+- Retries of a failed manager share one timeout budget (a retry restarts the
+  work, not the clock), and a timed-out manager is never retried.
+- Slow-download detection measures a 10-second sliding window instead of a
+  whole-attempt average, catching fast-then-stalled connections.
+- Archive extraction normalizes file modes to 0755; archive mode bits are no
+  longer trusted.
+- The internal hukou step in `hukou up` has an overall soft budget enforced
+  at tool boundaries (never mid-transaction).
+- Snapshot pruning only touches hukou-generated timestamped directories (user
+  archives inside `snapshots/` are safe), cleans day-old abandoned staging
+  directories, and a prune failure after a successful persist is a warning,
+  not a run failure.
+
+### Fixed
+
+- `rollback --to original` verifies the original backup against the
+  adopt-time `adopted_sha256` anchor and fails closed on tampering.
+- Transaction recovery is no longer wedged by stray `pending-*`/`.building-*`
+  non-directory entries; they are quarantined like other unknown entries.
+- `hukou import` warns and records the actual binary version when the PATH
+  binary's hash differs from the export list, so a stale or malicious list
+  can no longer pin a fake tag that freezes upgrades.
+- GitHub 403 responses with a `Retry-After` header (secondary rate limit)
+  are retried like 429.
+- Errors involving signed CDN download URLs no longer leak query-string
+  credentials (`X-Amz-Signature` et al.) into messages or logs.
+- Hashing and kind detection open files non-blockingly (unix): a FIFO
+  swapped in after a stat now fails closed instead of hanging the scan,
+  verify, store, or transaction layer.
+- The npm wrapper forwards a child's signal death correctly: a SIGTERM'd
+  child now exits the wrapper as 143 (and Ctrl-C forwarding as 130), not 0.
+
+### Security
+
+- Terminal-escape sanitization for GitHub-API-controlled text (release
+  notes, `suggest` output, and server error bodies): ANSI/OSC sequences can
+  no longer spoof trusted output or reach the clipboard via OSC 52.
+- The npm wrapper signal fix above also closes a trust-signal confusion
+  where a signal-killed child reported success to the calling process.
+
 ## [v0.3.0] — 2026-08-16
 
 First public release. The repository is public, the release is published on

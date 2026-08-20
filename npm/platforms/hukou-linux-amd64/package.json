@@ -1,6 +1,6 @@
 {
   "name": "hukou-linux-amd64",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "hukou platform binary for linux/amd64",
   "license": "Apache-2.0",
   "repository": {

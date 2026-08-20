@@ -38,11 +38,11 @@ extract_bin() {
 }
 
 for p in "${platforms[@]}"; do
-  archive="hukou_0.3.0_${p/-/_}.tar.gz"
+  archive="hukou_0.4.0_${p/-/_}.tar.gz"
   [ -f "dist/$archive" ] || { echo "npm/build.sh: missing dist/$archive" >&2; exit 1; }
   pkg="npm/platforms/hukou-$p"
   rm -rf "$pkg/bin" "$pkg/LICENSE"
-  extract_bin "dist/$archive" "$pkg/bin" "hukou_0.3.0_${p/-/_}/hukou"
+  extract_bin "dist/$archive" "$pkg/bin" "hukou_0.4.0_${p/-/_}/hukou"
   cp LICENSE "$pkg/LICENSE"
   chmod 0755 "$pkg/bin/hukou"
   echo "assembled $pkg"
