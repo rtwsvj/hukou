@@ -2,32 +2,32 @@
 #
 # Live in the rtwsvj/hukou tap (brew tap rtwsvj/hukou) and submitted to
 # homebrew/homebrew-core (PR #299130). The four sha256 values are the
-# published v0.3.0 release checksums.
+# published v0.4.0 release checksums.
 class Hukou < Formula
   desc "Adopt, upgrade, and roll back CLI tools no package manager owns"
   homepage "https://github.com/rtwsvj/hukou"
-  version "0.3.0"
+  version "0.4.0"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/rtwsvj/hukou/releases/download/v0.3.0/hukou_0.3.0_darwin_arm64.tar.gz"
-      sha256 "c121c3b0d773a388b2998206ee748a8bb79f3fad59385408507131ecd7cb2a69"
+      url "https://github.com/rtwsvj/hukou/releases/download/v0.4.0/hukou_0.4.0_darwin_arm64.tar.gz"
+      sha256 "ba3515519f820f57c24d175f085461f918ae8480adfa6539a036ac10b7301f53"
     end
     on_intel do
-      url "https://github.com/rtwsvj/hukou/releases/download/v0.3.0/hukou_0.3.0_darwin_amd64.tar.gz"
-      sha256 "33ac3d08562145611abe57cd568dd651c0ed9417e5efcd4021fac8a1733af660"
+      url "https://github.com/rtwsvj/hukou/releases/download/v0.4.0/hukou_0.4.0_darwin_amd64.tar.gz"
+      sha256 "f2444a03cda155be1fe34d87c2bd54a21eceb8b8d48cb3f644e2384e194e5c4e"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/rtwsvj/hukou/releases/download/v0.3.0/hukou_0.3.0_linux_arm64.tar.gz"
-      sha256 "53d5de46d2e554dba7d07273bcb7f39f6ddacfc0eb977333be50c8baa7846019"
+      url "https://github.com/rtwsvj/hukou/releases/download/v0.4.0/hukou_0.4.0_linux_arm64.tar.gz"
+      sha256 "dd1f1fa9eea055b8d19644cee3cf6c67c3e0cf675677a36ce7d052473b14edaf"
     end
     on_intel do
-      url "https://github.com/rtwsvj/hukou/releases/download/v0.3.0/hukou_0.3.0_linux_amd64.tar.gz"
-      sha256 "510fd70e2a16b4ab7c1a8dd8d20ff7fc7455b759a63c37f6062ab6f16d8eb887"
+      url "https://github.com/rtwsvj/hukou/releases/download/v0.4.0/hukou_0.4.0_linux_amd64.tar.gz"
+      sha256 "419ad0e36a075eea8373342e099ca762e40234f7a7fcecd7d3e4257e00d51155"
     end
   end
 
