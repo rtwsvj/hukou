@@ -11,6 +11,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/provenance"
+	"github.com/rtwsvj/hukou/internal/sanitize"
 	"github.com/rtwsvj/hukou/internal/scan"
 )
 
@@ -207,3 +208,15 @@ func sanitizeField(s string) string {
 		return r
 	}, s)
 }
+
+// SanitizeField is the exported form of sanitizeField for cmd-layer tables
+// that render single-line API-controlled text (e.g. `hukou suggest` rows).
+func SanitizeField(s string) string { return sanitizeField(s) }
+
+// SanitizeTerminal strips C0/C1 control characters from untrusted multi-line
+// text (release notes, server error bodies) so ANSI/OSC escape sequences
+// cannot spoof trusted output, clear the screen, or reach the clipboard via
+// OSC 52. Newline and tab survive. It delegates to internal/sanitize so
+// lower layers (the GitHub client, which cannot import this package) share
+// the same implementation.
+func SanitizeTerminal(s string) string { return sanitize.Terminal(s) }

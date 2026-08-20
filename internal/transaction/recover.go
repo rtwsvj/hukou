@@ -111,6 +111,25 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 		// authoritative recovery evidence written by a newer hukou.
 		return summary, i18n.Errorf("unknown directories in transaction root: %s; they may be journals from a newer hukou, so nothing was recovered or removed - inspect them with `hukou doctor`, then move them out manually or upgrade hukou", strings.Join(unknownDirs, ", "))
 	}
+
+	// Known-prefix entries that are not real directories (a stray regular file
+	// named pending-*, a symlink named .building-*) cannot be journals, but
+	// left in place they wedge every recovery below (requireRealDirectory
+	// errors) — and with it every write command. They take the same quarantine
+	// path as unknown non-directories (ADR-0006: garbage must not wedge
+	// recovery). Note this covers top-level entries only; symlinked members
+	// INSIDE a real journal directory are validated by the journal's own
+	// loading path (decodeIntent/hasValidCommit), not here.
+	if status.Building, err = quarantineNonDirectories(txRoot, status.Building, &summary); err != nil {
+		return summary, err
+	}
+	if status.Completed, err = quarantineNonDirectories(txRoot, status.Completed, &summary); err != nil {
+		return summary, err
+	}
+	if status.Pending, err = quarantineNonDirectories(txRoot, status.Pending, &summary); err != nil {
+		return summary, err
+	}
+
 	if len(status.Pending) > 1 {
 		return summary, i18n.Errorf("multiple pending transactions violate the global journal invariant: %s", strings.Join(status.Pending, ", "))
 	}
@@ -148,7 +167,31 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 	return summary, recoverLoaded(txRoot, pendingDir, intent, committed)
 }
 
-// quarantineEntry moves one unknown non-directory transaction-root entry into a
+// quarantineNonDirectories splits a known-prefix bucket into real journal
+// directories (kept, in order) and non-directory entries (regular files,
+// symlinks), quarantining the latter and recording them in the summary.
+func quarantineNonDirectories(txRoot string, names []string, summary *RecoverSummary) ([]string, error) {
+	kept := make([]string, 0, len(names))
+	for _, name := range names {
+		info, err := os.Lstat(filepath.Join(txRoot, name))
+		if err != nil {
+			return nil, i18n.Wrapf("inspect transaction entry %s: %w", err, name)
+		}
+		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+			kept = append(kept, name)
+			continue
+		}
+		record, err := quarantineEntry(txRoot, name)
+		if err != nil {
+			return nil, i18n.Wrapf("quarantine non-directory transaction entry %s: %w", err, name)
+		}
+		summary.Quarantined = append(summary.Quarantined, record)
+	}
+	return kept, nil
+}
+
+// quarantineEntry moves one non-directory transaction-root entry (unknown
+// name, or a known-prefix stray such as a pending-* regular file) into a
 // fresh quarantined-<16 hex> container. The container is allocated with the
 // exclusive-create mkdir primitive and a colliding random name is retried with
 // a new name, so an existing container is never overwritten. The entry's bytes

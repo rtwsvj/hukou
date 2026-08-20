@@ -1213,3 +1213,64 @@ func assertJournalClean(t *testing.T, root string) {
 		t.Fatalf("journal not clean: %+v", status)
 	}
 }
+
+// TestRecoverQuarantinesKnownPrefixNonDirectories: a stray regular file named
+// pending-* or a symlink named .building-* cannot be a journal, and must not
+// wedge recovery (previously requireRealDirectory errored on them forever,
+// locking every write command). They take the same quarantine path as unknown
+// non-directories; real journal directories behave as before.
+func TestRecoverQuarantinesKnownPrefixNonDirectories(t *testing.T) {
+	root := t.TempDir()
+	txRoot := filepath.Join(root, transactionsDirName)
+	if err := os.MkdirAll(txRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	strayPending := pendingPrefix + "stray"
+	if err := os.WriteFile(filepath.Join(txRoot, strayPending), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	strayBuilding := buildingPrefix + "link"
+	if err := os.Symlink("dangling-target", filepath.Join(txRoot, strayBuilding)); err != nil {
+		t.Fatal(err)
+	}
+	// A real .building-* directory is still cleaned, not quarantined.
+	realBuilding := filepath.Join(txRoot, buildingPrefix+strings.Repeat("c", 32))
+	if err := os.Mkdir(realBuilding, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := Recover(root)
+	if err != nil {
+		t.Fatalf("Recover wedged on known-prefix strays: %v", err)
+	}
+	if len(summary.Quarantined) != 2 {
+		t.Fatalf("summary.Quarantined = %+v, want 2 records", summary.Quarantined)
+	}
+	byOriginal := map[string]QuarantineRecord{}
+	for _, record := range summary.Quarantined {
+		byOriginal[record.Original] = record
+	}
+	pendingRecord, ok := byOriginal[strayPending]
+	if !ok {
+		t.Fatalf("%s not quarantined: %+v", strayPending, byOriginal)
+	}
+	if data, err := os.ReadFile(filepath.Join(txRoot, pendingRecord.Quarantined, quarantinePayloadName)); err != nil || string(data) != "junk" {
+		t.Fatalf("quarantined payload corrupted: data=%q err=%v", data, err)
+	}
+	if _, ok := byOriginal[strayBuilding]; !ok {
+		t.Fatalf("%s not quarantined: %+v", strayBuilding, byOriginal)
+	}
+	for _, name := range []string{strayPending, strayBuilding} {
+		if _, err := os.Lstat(filepath.Join(txRoot, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stray %s still present: %v", name, err)
+		}
+	}
+	if _, err := os.Lstat(realBuilding); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("real building journal not cleaned: %v", err)
+	}
+
+	// The wedge is gone for good: a second Recover is a clean no-op.
+	if _, err := Recover(root); err != nil {
+		t.Fatalf("second Recover: %v", err)
+	}
+}

@@ -11,8 +11,10 @@ import (
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/output"
+	"github.com/rtwsvj/hukou/internal/provenance"
 	"github.com/rtwsvj/hukou/internal/store"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
+	"github.com/rtwsvj/hukou/internal/verify"
 	"github.com/spf13/cobra"
 )
 
@@ -179,8 +181,23 @@ func importOne(t exportEntry, force bool, stderr io.Writer) importResult {
 	if err != nil {
 		return importResult{Name: t.Name, Status: "error", Detail: i18n.T("executable not found on PATH")}
 	}
+	// Never trust the exported tag blindly: the binary on this machine's PATH
+	// may be a different build than on the export machine (common), and a
+	// malicious list could record v999.0.0 to freeze upgrades. Re-hash the
+	// real binary; on mismatch, warn and record the actual version instead.
+	tag := t.Tag
+	if t.SHA256 != "" {
+		actualSHA, err := verify.SHA256File(binPath)
+		if err != nil {
+			return importResult{Name: t.Name, Status: "error", Detail: i18n.T("hash binary on PATH: %v", err)}
+		}
+		if actualSHA != t.SHA256 {
+			tag = actualVersionTag(binPath)
+			fmt.Fprintf(stderr, "%s\n", i18n.T("warning: %s: binary on PATH (sha256 %s) differs from the exported list (%s); recording actual version %q instead of tag %q", t.Name, actualSHA, t.SHA256, tag, t.Tag))
+		}
+	}
 	var out, errBuf bytes.Buffer
-	if err := doAdoptWithDeps(&out, &errBuf, binPath, t.Repo, false, t.Tag, force, t.ArchiveExe, runSecurityGate, saveManifest); err != nil {
+	if err := doAdoptWithDeps(&out, &errBuf, binPath, t.Repo, false, tag, force, t.ArchiveExe, runSecurityGate, saveManifest); err != nil {
 		fmt.Fprint(stderr, errBuf.String())
 		return importResult{Name: t.Name, Status: "error", Detail: err.Error()}
 	}
@@ -198,11 +215,21 @@ func importOne(t exportEntry, force bool, stderr io.Writer) importResult {
 			return importResult{Name: t.Name, Status: "error", Detail: i18n.T("apply update policy: %v", err)}
 		}
 	}
-	detail := t.Repo + " @ " + t.Tag
+	detail := t.Repo + " @ " + tag
 	if policyNeedsApply(t.UpdatePolicy) {
 		detail += i18n.T(" (policy reapplied)")
 	}
 	return importResult{Name: t.Name, Status: "ok", Detail: detail}
+}
+
+// actualVersionTag derives the honest tag for a PATH binary whose hash does
+// not match the export list: the Go build info version when the binary
+// carries one, else the neutral "imported" — never the mismatched list tag.
+func actualVersionTag(binPath string) string {
+	if goInfo, ok := provenance.ReadGoBinary(binPath); ok && goInfo.Version != "" && goInfo.Version != "(devel)" {
+		return goInfo.Version
+	}
+	return "imported"
 }
 
 // policyNeedsApply reports whether the exported policy differs from the adopt
@@ -211,11 +238,26 @@ func policyNeedsApply(p exportPolicy) bool {
 	return p.Mode != "" && (p.Mode != "semver" || p.Channel != "stable" || p.PinnedTag != "")
 }
 
-// readExportDoc loads and strictly validates a toolset-list file: the schema
+// maxExportDocBytes bounds the toolset list import will read; 1 MiB is
+// orders of magnitude beyond any realistic list.
+const maxExportDocBytes = 1 << 20
+
+// readExportDoc loads and strictly validates a toolset-list file: the file
+// must be a regular file (no symlink) within the size cap, the schema
 // version must be current, unknown fields and duplicate tool names are
 // rejected, and every entry's repo/tag/archive name/policy values are checked
 // before anything is imported.
 func readExportDoc(file string) (*exportDoc, error) {
+	info, err := os.Lstat(file)
+	if err != nil {
+		return nil, i18n.Wrapf("stat toolset list: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, i18n.Errorf("toolset list is not a regular file: %s", file)
+	}
+	if info.Size() > maxExportDocBytes {
+		return nil, i18n.Errorf("toolset list exceeds the %d-byte limit: %s", maxExportDocBytes, file)
+	}
 	payload, err := os.ReadFile(file)
 	if err != nil {
 		return nil, i18n.Wrapf("read toolset list: %w", err)

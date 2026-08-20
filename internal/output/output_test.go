@@ -353,3 +353,32 @@ func TestWriteSummaryLineEndsWithNewline(t *testing.T) {
 		t.Fatalf("summary missing breakdown: %q", out)
 	}
 }
+
+// SanitizeTerminal is the multi-line counterpart for API-controlled text
+// (release notes, server error bodies): ANSI/OSC sequences must not survive,
+// while newlines and tabs keep the text readable.
+func TestSanitizeTerminal(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain release notes\nwith\ttabs", "plain release notes\nwith\ttabs"},
+		{"screen clear \x1b[2J here", "screen clear ?[2J here"},
+		{"osc8 link \x1b]8;;https://evil\x07text\x1b]8;;\x07", "osc8 link ?]8;;https://evil?text?]8;;?"},
+		{"osc52 clipboard \x1b]52;c;aGVsbG8=\x07 done", "osc52 clipboard ?]52;c;aGVsbG8=? done"},
+		{"c1 nel  and csi [2J", "c1 nel ? and csi ?[2J"},
+		{"carriage\rreturn", "carriage?return"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := SanitizeTerminal(tc.in)
+		if got != tc.want {
+			t.Errorf("SanitizeTerminal(%q)=%q want %q", tc.in, got, tc.want)
+		}
+		if strings.ContainsRune(got, 0x1b) {
+			t.Errorf("ESC survived SanitizeTerminal(%q): %q", tc.in, got)
+		}
+		for _, r := range got {
+			if r >= 0x80 && r <= 0x9f {
+				t.Errorf("C1 control U+%04X survived SanitizeTerminal(%q): %q", r, tc.in, got)
+			}
+		}
+	}
+}

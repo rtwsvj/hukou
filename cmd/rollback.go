@@ -102,6 +102,13 @@ func doRollbackWithDeps(stdout, stderr io.Writer, name, to string, save func(*ma
 	if err != nil {
 		return fail(i18n.Wrapf("sha256 rollback source: %w", err))
 	}
+	if restoreOriginal && e.AdoptedSHA256 != "" && newSHA != e.AdoptedSHA256 {
+		// The original backup is the adoption-time anchor; a mismatch means the
+		// store was tampered with or corrupted, so fail closed instead of
+		// installing a forged "original" over the live binary. Entries adopted
+		// before the anchor existed (empty AdoptedSHA256) keep the old path.
+		return fail(i18n.Errorf("original backup SHA-256 does not match the adoption anchor: got %s want %s; the store may have been tampered with, run `hukou doctor`", newSHA, e.AdoptedSHA256))
+	}
 	newEntry := manifest.PrepareEntry(oldEntry)
 	eventID, err := activation.NewID()
 	if err != nil {

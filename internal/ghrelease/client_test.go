@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rtwsvj/hukou/internal/sysproxy"
 )
 
 func TestLatest(t *testing.T) {
@@ -681,5 +684,113 @@ func TestSearchRepositoriesRateLimited(t *testing.T) {
 		if !errors.As(err, &rl) {
 			t.Fatalf("expected RateLimitError, got %T: %v", err, err)
 		}
+	}
+}
+
+// TestStatusErrorBodySanitized: a server-controlled error body is stripped of
+// control characters at ingestion, so ANSI/OSC payloads can never ride a
+// StatusError onto the terminal.
+func TestStatusErrorBodySanitized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom \x1b[2J\x1b]52;c;aGVsbG8=\x07 end"))
+	}))
+	defer server.Close()
+
+	_, err := testClient(server).Latest("owner", "repo")
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("err=%T %v", err, err)
+	}
+	if strings.Contains(statusErr.Body, "\x1b") || strings.Contains(statusErr.Body, "\x07") {
+		t.Fatalf("escape sequence survived ingestion: %q", statusErr.Body)
+	}
+	if !strings.Contains(statusErr.Body, "boom ?[2J?]52;c;aGVsbG8=? end") {
+		t.Fatalf("body not sanitized as expected: %q", statusErr.Body)
+	}
+}
+
+// TestRetry403WithRetryAfter: GitHub's secondary rate limit (403 with a
+// Retry-After header, X-RateLimit-Remaining NOT zero) is retried like 429.
+func TestRetry403WithRetryAfter(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name":"v1.0.0"}`))
+	}))
+	defer server.Close()
+
+	rel, err := testClient(server).Latest("owner", "repo")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if rel.TagName != "v1.0.0" {
+		t.Fatalf("tag=%q", rel.TagName)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want 2 (403+Retry-After retried once)", calls)
+	}
+}
+
+// TestStatusErrorStripsQueryFromURL: a signed download URL's credentials must
+// never appear in the error text — only scheme://host/path survives.
+func TestStatusErrorStripsQueryFromURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	c := testClient(server)
+	_, err := c.Download(server.URL+"/asset.tar.gz?X-Amz-Signature=deadbeef&X-Amz-Credential=abc", t.TempDir(), 0)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("err=%T %v", err, err)
+	}
+	for _, leak := range []string{"X-Amz-Signature", "deadbeef", "X-Amz-Credential"} {
+		if strings.Contains(err.Error(), leak) || strings.Contains(statusErr.URL, leak) {
+			t.Fatalf("signed URL query leaked into error: %v (url=%q)", err, statusErr.URL)
+		}
+	}
+	if !strings.HasSuffix(statusErr.URL, "/asset.tar.gz") {
+		t.Fatalf("sanitized URL lost its path: %q", statusErr.URL)
+	}
+}
+
+// TestTransportErrorStripsQueryFromURLError: a transport failure wraps a
+// *url.Error whose Error() would render the signed query; the surfaced error
+// must carry only the query-stripped URL.
+func TestTransportErrorStripsQueryFromURLError(t *testing.T) {
+	// No proxy retry in this test: stub the system proxy away (the host may
+	// have a real one) so the transport failure surfaces immediately.
+	orig := sysproxy.SystemProxyURL
+	sysproxy.SystemProxyURL = func() *url.URL { return nil }
+	defer func() { sysproxy.SystemProxyURL = orig }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	serverURL := server.URL
+	server.Close() // every request now fails at the transport layer
+
+	c := testClient(server)
+	c.Sleep = func(time.Duration) {} // no backoff wait in tests
+	_, err := c.Download(serverURL+"/asset.tar.gz?X-Amz-Signature=deadbeef&X-Amz-Credential=abc", t.TempDir(), 0)
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	for _, leak := range []string{"X-Amz-Signature", "deadbeef", "X-Amz-Credential"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("signed query leaked into transport error: %v", err)
+		}
+	}
+	if !strings.Contains(err.Error(), "/asset.tar.gz") {
+		t.Fatalf("error lost the URL path entirely: %v", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/rtwsvj/hukou/internal/i18n"
+	"github.com/rtwsvj/hukou/internal/sanitize"
 	"github.com/rtwsvj/hukou/internal/sysproxy"
 	"io"
 	"net"
@@ -362,7 +363,16 @@ func (c *Client) do(req *http.Request, client *http.Client) (*http.Response, err
 				c.sleep(backoff(attempt))
 				continue
 			}
-			return nil, i18n.Wrapf("github request %s failed after %d attempts: %w", err, req.URL.String(), attempt+1)
+			// The wrapped *url.Error renders the full URL — including a signed
+			// query — in its Error(); swap in a query-stripped copy so CDN
+			// credentials never reach stderr or persisted logs.
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) {
+				scrubbed := *urlErr
+				scrubbed.URL = safeURLString(urlErr.URL)
+				err = &scrubbed
+			}
+			return nil, i18n.Wrapf("github request %s failed after %d attempts: %w", err, safeURL(req.URL), attempt+1)
 		}
 
 		if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
@@ -370,7 +380,7 @@ func (c *Client) do(req *http.Request, client *http.Client) (*http.Response, err
 			return nil, &RateLimitError{Reset: resp.Header.Get("X-RateLimit-Reset")}
 		}
 
-		if retryStatus(resp.StatusCode) && attempt < maxRetries {
+		if retryable(resp) && attempt < maxRetries {
 			delay := retryDelay(resp, attempt)
 			drainClose(resp.Body)
 			c.sleep(delay)
@@ -382,9 +392,10 @@ func (c *Client) do(req *http.Request, client *http.Client) (*http.Response, err
 	return nil, lastErr
 }
 
-// retryDelay prefers Retry-After (capped at 60s) for 429; otherwise exponential backoff.
+// retryDelay prefers Retry-After (capped at 60s) for 429 and for the 403
+// secondary-rate-limit shape; otherwise exponential backoff.
 func retryDelay(resp *http.Response, attempt int) time.Duration {
-	if resp.StatusCode == http.StatusTooManyRequests {
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
 		if ra := resp.Header.Get("Retry-After"); ra != "" {
 			if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
 				d := time.Duration(secs) * time.Second
@@ -539,6 +550,45 @@ func retryStatus(code int) bool {
 	return code == http.StatusTooManyRequests || code >= 500
 }
 
+// retryable reports whether a response is worth another attempt: the plain
+// retryStatus set, plus GitHub's secondary rate limit — 403 with a
+// Retry-After header (the primary rate limit, 403 with
+// X-RateLimit-Remaining: 0, is handled separately above and never retried).
+func retryable(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusForbidden && resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	return retryStatus(resp.StatusCode)
+}
+
+// safeURL renders a request URL for error messages without its query string:
+// signed download URLs (release-asset CDNs) carry credentials in query
+// parameters (X-Amz-Signature and friends) that must never reach stderr or
+// persisted logs.
+func safeURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	clean := *u
+	clean.RawQuery = ""
+	clean.ForceQuery = false
+	return clean.String()
+}
+
+// safeURLString is safeURL for the URL string carried inside an error (e.g.
+// *url.Error); an unparseable value is cut at '?' as a last resort.
+func safeURLString(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		u.RawQuery = ""
+		u.ForceQuery = false
+		return u.String()
+	}
+	if i := strings.IndexByte(raw, '?'); i >= 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
 func backoff(attempt int) time.Duration {
 	return time.Second << attempt
 }
@@ -547,7 +597,7 @@ func responseStatusError(resp *http.Response) error {
 	return &StatusError{
 		StatusCode: resp.StatusCode,
 		Status:     resp.Status,
-		URL:        resp.Request.URL.String(),
+		URL:        safeURL(resp.Request.URL),
 		Body:       readErrorBody(resp.Body),
 	}
 }
@@ -557,7 +607,10 @@ func readErrorBody(body io.Reader) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	// The body is server-controlled text rendered to the terminal via
+	// StatusError.Error(); strip control characters at ingestion so ANSI/OSC
+	// sequences can never ride an error message onto the user's screen.
+	return sanitize.Terminal(strings.TrimSpace(string(data)))
 }
 
 func drainClose(body io.ReadCloser) {

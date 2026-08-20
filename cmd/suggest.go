@@ -155,7 +155,10 @@ func doSuggest(stdout io.Writer, target string, client suggestClient, jsonOutput
 		if c.Archived {
 			tag += i18n.T(" [archived]")
 		}
-		tbl.Row(c.Repo, i18n.T("%d", c.Stars), tag, c.Description)
+		// Repo, tag, and description are GitHub-API-controlled text: sanitize
+		// before they reach the terminal (table cells and the copyable adopt
+		// command alike).
+		tbl.Row(output.SanitizeField(c.Repo), i18n.T("%d", c.Stars), output.SanitizeField(tag), output.SanitizeField(c.Description))
 	}
 	if err := tbl.Flush(); err != nil {
 		return fail(err)
@@ -166,7 +169,7 @@ func doSuggest(stdout io.Writer, target string, client suggestClient, jsonOutput
 		if c.Tag == "" {
 			continue
 		}
-		io.WriteString(stdout, "  "+i18n.T("hukou adopt %s %s --tag %s", name, c.Repo, c.Tag)+"\n")
+		io.WriteString(stdout, "  "+i18n.T("hukou adopt %s %s --tag %s", name, output.SanitizeField(c.Repo), output.SanitizeField(c.Tag))+"\n")
 	}
 	return nil
 }

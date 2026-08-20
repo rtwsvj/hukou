@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -71,7 +72,20 @@ func doUpgrade(stdout, stderr io.Writer, names []string, all, dryRun bool, asset
 	return doUpgradeWithSave(stdout, stderr, names, all, dryRun, assetFilter, client, allowUnverified, saveManifest)
 }
 
+// doUpgradeCtx is doUpgrade with a caller-supplied context: the per-tool loop
+// checks it at TOOL boundaries only (never interrupting a tool's WAL
+// transaction mid-flight), reporting the remaining tools as canceled once it
+// is done. `hukou upgrade` itself passes no deadline; `hukou up` uses it for
+// the internal step's soft budget.
+func doUpgradeCtx(ctx context.Context, stdout, stderr io.Writer, names []string, all, dryRun bool, assetFilter string, client *ghrelease.Client, allowUnverified bool) error {
+	return doUpgradeCtxWithSave(ctx, stdout, stderr, names, all, dryRun, assetFilter, client, allowUnverified, saveManifest)
+}
+
 func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun bool, assetFilter string, client *ghrelease.Client, allowUnverified bool, save func(*manifest.Manifest) error) error {
+	return doUpgradeCtxWithSave(context.Background(), stdout, stderr, names, all, dryRun, assetFilter, client, allowUnverified, save)
+}
+
+func doUpgradeCtxWithSave(ctx context.Context, stdout, stderr io.Writer, names []string, all, dryRun bool, assetFilter string, client *ghrelease.Client, allowUnverified bool, save func(*manifest.Manifest) error) error {
 	if all && len(names) > 0 {
 		return fail(i18n.Errorf("tool names and --all cannot be used together"))
 	}
@@ -133,6 +147,15 @@ func doUpgradeWithSave(stdout, stderr io.Writer, names []string, all, dryRun boo
 
 	var failures []error
 	for _, e := range targets {
+		// Soft-budget check at TOOL boundaries only (the `hukou up` internal
+		// step's ctx): a running tool's WAL transaction is never interrupted
+		// mid-flight; once ctx is done the remaining tools are reported
+		// canceled and skipped — not counted as failures, so the caller can
+		// reclassify the whole step as canceled rather than failed.
+		if ctx.Err() != nil {
+			fmt.Fprintf(stdout, "%s\n", i18n.T("canceled %s (step budget expired)", e.Name))
+			continue
+		}
 		// Each snapshot entry is authoritative for its own upgrade: upgradeOne
 		// mutates only the entry it was given (and that entry's manifest
 		// record), so no earlier iteration can invalidate this copy. Holding
@@ -617,9 +640,10 @@ func wantArchiveExe(e *manifest.Entry) string {
 // writeReleaseNotes prints a bounded preview of the target release's notes,
 // when the publisher provided any. It is shown both in --dry-run (before you
 // decide) and in the real path (before the download starts), capped at 8 lines
-// of 100 display columns per line.
+// of 100 display columns per line. The body is publisher-controlled text, so
+// control characters are stripped before it touches the terminal.
 func writeReleaseNotes(w io.Writer, release ghrelease.Release) {
-	body := strings.TrimSpace(release.Body)
+	body := output.SanitizeTerminal(strings.TrimSpace(release.Body))
 	if body == "" {
 		return
 	}

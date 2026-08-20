@@ -103,3 +103,22 @@ func TestUpgradeRejectsStoreArtifactTamperedAfterStorePut(t *testing.T) {
 		t.Fatalf("transaction state not clean after rejected upgrade: %v", cleanErr)
 	}
 }
+
+// TestWriteReleaseNotesSanitizesPublisherText: release notes are
+// publisher-controlled; ANSI/OSC sequences must be stripped before the
+// preview touches the terminal, with ordinary newlines/tabs preserved.
+func TestWriteReleaseNotesSanitizesPublisherText(t *testing.T) {
+	rel := ghrelease.Release{Body: "## What's new\nscreen clear \x1b[2J\nosc52 \x1b]52;c;aGVsbG8=\x07\nkeep\ttab\n"}
+	var out bytes.Buffer
+	writeReleaseNotes(&out, rel)
+	text := out.String()
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "\x07") {
+		t.Fatalf("escape sequence leaked into release notes:\n%q", text)
+	}
+	if !strings.Contains(text, "## What's new") || !strings.Contains(text, "keep\ttab") {
+		t.Fatalf("legitimate content mangled:\n%q", text)
+	}
+	if !strings.Contains(text, "screen clear ?[2J") {
+		t.Fatalf("ANSI payload not neutralized:\n%q", text)
+	}
+}

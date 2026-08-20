@@ -551,6 +551,65 @@ func TestE2E_RollbackOriginalThenUpgradeKeepsOriginalImmutable(t *testing.T) {
 	}
 }
 
+// TestE2E_RollbackOriginalRejectsTamperedBackup: the original backup is the
+// adoption-time anchor (AdoptedSHA256). If it is corrupted or replaced in the
+// store, `rollback --to original` must fail closed and leave the live binary
+// untouched rather than install a forged "original".
+func TestE2E_RollbackOriginalRejectsTamperedBackup(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("HUKOU_DATA_DIR", dataDir)
+
+	binPath := writeExecutable(t, t.TempDir(), "fakebin", "original-body\n")
+	var out bytes.Buffer
+	if err := doAdopt(&out, &out, binPath, "owner/repo", false, "v1.0.0", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(dataDir, "store", "fakebin", "original", "fakebin")
+
+	// Upgrade so the live binary differs from the original backup.
+	assetName := platformAssetName("fakebin")
+	assetData := makeTarGz(t, "fakebin", []byte("v2-body\n"))
+	server := fakeGitHubServer(t, assetName, assetData, assetChecksumLine(assetName, assetData), "v2.0.0")
+	defer server.Close()
+	if err := doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", testGHClient(server), false); err != nil {
+		t.Fatalf("upgrade: %v\n%s", err, out.String())
+	}
+
+	// Tamper with the original backup, then rollback --to original.
+	if err := os.WriteFile(originalPath, []byte("forged-body\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := doRollback(&out, &out, "fakebin", "original")
+	if err == nil {
+		t.Fatalf("rollback --to original succeeded against a tampered backup:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "adoption anchor") {
+		t.Fatalf("error does not name the anchor mismatch: %v", err)
+	}
+	if got, rerr := os.ReadFile(binPath); rerr != nil || string(got) != "v2-body\n" {
+		t.Fatalf("live path changed by the failed rollback: content=%q err=%v", got, rerr)
+	}
+
+	// Restoring the real backup makes the same rollback succeed again.
+	m, merr := loadManifest()
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	e := m.Get("fakebin")
+	if e == nil || e.AdoptedSHA256 == "" {
+		t.Fatalf("adoption anchor missing from manifest: %+v", e)
+	}
+	if err := os.WriteFile(originalPath, []byte("original-body\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := doRollback(&out, &out, "fakebin", "original"); err != nil {
+		t.Fatalf("rollback --to original with intact backup: %v\n%s", err, out.String())
+	}
+	if got, rerr := os.ReadFile(binPath); rerr != nil || string(got) != "original-body\n" {
+		t.Fatalf("live path after good rollback: content=%q err=%v", got, rerr)
+	}
+}
+
 func TestE2E_UpgradeDetectsExternalChangeBeforeActivation(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("HUKOU_DATA_DIR", dataDir)

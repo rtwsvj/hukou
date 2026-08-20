@@ -31,3 +31,6 @@ RELEASE-CHECKLIST.md
 # npm platform packages (assembled by npm/build.sh from dist/)
 npm/platforms/*/bin/
 npm/platforms/*/LICENSE
+
+# ...but the npm wrapper SOURCE is hand-written and must stay tracked.
+!npm/hukou/bin/

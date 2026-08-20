@@ -161,3 +161,31 @@ func (f *failSuggestClient) SearchRepositories(string, int) ([]ghrelease.SearchR
 func (f *failSuggestClient) Latest(string, string) (ghrelease.Release, error) {
 	return ghrelease.Release{}, f.err
 }
+
+// TestSuggestSanitizesAPIControlledText: repo, tag, and description come from
+// the GitHub API; ANSI/OSC payloads in them must never reach the terminal,
+// neither in the table nor in the copyable adopt command.
+func TestSuggestSanitizesAPIControlledText(t *testing.T) {
+	client, path := suggestFixture(t)
+	client.items = []ghrelease.SearchRepoItem{
+		{FullName: "owner/mytool", StargazersCount: 1, Description: "clear \x1b[2J screen"},
+	}
+	client.releases = map[string]ghrelease.Release{
+		"owner/mytool": {TagName: "v1.0.0\x1b]52;c;aGVsbG8=\x07"},
+	}
+
+	var out bytes.Buffer
+	if err := doSuggest(&out, path, client, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Contains(text, "\x1b") || strings.Contains(text, "\x07") {
+		t.Fatalf("escape sequence leaked into suggest output:\n%q", text)
+	}
+	if !strings.Contains(text, "clear ?[2J screen") {
+		t.Fatalf("description not sanitized as expected:\n%s", text)
+	}
+	if !strings.Contains(text, "--tag v1.0.0?]52;c;aGVsbG8=?") {
+		t.Fatalf("adopt command tag not sanitized as expected:\n%s", text)
+	}
+}

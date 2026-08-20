@@ -63,7 +63,7 @@ func stubRunDeps(t *testing.T, lookPath orchestrate.LookPathFunc, exec orchestra
 		lookPath:  lookPath,
 		inventory: sequenceInventory(pre, post),
 		exec:      exec,
-		hukouStep: func(io.Writer, io.Writer) error {
+		hukouStep: func(context.Context, io.Writer, io.Writer) error {
 			*hukouCalled = true
 			return nil
 		},
@@ -323,7 +323,7 @@ func TestUp_interruptDuringInternalHukouStepIsNonZero(t *testing.T) {
 	deps.baseContext = func() (context.Context, context.CancelFunc) { return ctx, cancel }
 	// The step observes the interrupt only at its boundary: it finishes its
 	// (simulated) work, the cancel lands mid-step, and it returns nil.
-	deps.hukouStep = func(io.Writer, io.Writer) error {
+	deps.hukouStep = func(context.Context, io.Writer, io.Writer) error {
 		hukouCalled = true
 		cancel()
 		return nil
@@ -366,13 +366,14 @@ func TestUp_snapshotPersistFailureIsNonZeroAndReported(t *testing.T) {
 	var hukouCalled bool
 	deps := stubRunDeps(t, fakeLookPath(binDir), fx, &hukouCalled, same, same)
 
-	// dataRoot resolves beneath a regular FILE, so MkdirAll on <root>/snapshots
-	// must fail: an unwritable snapshot destination.
-	blocker := filepath.Join(t.TempDir(), "blocker")
-	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+	// <root>/snapshots is a regular FILE, so MkdirAll on it must fail: an
+	// unwritable snapshot destination. (Blocking the data root itself would
+	// now fail the run even earlier, at up-lock acquisition.)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "snapshots"), []byte("not a dir"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deps.dataRoot = func() string { return filepath.Join(blocker, "data") }
+	deps.dataRoot = func() string { return root }
 
 	var out, errb bytes.Buffer
 	err := doUpExecute(&out, &errb, upOptions{json: true, only: []string{"brew"}}, deps)
@@ -405,7 +406,7 @@ func TestUp_snapshotPersistFailureIsNonZeroAndReported(t *testing.T) {
 
 	// Same failure in table mode is reported in the report body too.
 	deps2 := stubRunDeps(t, fakeLookPath(binDir), &fakeExecutor{}, &hukouCalled, same, same)
-	deps2.dataRoot = func() string { return filepath.Join(blocker, "data") }
+	deps2.dataRoot = func() string { return root }
 	out.Reset()
 	errb.Reset()
 	if err := doUpExecute(&out, &errb, upOptions{only: []string{"brew"}}, deps2); err == nil {
@@ -428,7 +429,7 @@ func TestPersistSnapshotHistory_AtomicAndPruned(t *testing.T) {
 	var lastDir string
 	for i := 0; i < 12; i++ {
 		now := base.Add(time.Duration(i) * time.Minute)
-		dir, err := persistSnapshotHistory(root, now, pre, post, diff, nil)
+		dir, err := persistSnapshotHistory(root, now, pre, post, diff, nil, io.Discard)
 		if err != nil {
 			t.Fatalf("persist %d: %v", i, err)
 		}
@@ -455,6 +456,50 @@ func TestPersistSnapshotHistory_AtomicAndPruned(t *testing.T) {
 	}
 }
 
+// TestPruneSnapshots_NeverTouchesForeignDirectories: a directory the user
+// archived into snapshots/ by hand (a backup, a note dir) is neither counted
+// against retention nor deleted, while over-retention stamp dirs still go.
+func TestPruneSnapshots_NeverTouchesForeignDirectories(t *testing.T) {
+	root := t.TempDir()
+	snapsDir := filepath.Join(root, "snapshots")
+	if err := os.MkdirAll(snapsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 12 stamp dirs (2 over retention) plus foreign directories, including one
+	// whose name nearly parses as a stamp.
+	stamps := []string{}
+	for i := 0; i < 12; i++ {
+		stamps = append(stamps, fmt.Sprintf("2026-07-%02dT00:00:00Z", i+1))
+	}
+	foreign := []string{"backup-pre-big-upgrade", "notes", "2026-07-18T00:00:00Z-backup"}
+	for _, name := range append(append([]string{}, stamps...), foreign...) {
+		if err := os.MkdirAll(filepath.Join(snapsDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := pruneSnapshots(snapsDir, stamps[11], snapshotRetention); err != nil {
+		t.Fatal(err)
+	}
+	// The two oldest stamps are gone; retention holds.
+	for _, gone := range stamps[:2] {
+		if _, err := os.Lstat(filepath.Join(snapsDir, gone)); !os.IsNotExist(err) {
+			t.Fatalf("over-retention stamp %s survived: %v", gone, err)
+		}
+	}
+	for _, kept := range stamps[2:] {
+		if _, err := os.Lstat(filepath.Join(snapsDir, kept)); err != nil {
+			t.Fatalf("in-retention stamp %s pruned: %v", kept, err)
+		}
+	}
+	// Every foreign directory survived untouched.
+	for _, name := range foreign {
+		if _, err := os.Lstat(filepath.Join(snapsDir, name)); err != nil {
+			t.Fatalf("foreign directory %s was pruned: %v", name, err)
+		}
+	}
+}
+
 func TestPersistSnapshotHistory_NeverPrunesCurrentEvenIfOldest(t *testing.T) {
 	root := t.TempDir()
 	snapsDir := filepath.Join(root, "snapshots")
@@ -471,7 +516,7 @@ func TestPersistSnapshotHistory_NeverPrunesCurrentEvenIfOldest(t *testing.T) {
 	}
 
 	oldNow := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	dir, err := persistSnapshotHistory(root, oldNow, upSnapshot{}, upSnapshot{}, orchestrate.Diff{}, nil)
+	dir, err := persistSnapshotHistory(root, oldNow, upSnapshot{}, upSnapshot{}, orchestrate.Diff{}, nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,5 +711,82 @@ func readJSON(t *testing.T, path string, v any) {
 	}
 	if err := json.Unmarshal(data, v); err != nil {
 		t.Fatalf("decode %s: %v", path, err)
+	}
+}
+
+// TestPruneSnapshots_RemovesStaleTmpStaging: a .tmp-snap-* staging directory
+// older than 24h is abandoned crash residue and gets cleaned in passing; a
+// fresh one (possibly mid-write) is left alone.
+func TestPruneSnapshots_RemovesStaleTmpStaging(t *testing.T) {
+	root := t.TempDir()
+	snapsDir := filepath.Join(root, "snapshots")
+	for _, name := range []string{".tmp-snap-old", ".tmp-snap-fresh", "2026-07-18T00:00:00Z"} {
+		if err := os.MkdirAll(filepath.Join(snapsDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(snapsDir, ".tmp-snap-old"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := pruneSnapshots(snapsDir, "2026-07-18T00:00:00Z", snapshotRetention); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(snapsDir, ".tmp-snap-old")); !os.IsNotExist(err) {
+		t.Fatalf("stale staging dir survived: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(snapsDir, ".tmp-snap-fresh")); err != nil {
+		t.Fatalf("fresh staging dir was removed: %v", err)
+	}
+}
+
+// TestPersistSnapshotHistory_PruneFailureIsWarningNotError: once the snapshot
+// itself has landed, a prune failure downgrades to a stderr warning — it must
+// not poison the run's exit status via snapErr.
+func TestPersistSnapshotHistory_PruneFailureIsWarningNotError(t *testing.T) {
+	root := t.TempDir()
+	snapsDir := filepath.Join(root, "snapshots")
+	// 11 stamp dirs so the oldest becomes a prune target; make it unremovable
+	// (a read-only subdirectory still holding a file — unlink needs write on
+	// the parent, which os.RemoveAll cannot chmod its way around) so
+	// pruneSnapshots fails AFTER the persist lands.
+	for i := 0; i < 11; i++ {
+		name := fmt.Sprintf("2026-07-%02dT00:00:00Z", i+1)
+		if err := os.MkdirAll(filepath.Join(snapsDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldest := filepath.Join(snapsDir, "2026-07-01T00:00:00Z")
+	lockSub := filepath.Join(oldest, "locksub")
+	if err := os.MkdirAll(lockSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockSub, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lockSub, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(lockSub, 0o755) }()
+	if err := os.Remove(filepath.Join(lockSub, "f")); err == nil {
+		t.Skip("filesystem did not block unlink under a read-only dir; cannot force the prune failure")
+	}
+
+	var warn bytes.Buffer
+	dir, err := persistSnapshotHistory(root,
+		time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC),
+		upSnapshot{}, upSnapshot{}, orchestrate.Diff{}, nil, &warn)
+	if err != nil {
+		t.Fatalf("prune failure must not become the persist error: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("final snapshot dir not returned")
+	}
+	if _, err := os.Lstat(dir); err != nil {
+		t.Fatalf("snapshot did not land: %v", err)
+	}
+	if !strings.Contains(warn.String(), "failed to prune old snapshots") {
+		t.Fatalf("prune failure missing its warning:\n%s", warn.String())
 	}
 }
