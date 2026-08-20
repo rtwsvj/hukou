@@ -14,7 +14,7 @@ import (
 
 const systemConfigPath = "/Library/Preferences/SystemConfiguration/preferences.plist"
 
-func defaultSystemProxyURL() *url.URL {
+var platformSystemProxyURL = func() *url.URL {
 	payload, err := os.ReadFile(systemConfigPath)
 	if err != nil {
 		return nil

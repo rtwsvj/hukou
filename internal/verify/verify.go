@@ -7,8 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/rtwsvj/hukou/internal/i18n"
+	"github.com/rtwsvj/hukou/internal/safeopen"
 	"io"
-	"os"
 	"strings"
 )
 
@@ -16,9 +16,11 @@ import (
 // contain an entry for the requested asset.
 var ErrNoChecksum = i18n.Errorf("no checksum entry for asset")
 
-// SHA256File returns the hex-encoded SHA-256 digest of the file at path.
+// SHA256File returns the hex-encoded SHA-256 digest of the file at path. The
+// open goes through safeopen so a FIFO/device swapped in after a caller's
+// stat fails closed instead of blocking the hash forever.
 func SHA256File(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := safeopen.Open(path)
 	if err != nil {
 		return "", err
 	}

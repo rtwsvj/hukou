@@ -1,6 +1,8 @@
 package ghrelease
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -125,3 +127,43 @@ func TestDownloadNoProxyRetryWithoutSystemProxy(t *testing.T) {
 		t.Fatalf("expected exactly one direct attempt, got %d", hits.Load())
 	}
 }
+
+// TestSpeedLimitedReaderFastThenStall: a burst followed by a full stall keeps
+// the LIFETIME average high forever, but the sliding window must evict the
+// burst and flag the download slow within one window period.
+func TestSpeedLimitedReaderFastThenStall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	burst := make([]byte, 64*1024)
+	s := &speedLimitedReader{
+		r:        io.MultiReader(bytes.NewReader(burst), blockForever{}),
+		start:    time.Now(),
+		grace:    100 * time.Millisecond,
+		minSpeed: 1024,
+		window:   300 * time.Millisecond,
+		cancel:   cancel,
+	}
+	go s.watch(ctx)
+
+	// Drain the burst instantly; then the source stalls forever.
+	if _, err := s.Read(make([]byte, len(burst))); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !s.Slow() {
+		if time.Now().After(deadline) {
+			t.Fatal("fast-then-stall was not flagged slow within the window period")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("watch flagged slow but did not cancel the download context")
+	}
+}
+
+// blockForever models a stalled connection: every Read blocks indefinitely.
+type blockForever struct{}
+
+func (blockForever) Read([]byte) (int, error) { select {} }

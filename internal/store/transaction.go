@@ -30,7 +30,7 @@ func (s *Store) ActivationSource(name, tag string) (string, error) {
 	}
 	var binary string
 	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
+		if !entryIsRegular(tagDir, entry) {
 			continue
 		}
 		if binary != "" {

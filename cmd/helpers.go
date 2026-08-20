@@ -20,17 +20,35 @@ import (
 )
 
 // dataRoot returns the hukou data directory.
-// HUKOU_DATA_DIR overrides the XDG Data Home default.
+// HUKOU_DATA_DIR overrides the XDG Data Home default. When neither a home
+// directory nor XDG_DATA_HOME is available there is NO safe default —
+// falling back to a relative "./hukou" would silently scatter state into
+// whatever directory hukou happened to be started from — so the process
+// refuses to continue instead.
 func dataRoot() string {
-	if v := os.Getenv("HUKOU_DATA_DIR"); v != "" {
-		return v
+	root, err := resolveDataRoot(os.Getenv, os.UserHomeDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, i18n.T("error: %s", err))
+		os.Exit(2)
 	}
-	home, _ := os.UserHomeDir()
-	xdg := os.Getenv("XDG_DATA_HOME")
+	return root
+}
+
+// resolveDataRoot is the testable core of dataRoot: same resolution order,
+// error instead of exit.
+func resolveDataRoot(getenv func(string) string, userHomeDir func() (string, error)) (string, error) {
+	if v := getenv("HUKOU_DATA_DIR"); v != "" {
+		return v, nil
+	}
+	home, _ := userHomeDir()
+	xdg := getenv("XDG_DATA_HOME")
 	if xdg == "" && home != "" {
 		xdg = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(xdg, "hukou")
+	if xdg == "" {
+		return "", i18n.Errorf("cannot determine the hukou data directory: neither HOME nor XDG_DATA_HOME is set; set HUKOU_DATA_DIR explicitly")
+	}
+	return filepath.Join(xdg, "hukou"), nil
 }
 
 func manifestPath() string { return filepath.Join(dataRoot(), "manifest.json") }

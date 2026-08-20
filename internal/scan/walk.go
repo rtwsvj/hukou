@@ -25,7 +25,10 @@ func SplitPATH(pathEnv string) []string {
 
 // SplitPATHWithWarnings is like SplitPATH but also returns warnings for
 // empty segments that were skipped (POSIX would treat them as ".").
-// Relative segments are normalized with filepath.Abs.
+// Relative segments are normalized with filepath.Abs. Segments are NOT
+// whitespace-trimmed: POSIX splits PATH on ':' verbatim, so a directory
+// named " /opt/bin " is a real, different directory — only empty or
+// all-whitespace segments are skipped.
 func SplitPATHWithWarnings(pathEnv string) (dirs []string, warnings []string) {
 	if pathEnv == "" {
 		return nil, nil
@@ -33,8 +36,7 @@ func SplitPATHWithWarnings(pathEnv string) (dirs []string, warnings []string) {
 	parts := strings.Split(pathEnv, string(os.PathListSeparator))
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
+		if strings.TrimSpace(p) == "" {
 			warnings = append(warnings,
 				"empty PATH segment skipped (deliberate: not treated as current directory, unlike POSIX)")
 			continue
@@ -74,8 +76,10 @@ func Walk(dirs []string) (*Result, error) {
 		}
 
 		// Directory-level dedup: EvalSymlinks + SameFile against already scanned.
+		// A skipped duplicate is a Warnings entry, not an error: dedup is the
+		// scan working as designed, not a failure.
 		if skip, reason := shouldSkipDir(dir, scannedDirs); skip {
-			res.Errors = append(res.Errors, reason)
+			res.Warnings = append(res.Warnings, reason)
 			continue
 		}
 		id, err := identifyDir(dir)

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -14,22 +13,28 @@ import (
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
-// While another writer's REAL Begin is in flight (held
-// mid-capture on a writerless FIFO behind a symlink), its .building-* window
-// must degrade the hukou detector exactly like pending residue. A single
-// point-in-time check cannot cover the scan's read cycle, so an active
-// writer's building journal is never treated as harmless.
+// While another writer's REAL Begin is in flight (parked mid-capture via the
+// transaction package's TestBeforeCaptureHook seam — the old writerless-FIFO
+// fixture no longer blocks now that the journal hashes via safeopen), its
+// .building-* window must degrade the hukou detector exactly like pending
+// residue. A single point-in-time check cannot cover the scan's read cycle,
+// so an active writer's building journal is never treated as harmless.
 func TestHukouDetectorFailsClosedDuringActiveBegin(t *testing.T) {
 	root := t.TempDir()
 	aux := t.TempDir()
-	fifo := filepath.Join(aux, "fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	live := filepath.Join(aux, "live")
-	if err := os.Symlink(fifo, live); err != nil {
+	if err := os.WriteFile(live, []byte("live"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	oldHook := statejournal.TestBeforeCaptureHook
+	statejournal.TestBeforeCaptureHook = func(string) {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { statejournal.TestBeforeCaptureHook = oldHook })
 
 	begun := make(chan error, 1)
 	go func() {
@@ -39,19 +44,10 @@ func TestHukouDetectorFailsClosedDuringActiveBegin(t *testing.T) {
 		begun <- err
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		status, err := statejournal.Inspect(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(status.Building) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for a building journal, status=%+v", status)
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Begin never reached the capture hook")
 	}
 
 	// Begin is deterministically parked inside its capture right now.
@@ -67,12 +63,8 @@ func TestHukouDetectorFailsClosedDuringActiveBegin(t *testing.T) {
 		t.Fatalf("degraded load must not emit advisory notes, got %v", d.Notes())
 	}
 
-	// Unblock the capture: open and close the FIFO's write end (EOF).
-	w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = w.Close()
+	// Unblock the capture: Begin publishes pending-*.
+	close(release)
 	if err := <-begun; err != nil {
 		t.Fatalf("Begin should publish once the capture unblocks: %v", err)
 	}

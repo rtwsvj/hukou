@@ -87,3 +87,35 @@ func TestEnvProxyURL(t *testing.T) {
 	}
 	_ = url.URL{}
 }
+
+// TestSystemProxyURLFallsBackToEnvironment: when the platform layer reports no
+// proxy (always the case off macOS), SystemProxyURL falls back to the standard
+// environment variables so Linux/CI env proxies work identically.
+func TestSystemProxyURLFallsBackToEnvironment(t *testing.T) {
+	orig := platformSystemProxyURL
+	platformSystemProxyURL = func() *url.URL { return nil }
+	t.Cleanup(func() { platformSystemProxyURL = orig })
+
+	t.Setenv("HTTPS_PROXY", "http://env-proxy:3128")
+	u := SystemProxyURL()
+	if u == nil || u.String() != "http://env-proxy:3128" {
+		t.Fatalf("SystemProxyURL = %v, want the env proxy", u)
+	}
+}
+
+// TestSystemProxyURLPlatformWinsOverEnvironment: a configured platform proxy
+// takes precedence over the environment fallback.
+func TestSystemProxyURLPlatformWinsOverEnvironment(t *testing.T) {
+	orig := platformSystemProxyURL
+	platformSystemProxyURL = func() *url.URL {
+		u, _ := url.Parse("http://plist-proxy:7890")
+		return u
+	}
+	t.Cleanup(func() { platformSystemProxyURL = orig })
+
+	t.Setenv("HTTPS_PROXY", "http://env-proxy:3128")
+	u := SystemProxyURL()
+	if u == nil || u.String() != "http://plist-proxy:7890" {
+		t.Fatalf("SystemProxyURL = %v, want the platform proxy", u)
+	}
+}

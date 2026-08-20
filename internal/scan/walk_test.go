@@ -372,10 +372,13 @@ func TestWalk_dirDedupSymlink(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("symlink-dup dir should scan once, got %d entries", count)
 	}
-	// Errors should mention duplicate skip
-	joined := strings.Join(res.Errors, "\n")
+	// The duplicate skip is a warning, not an error: dedup is by design.
+	joined := strings.Join(res.Warnings, "\n")
 	if !strings.Contains(joined, "duplicate") {
-		t.Fatalf("expected duplicate skip diagnostic, got %v", res.Errors)
+		t.Fatalf("expected duplicate skip warning, got %v", res.Warnings)
+	}
+	if strings.Contains(strings.Join(res.Errors, "\n"), "duplicate") {
+		t.Fatalf("dedup reason must not be reported as an error, got %v", res.Errors)
 	}
 }
 
@@ -504,4 +507,21 @@ func u32le(v uint32) []byte {
 	b := make([]byte, 4)
 	binary.LittleEndian.PutUint32(b, v)
 	return b
+}
+
+// L14: PATH segments are split on ':' verbatim — POSIX does not trim
+// whitespace, so " /x " names a real, different directory. Only empty or
+// all-whitespace segments are skipped (with the usual warning).
+func TestSplitPATHWithWarnings_NoTrimOfNonEmptySegments(t *testing.T) {
+	dirs, warns := SplitPATHWithWarnings(" /a : :\t")
+	if len(dirs) != 1 {
+		t.Fatalf("dirs=%#v, want exactly the whitespace-padded segment", dirs)
+	}
+	// The segment is kept verbatim (Abs-normalized, never trimmed).
+	if !strings.HasSuffix(dirs[0], " /a ") {
+		t.Fatalf("segment was trimmed: %q", dirs[0])
+	}
+	if len(warns) != 2 {
+		t.Fatalf("want 2 skipped-segment warnings (empty + all-whitespace), got %v", warns)
+	}
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -82,7 +83,7 @@ func TestPersistSnapshotHistory_WritesRunJSONRoundTrip(t *testing.T) {
 		{Name: "npm", Status: orchestrate.StatusFailed, ExitCode: 2, Duration: 500 * time.Millisecond},
 	}
 
-	dir, err := persistSnapshotHistory(root, now, upSnapshot{Time: "pre"}, upSnapshot{Time: "post"}, orchestrate.Diff{}, results)
+	dir, err := persistSnapshotHistory(root, now, upSnapshot{Time: "pre"}, upSnapshot{Time: "post"}, orchestrate.Diff{}, results, io.Discard)
 	if err != nil {
 		t.Fatalf("persist: %v", err)
 	}

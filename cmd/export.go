@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 
+	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
@@ -126,7 +128,17 @@ func doExport(stdout io.Writer, output string) error {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		return fail(i18n.Wrapf("create toolset list directory: %w", err))
 	}
-	if err := os.WriteFile(output, payload, 0o600); err != nil {
+	// Never write through a planted symlink; the atomic write then lands the
+	// list with EXACTLY 0600 (os.WriteFile would keep a pre-existing file's
+	// mode).
+	if info, err := os.Lstat(output); err == nil {
+		if !info.Mode().IsRegular() {
+			return fail(i18n.Errorf("toolset list output path is not a regular file: %s", output))
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fail(i18n.Wrapf("stat toolset list output path: %w", err))
+	}
+	if err := durablefs.AtomicWriteFile(output, payload, 0o600); err != nil {
 		return fail(i18n.Wrapf("write toolset list: %w", err))
 	}
 	_, err = fmt.Fprintf(stdout, "%s\n", i18n.T("Toolset list written: %s", output))

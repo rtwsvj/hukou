@@ -180,7 +180,9 @@ func extractTarEntry(archivePath, destDir, wantEntry string) (string, error) {
 		if filepath.Clean(h.Name) != filepath.Clean(wantEntry) {
 			continue
 		}
-		if _, err := writeLimited(tr, destDir, h.Name, os.FileMode(h.Mode)&0o777, 0); err != nil {
+		// Extracted files are normalized to 0o755: the archive's own mode bits
+		// (including any write/setuid games) are never trusted.
+		if _, err := writeLimited(tr, destDir, h.Name, 0o755, 0); err != nil {
 			return "", err
 		}
 		return safeJoin(destDir, h.Name)
@@ -260,7 +262,9 @@ func writeZipEntryLimited(zf *zip.File, destDir string, totalSoFar int64) (strin
 	}
 	defer rc.Close()
 	name := filepath.FromSlash(zf.Name)
-	n, err := writeLimited(rc, destDir, name, zf.Mode()&0o777, totalSoFar)
+	// Mode normalized to 0o755 like the tar path; the archive's bits are
+	// never trusted.
+	n, err := writeLimited(rc, destDir, name, 0o755, totalSoFar)
 	if err != nil {
 		return "", 0, err
 	}

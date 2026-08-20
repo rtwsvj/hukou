@@ -35,8 +35,12 @@ else
 fi
 
 dist="${DIST_DIR:-$root/dist}"
-rm -rf "$dist"
 mkdir -p "$dist"
+# Clean ONLY what this script produces. DIST_DIR is user-overridable, so the
+# directory is never removed wholesale (no `rm -rf "$dist"`): a stray value
+# must not delete anything else it contains.
+rm -rf "$dist/.stage"
+rm -f "$dist"/hukou_*.tar.gz "$dist/checksums.txt"
 
 # Version/commit/date -X assembly is single-sourced in scripts/build_flags.sh
 # (shared with `make build-release`); the strict SemVer validation above is

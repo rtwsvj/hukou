@@ -9,6 +9,7 @@ package sysproxy
 
 import (
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -31,8 +32,17 @@ func EnvProxyURL(getenv func(string) string) *url.URL {
 	return nil
 }
 
-// SystemProxyURL returns the macOS system proxy (HTTPS preferred, then HTTP,
-// then SOCKS), reading the SystemConfiguration preferences plist directly.
-// On non-darwin platforms it returns nil. The proxy is only honored when the
-// corresponding Enable flag is set in the preferences.
-var SystemProxyURL = defaultSystemProxyURL
+// SystemProxyURL returns the proxy to offer code paths that need one beyond
+// net/http's automatic ProxyFromEnvironment: on macOS the SystemConfiguration
+// plist proxy (HTTPS preferred, then HTTP, then SOCKS, only when the
+// corresponding Enable flag is set); when the platform reports none — always
+// the case off macOS — it falls back to the standard proxy environment
+// variables (EnvProxyURL), so an env-configured proxy behaves the same on
+// every platform. This mirrors, not contradicts, http.DefaultTransport: the
+// env fallback only fires when the platform layer found nothing.
+var SystemProxyURL = func() *url.URL {
+	if u := platformSystemProxyURL(); u != nil {
+		return u
+	}
+	return EnvProxyURL(os.Getenv)
+}

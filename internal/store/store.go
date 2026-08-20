@@ -13,6 +13,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/i18n"
+	"github.com/rtwsvj/hukou/internal/safeopen"
 )
 
 // sha256FileCalls counts whole-file SHA-256 computations performed by
@@ -21,6 +22,18 @@ import (
 // reading and hashing an entire file. Benchmarks use it to measure how many
 // redundant full-file passes a refactor removes.
 var sha256FileCalls atomic.Uint64
+
+// entryIsRegular reports whether a ReadDir entry is a regular file. DirEntry
+// .Type() carries no type bits both for regular files and for DT_UNKNOWN
+// (filesystems that do not report dirent types), so the ambiguous zero is
+// confirmed with one Lstat instead of being trusted blindly.
+func entryIsRegular(dir string, e os.DirEntry) bool {
+	if e.Type()&os.ModeType != 0 {
+		return false
+	}
+	info, err := os.Lstat(filepath.Join(dir, e.Name()))
+	return err == nil && info.Mode().IsRegular()
+}
 
 // Store manages versioned binary artifacts under Root.
 //
@@ -275,7 +288,7 @@ func (s *Store) PutWithDigest(name, tag, srcPath string) (string, error) {
 		}
 		if len(entries) == 0 {
 			// Continue below and install the staged inode with a no-replace link.
-		} else if len(entries) != 1 || entries[0].Name() != filepath.Base(srcPath) || !entries[0].Type().IsRegular() {
+		} else if len(entries) != 1 || entries[0].Name() != filepath.Base(srcPath) || !entryIsRegular(dstDir, entries[0]) {
 			return "", i18n.Errorf("version %s/%s already exists with unexpected contents", name, tag)
 		} else {
 			dstPath := filepath.Join(dstDir, filepath.Base(srcPath))
@@ -460,7 +473,7 @@ func (s *Store) Activate(name, tag, livePath string) error {
 
 	var binName string
 	for _, e := range entries {
-		if e.Type().IsRegular() {
+		if entryIsRegular(tagDir, e) {
 			if binName != "" {
 				return i18n.Errorf("version %s/%s contains multiple binaries", name, tag)
 			}
@@ -1030,10 +1043,12 @@ func (s *Store) GC() error {
 	return s.durability().Mkdir(tmpDir, 0o755)
 }
 
-// SHA256File returns the hex-encoded SHA-256 digest of the file at path.
+// SHA256File returns the hex-encoded SHA-256 digest of the file at path. The
+// open goes through safeopen so a FIFO/device swapped in after a caller's
+// stat fails closed instead of blocking the hash forever.
 func SHA256File(path string) (string, error) {
 	sha256FileCalls.Add(1)
-	f, err := os.Open(path)
+	f, err := safeopen.Open(path)
 	if err != nil {
 		return "", err
 	}

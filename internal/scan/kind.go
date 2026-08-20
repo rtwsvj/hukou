@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+
+	"github.com/rtwsvj/hukou/internal/safeopen"
 )
 
 // Mach-O and fat magic numbers (host and opposite byte order).
@@ -28,8 +30,10 @@ const (
 
 // DetectKind reads at most the first 8 bytes of path and classifies the binary.
 // Unreadable files return KindOther and a non-nil error so callers can skip/count.
+// The open goes through safeopen so a FIFO swapped in after the walker's stat
+// fails closed instead of blocking the scan forever.
 func DetectKind(path string) (BinKind, error) {
-	f, err := os.Open(path)
+	f, err := safeopen.Open(path)
 	if err != nil {
 		return KindOther, err
 	}

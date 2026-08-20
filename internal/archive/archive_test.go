@@ -699,3 +699,29 @@ func TestIsExecutableLike(t *testing.T) {
 var _ = io.ReadAll
 var _ = errors.New
 var _ = bytes.NewReader
+
+// TestExtractNormalizesArchiveMode: archive mode bits are never trusted — a
+// 0o777 (or otherwise exotic) entry lands on disk as 0o755, so no group/world
+// write bit or setuid game survives extraction.
+func TestExtractNormalizesArchiveMode(t *testing.T) {
+	archive := makeTarGz(t, []struct {
+		name string
+		body string
+		mode int64
+	}{
+		{"mytool", "binary data", 0o777},
+	})
+
+	dest := t.TempDir()
+	out, err := Extract(archive, dest, "mytool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("extracted mode = %o, want 755 (normalized from 777)", got)
+	}
+}

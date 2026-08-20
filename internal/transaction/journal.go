@@ -18,7 +18,18 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/i18n"
+	"github.com/rtwsvj/hukou/internal/safeopen"
 )
+
+// TestBeforeCaptureHook is a deterministic race seam for tests (same pattern
+// as the package-internal testBeforeApplyHook in recover.go, but exported so
+// other packages' integration tests — e.g. provenance's detector degradation
+// test — can park a real Begin). Production leaves it nil; tests use it to
+// park Begin mid-capture — after the .building-* journal directory exists but
+// before pending-* is published. It replaced the old writerless-FIFO fixture
+// once sha256File learned (via safeopen) to fail closed on non-regular
+// targets instead of blocking on them.
+var TestBeforeCaptureHook func(path string)
 
 const (
 	journalSchemaVersion = 1
@@ -463,6 +474,9 @@ func Begin(dataRoot, operation, name string, specs []Spec) (_ *Transaction, retE
 		}
 		paths[path] = struct{}{}
 
+		if TestBeforeCaptureHook != nil {
+			TestBeforeCaptureHook(path)
+		}
 		before, err := capturePath(path, buildingDir, fmt.Sprintf("%02d-before.bin", i))
 		if err != nil {
 			return nil, i18n.Wrapf("capture %s before state: %w", err, spec.Role)
@@ -934,7 +948,9 @@ func validateState(state State) error {
 }
 
 func sha256File(path string) (string, error) {
-	f, err := os.Open(path)
+	// safeopen: a FIFO swapped in after the caller's Lstat must fail closed,
+	// never block recovery on a read with no writer.
+	f, err := safeopen.Open(path)
 	if err != nil {
 		return "", err
 	}
