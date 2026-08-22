@@ -113,7 +113,7 @@ func TestImportDryRunWritesNothing(t *testing.T) {
 	doc := exportDoc{
 		SchemaVersion: exportFileSchemaVersion,
 		ExportedAt:    "2026-08-01T00:00:00Z",
-		Tools:         []exportEntry{{Name: "toola", Type: "github", Repo: "owner/repo", Tag: "v1.0.0", UpdatePolicy: exportPolicy{Mode: "semver", Channel: "stable"}}},
+		Tools:         []exportEntry{{Name: "toola", Type: "github", Repo: "owner/repo", Tag: "v1.0.0", SHA256: strings.Repeat("a", 64), UpdatePolicy: exportPolicy{Mode: "semver", Channel: "stable"}}},
 	}
 	payload, _ := json.Marshal(doc)
 	if err := os.WriteFile(listFile, payload, 0o600); err != nil {
@@ -147,6 +147,12 @@ func TestImportRejectsInvalidDocs(t *testing.T) {
 		"bad repo":           `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"not-a-repo","tag":"v1","update_policy":{"mode":"semver","channel":"stable"}}]}`,
 		"bad type":           `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"ftp","tag":"v1","update_policy":{"mode":"semver","channel":"stable"}}]}`,
 		"empty tools":        `{"schema_version":1,"exported_at":"x","tools":[]}`,
+		"esc in repo":        `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"own\u001bber/r","tag":"v1","sha256":"` + strings.Repeat("a", 64) + `","update_policy":{"mode":"semver","channel":"stable"}}]}`,
+		"empty sha256":       `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"o/r","tag":"v1","update_policy":{"mode":"semver","channel":"stable"}}]}`,
+		"short sha256":       `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"o/r","tag":"v1","sha256":"deadbeef","update_policy":{"mode":"semver","channel":"stable"}}]}`,
+		"nonhex sha256":      `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"o/r","tag":"v1","sha256":"` + strings.Repeat("g", 64) + `","update_policy":{"mode":"semver","channel":"stable"}}]}`,
+		"bad adopted_sha256": `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"o/r","tag":"v1","sha256":"` + strings.Repeat("a", 64) + `","adopted_sha256":"zz","update_policy":{"mode":"semver","channel":"stable"}}]}`,
+		"bad pinned_tag":     `{"schema_version":1,"exported_at":"x","tools":[{"name":"a","type":"github","repo":"o/r","tag":"v1","sha256":"` + strings.Repeat("a", 64) + `","update_policy":{"mode":"semver","channel":"stable","pinned_tag":"../evil"}}]}`,
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -169,7 +175,7 @@ func TestImportMissingBinaryFailsAndLeavesNothing(t *testing.T) {
 	doc := exportDoc{
 		SchemaVersion: exportFileSchemaVersion,
 		ExportedAt:    "2026-08-01T00:00:00Z",
-		Tools:         []exportEntry{{Name: "ghost", Type: "github", Repo: "owner/repo", Tag: "v1.0.0", UpdatePolicy: exportPolicy{Mode: "semver", Channel: "stable"}}},
+		Tools:         []exportEntry{{Name: "ghost", Type: "github", Repo: "owner/repo", Tag: "v1.0.0", SHA256: strings.Repeat("b", 64), UpdatePolicy: exportPolicy{Mode: "semver", Channel: "stable"}}},
 	}
 	payload, _ := json.Marshal(doc)
 	if err := os.WriteFile(listFile, payload, 0o600); err != nil {
@@ -256,6 +262,28 @@ func TestImportMismatchedSHAWarnsAndRecordsActualTag(t *testing.T) {
 	if e := m.Get("toolb"); e == nil || e.Tag != "v1.0.0" {
 		t.Fatalf("matching import did not keep the exported tag: %+v", e)
 	}
+
+	// toolc: a v999 tag whose sha256 matches the real binary is trusted —
+	// the digest is proof this machine runs exactly the build the list
+	// recorded, so the exported tag stands (documented behavior).
+	writeExecutable(t, binDir, "toolc", "v3-binary\n")
+	sumV3 := sha256.Sum256([]byte("v3-binary\n"))
+	shaV3 := hex.EncodeToString(sumV3[:])
+	errBuf.Reset()
+	res = importOne(exportEntry{Name: "toolc", Type: "github", Repo: "owner/repo", Tag: "v999.0.0", SHA256: shaV3}, false, &errBuf)
+	if res.Status != "ok" {
+		t.Fatalf("importOne match-v999: %+v (stderr: %s)", res, errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "differs from the exported list") {
+		t.Fatalf("false-positive warning on a matching sha:\n%s", errBuf.String())
+	}
+	m, err = loadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := m.Get("toolc"); e == nil || e.Tag != "v999.0.0" || e.SHA256 != shaV3 {
+		t.Fatalf("matching v999 import not trusted: %+v", e)
+	}
 }
 
 // L17: export --output never writes through a planted symlink and always
@@ -306,7 +334,7 @@ func TestExportOutputRejectsSymlinkAndForces0600(t *testing.T) {
 // L18: import refuses a symlinked toolset list and one over the size cap.
 func TestImportRejectsSymlinkAndOversizedList(t *testing.T) {
 	real := filepath.Join(t.TempDir(), "real.json")
-	if err := os.WriteFile(real, []byte(`{"schema_version":1,"tools":[{"name":"toola","type":"github","repo":"owner/repo","tag":"v1.0.0","sha256":"","update_policy":{"mode":"semver","channel":"stable"}}]}`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(real, []byte(`{"schema_version":1,"tools":[{"name":"toola","type":"github","repo":"owner/repo","tag":"v1.0.0","sha256":"`+strings.Repeat("a", 64)+`","update_policy":{"mode":"semver","channel":"stable"}}]}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(t.TempDir(), "link.json")

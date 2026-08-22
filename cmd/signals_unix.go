@@ -7,8 +7,10 @@ import (
 	"syscall"
 )
 
-// interruptSignals are the signals that cancel a running `hukou up`. On unix we
-// watch both SIGINT (terminal Ctrl-C) and SIGTERM (orchestrators, `kill`).
+// interruptSignals are the signals that cancel a running `hukou up`: SIGINT
+// (terminal Ctrl-C), SIGTERM (orchestrators, `kill`), and SIGHUP (terminal
+// closed or multiplexer detached). Each cancels the NotifyContext run context,
+// which drives the executor's group terminate + snapshot fallthrough.
 func interruptSignals() []os.Signal {
-	return []os.Signal{os.Interrupt, syscall.SIGTERM}
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 }

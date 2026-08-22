@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rtwsvj/hukou/internal/sysproxy"
@@ -25,8 +26,10 @@ func stubSystemProxy(t *testing.T, rawurl string) {
 	t.Cleanup(func() { sysproxy.SystemProxyURL = orig })
 }
 
-// clearProxyEnv neutralizes every environment variable buildChildEnv consults,
+// clearProxyEnv unsets every environment variable buildChildEnv consults,
 // so a test never depends on the host machine's real proxy configuration.
+// Variables are UNSET, not set empty: a present-but-empty HTTPS_PROXY counts
+// as explicit user configuration and would block injection.
 func clearProxyEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -35,6 +38,7 @@ func clearProxyEnv(t *testing.T) {
 		"HUKOU_UP_NO_PROXY_INHERIT", "HUKOU_UP_ENV_PASSTHRU",
 	} {
 		t.Setenv(key, "")
+		os.Unsetenv(key)
 	}
 }
 
@@ -212,14 +216,18 @@ func TestFilteredEnviron_PassthruListAndStar(t *testing.T) {
 		t.Fatal("GITHUB_TOKEN leaked despite a name-only passthru list")
 	}
 
-	// "*" restores full inheritance and flags the escape for the caller.
+	// "*" restores full inheritance and flags the escape for the caller —
+	// except the denylist, which wins even over "*".
 	t.Setenv("HUKOU_UP_ENV_PASSTHRU", "*")
 	env, full = filteredEnviron()
 	if !full {
 		t.Fatal("fullPassthru = false for the * escape hatch")
 	}
-	if v, _ := envValue(env, "GITHUB_TOKEN"); v != "ghp_secret" {
-		t.Fatalf("full passthru lost GITHUB_TOKEN: %q", v)
+	if _, ok := envValue(env, "GITHUB_TOKEN"); ok {
+		t.Fatal("GITHUB_TOKEN survived full passthru; denylist must win over *")
+	}
+	if v, _ := envValue(env, "MY_CUSTOM_FLAG"); v != "1" {
+		t.Fatalf("full passthru dropped a non-denylisted variable: %q", v)
 	}
 }
 
@@ -292,5 +300,132 @@ func TestRunManager_FullPassthruNotice(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "[brew] HUKOU_UP_ENV_PASSTHRU=*") {
 		t.Fatalf("stderr missing the full-passthru notice:\n%s", errb.String())
+	}
+}
+
+// TestFilteredEnviron_DenylistStripsBrewTokens: the brew token family used to
+// ride in through the HOMEBREW_* prefix; now only exact non-secret settings
+// pass, and the tokens drop even though they carry the prefix.
+func TestFilteredEnviron_DenylistStripsBrewTokens(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HOMEBREW_GITHUB_API_TOKEN", "ghp_brew_secret")
+	t.Setenv("HOMEBREW_GITHUB_PACKAGES_TOKEN", "ghp_pkg_secret")
+	t.Setenv("GH_TOKEN", "gh_cli_secret")
+	t.Setenv("NPM_TOKEN", "npm_secret")
+	t.Setenv("NODE_AUTH_TOKEN", "npmrc_secret")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIA_SECRET")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws_secret")
+	t.Setenv("HOMEBREW_NO_AUTO_UPDATE", "1")
+	t.Setenv("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+	t.Setenv("HOMEBREW_NO_ENV_HINTS", "1")
+
+	env, full := filteredEnviron()
+	if full {
+		t.Fatal("fullPassthru = true without the escape hatch")
+	}
+	for _, key := range []string{
+		"HOMEBREW_GITHUB_API_TOKEN", "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+		"GH_TOKEN", "NPM_TOKEN", "NODE_AUTH_TOKEN",
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+	} {
+		if _, ok := envValue(env, key); ok {
+			t.Fatalf("denied secret %s leaked into the child environment", key)
+		}
+	}
+	for key, want := range map[string]string{
+		"HOMEBREW_NO_AUTO_UPDATE":     "1",
+		"HOMEBREW_NO_INSTALL_CLEANUP": "1",
+		"HOMEBREW_NO_ENV_HINTS":       "1",
+	} {
+		if v, ok := envValue(env, key); !ok || v != want {
+			t.Fatalf("non-secret brew setting %s = %q (present=%v), want %q", key, v, ok, want)
+		}
+	}
+}
+
+// TestChildEnvDropsBrewTokenForEveryManager: the denylist is manager-agnostic
+// — the brew subprocess AND every other manager's subprocess run without it.
+func TestChildEnvDropsBrewTokenForEveryManager(t *testing.T) {
+	skipOnWindows(t)
+	clearProxyEnv(t)
+	t.Setenv("HUKOU_UP_ENV_PASSTHRU", "*")
+	stubSystemProxy(t, "")
+	dir := t.TempDir()
+	ok := writeScript(t, dir, "guard.sh", "#!/bin/sh\n"+
+		"if [ -n \"$HOMEBREW_GITHUB_API_TOKEN\" ]; then echo \"LEAKED BREW TOKEN\"; exit 1; fi\n"+
+		"exit 0\n")
+	for _, name := range []string{"brew", "npm"} {
+		var out, errb lockedBuf
+		e := New(&out, &errb)
+		if res := e.RunManager(t.Context(), name, [][]string{{ok}}); !res.OK() {
+			t.Fatalf("[%s] status = %s (err=%v)", name, res.Status, res.Err)
+		}
+		if strings.Contains(out.String(), "LEAKED") {
+			t.Fatalf("%s subprocess saw HOMEBREW_GITHUB_API_TOKEN despite passthru=*", name)
+		}
+	}
+}
+
+// TestBuildChildEnv_EmptyExplicitProxyBlocksInjection: an environment that
+// carries HTTPS_PROXY/https_proxy PRESENT but EMPTY is deliberate user
+// configuration ("no proxy for this run") and must suppress system-proxy
+// injection exactly like a filled-in value would.
+func TestBuildChildEnv_EmptyExplicitProxyBlocksInjection(t *testing.T) {
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy"} {
+		t.Run(key, func(t *testing.T) {
+			clearProxyEnv(t)
+			t.Setenv(key, "")
+			stubSystemProxy(t, "http://127.0.0.1:7890")
+
+			env, host, _ := buildChildEnv()
+			if host != "" {
+				t.Fatalf("proxyHost = %q, want injection blocked by empty %s=", host, key)
+			}
+			for _, injected := range proxyEnvKeys {
+				if _, ok := envValue(env, injected); ok {
+					t.Fatalf("%s injected despite explicit empty %s=", injected, key)
+				}
+			}
+		})
+	}
+}
+
+// TestLineWriterSanitizesEscapeSequences: a manager line containing ESC (and
+// other C0/C1 controls) is emitted with them replaced, so subprocess output
+// cannot clear the screen or paint a fake final report.
+func TestLineWriterSanitizesEscapeSequences(t *testing.T) {
+	var buf lockedBuf
+	lw := &lineWriter{mu: &sync.Mutex{}, dst: &buf, prefix: "[brew] "}
+	lw.Write([]byte("\x1b[2J\x1b[1;1HALL UPGRADES COMPLETE\x07\n"))
+	lw.flush()
+	got := buf.String()
+	if strings.ContainsAny(got, "\x1b\x07") {
+		t.Fatalf("escape/control bytes survived sanitization: %q", got)
+	}
+	if !strings.Contains(got, "?[2J?[1;1HALL UPGRADES COMPLETE?") {
+		t.Fatalf("sanitized output lost visible text or mis-marked controls: %q", got)
+	}
+}
+
+// TestLineOutputFromManagerIsSanitized: end-to-end through RunManager — a
+// subprocess painting ANSI clear-screen/fake-report sequences onto stdout has
+// them stripped before they reach hukou's own stream.
+func TestLineOutputFromManagerIsSanitized(t *testing.T) {
+	skipOnWindows(t)
+	clearProxyEnv(t)
+	stubSystemProxy(t, "")
+	dir := t.TempDir()
+	painter := writeScript(t, dir, "painter.sh",
+		"#!/bin/sh\nprintf '\\033[2JUPGRADE SUCCESSFUL, SEND NO FURTHER REPORT\\n'\nexit 0\n")
+	var out, errb lockedBuf
+	e := New(&out, &errb)
+	if res := e.RunManager(t.Context(), "npm", [][]string{{painter}}); !res.OK() {
+		t.Fatalf("status = %s (err=%v)", res.Status, res.Err)
+	}
+	if strings.ContainsRune(out.String(), '\x1b') {
+		t.Fatalf("ESC byte from manager output reached the log:\n%q", out.String())
+	}
+	if !strings.Contains(out.String(), "[npm] ?[2JUPGRADE SUCCESSFUL") {
+		t.Fatalf("sanitized manager line missing from output:\n%q", out.String())
 	}
 }

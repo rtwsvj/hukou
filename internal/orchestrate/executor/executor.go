@@ -32,6 +32,7 @@ import (
 
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/orchestrate"
+	"github.com/rtwsvj/hukou/internal/sanitize"
 )
 
 // DefaultTimeout bounds a single manager's whole run (all of its commands). A
@@ -142,7 +143,10 @@ func (e *Executor) RunManager(ctx context.Context, name string, commands [][]str
 func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// Process-group setup decides what cancellation kills (see procgroup_*).
-	configureProc(cmd)
+	// waitDone closes once Wait below has returned; the unix SIGKILL
+	// escalation reads it to spare an already-reaped process group.
+	waitDone := make(chan struct{})
+	configureProc(cmd, waitDone)
 	// WaitDelay bounds pipe draining after the process exits or is killed, so a
 	// detached grandchild holding an inherited pipe cannot wedge Wait forever.
 	cmd.WaitDelay = waitDrainGrace
@@ -168,10 +172,12 @@ func (e *Executor) runOne(ctx context.Context, name string, argv []string) (int,
 	cmd.Stderr = errW
 
 	if err := cmd.Start(); err != nil {
+		close(waitDone)
 		return -1, err
 	}
 
 	waitErr := cmd.Wait()
+	close(waitDone)
 	// Wait has joined the internal copy goroutines; flush any trailing
 	// unterminated line from each stream.
 	outW.flush()
@@ -256,9 +262,14 @@ func (lw *lineWriter) flush() {
 	lw.buf = lw.buf[:0]
 }
 
+// emit writes one sanitized line. Manager subprocesses run third-party code,
+// so every streamed line goes through sanitize.Terminal first: ESC and other
+// control characters become '?', so npm/brew output cannot paint fake final
+// reports over hukou's own summary. The newline itself stays outside the
+// sanitized text (Fprintf appends it).
 func (lw *lineWriter) emit(line []byte) {
 	lw.mu.Lock()
-	fmt.Fprintf(lw.dst, "%s%s\n", lw.prefix, line)
+	fmt.Fprintf(lw.dst, "%s%s\n", lw.prefix, sanitize.Terminal(string(line)))
 	lw.mu.Unlock()
 }
 

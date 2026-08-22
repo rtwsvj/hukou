@@ -8,9 +8,11 @@ import (
 
 // Table renders column-aligned human text using display widths rather than
 // rune counts, so CJK wide runes align correctly (text/tabwriter pads by rune
-// count and cannot). Cells are written verbatim — callers are responsible for
-// sanitizing free-text cells. Rows are buffered until Flush so column widths
-// can be computed from the whole table; columns are separated by two spaces.
+// count and cannot). Row sanitizes every cell through sanitizeField by
+// default, so control characters or ANSI escapes in free text render as '?'
+// instead of shifting columns; sanitization is idempotent, and JSON output
+// paths are untouched. Rows are buffered until Flush so column widths can be
+// computed from the whole table; columns are separated by two spaces.
 type Table struct {
 	w      io.Writer
 	header []string
@@ -26,15 +28,20 @@ func NewTable(w io.Writer, header ...string) *Table {
 	return t
 }
 
-// Row appends one data row. The cell count must match the header width; a
-// mismatch is a programming error and fails loudly rather than corrupting the
-// alignment.
+// Row appends one data row. Every cell is sanitized through sanitizeField,
+// which is idempotent, so callers that pre-sanitize are unaffected. The cell
+// count must match the header width; a mismatch is a programming error and
+// fails loudly rather than corrupting the alignment.
 func (t *Table) Row(cells ...string) {
 	if len(cells) != t.cols {
 		panic(fmt.Sprintf("output.Table: row has %d cells, table has %d columns", len(cells), t.cols))
 	}
-	t.measure(cells)
-	t.rows = append(t.rows, cells)
+	sanitized := make([]string, len(cells))
+	for i, cell := range cells {
+		sanitized[i] = sanitizeField(cell)
+	}
+	t.measure(sanitized)
+	t.rows = append(t.rows, sanitized)
 }
 
 func (t *Table) measure(cells []string) {

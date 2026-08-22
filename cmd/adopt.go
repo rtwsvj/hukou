@@ -178,7 +178,7 @@ func doAdoptWithDeps(stdout, stderr io.Writer, target, repoArg string, local boo
 	}
 	stressPause("post-prepared")
 	originalEntries, entriesErr := os.ReadDir(filepath.Dir(origPath))
-	if entriesErr != nil || len(originalEntries) != 1 || originalEntries[0].Name() != filepath.Base(origPath) || !originalEntries[0].Type().IsRegular() {
+	if entriesErr != nil || len(originalEntries) != 1 || originalEntries[0].Name() != filepath.Base(origPath) || !dirEntryIsRegular(filepath.Dir(origPath), originalEntries[0]) {
 		return fail(abortStateTransaction(tx, i18n.Errorf("original backup namespace changed during adoption; refusing inconsistent adoption: %v", entriesErr)))
 	}
 	backupSHA, backupErr := store.SHA256File(origPath)

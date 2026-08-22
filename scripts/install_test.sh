@@ -46,7 +46,7 @@ if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
     printf '%s\n' "$*" >>"$GH_MOCK_LOG"
   fi
   shift 2
-  subject= repo= identity_regex=
+  subject= repo= identity_regex= source_ref=
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --repo)
@@ -57,6 +57,11 @@ if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
       --cert-identity-regex)
         [ "$#" -ge 2 ] || { printf 'gh-mock: --cert-identity-regex requires a value\n' >&2; exit 1; }
         identity_regex=$2
+        shift 2
+        ;;
+      --source-ref)
+        [ "$#" -ge 2 ] || { printf 'gh-mock: --source-ref requires a value\n' >&2; exit 1; }
+        source_ref=$2
         shift 2
         ;;
       -*)
@@ -84,8 +89,23 @@ if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
   if [ -n "${GH_MOCK_EXPECT_IDENTITY_REGEX:-}" ]; then
     expected_identity_regex=$GH_MOCK_EXPECT_IDENTITY_REGEX
   fi
+  # A pinned invocation must pin the identity to the exact tag carried by
+  # --source-ref; an explicit GH_MOCK_EXPECT_IDENTITY_REGEX still wins.
+  if [ -n "$source_ref" ] && [ -z "${GH_MOCK_EXPECT_IDENTITY_REGEX:-}" ]; then
+    mock_tag=${source_ref#refs/tags/}
+    mock_esc=$(printf '%s' "$mock_tag" | sed 's/[][\.*^$+?{}|()]/\\&/g')
+    expected_identity_regex='^https://github\.com/'"${GH_MOCK_EXPECT_REPO:-rtwsvj/hukou}"'/\.github/workflows/release\.yml@refs/tags/'"${mock_esc}"'$'
+  fi
   if [ "$identity_regex" != "$expected_identity_regex" ]; then
     printf 'gh-mock: unexpected --cert-identity-regex: %s\n' "$identity_regex" >&2
+    exit 1
+  fi
+  # A --source-ref without an explicit expectation is the pinned shape: the
+  # identity regex was already checked against the tag it carries above. A
+  # non-pinned invocation must not carry one, which the loose-regex match
+  # plus the caller-side log assertions enforce.
+  if [ -n "${GH_MOCK_EXPECT_SOURCE_REF:-}" ] && [ "$source_ref" != "$GH_MOCK_EXPECT_SOURCE_REF" ]; then
+    printf 'gh-mock: unexpected --source-ref: %s\n' "$source_ref" >&2
     exit 1
   fi
   [ "${GH_MOCK_VERIFY:-fail}" = pass ] && exit 0
@@ -244,6 +264,37 @@ fi
 [ ! -e "${DUPLICATE_PREFIX}/bin/hukou" ]
 mv "${DOWNLOAD}/${NAME}.tar.gz.single" "${DOWNLOAD}/${NAME}.tar.gz"
 mv "${DOWNLOAD}/checksums.txt.single" "${DOWNLOAD}/checksums.txt"
+
+# A decompression-bomb shape is refused on sight: an archive with more than
+# 10000 members dies before any extraction, even when every member name is
+# benign and the checksum is valid.
+cp "${DOWNLOAD}/${NAME}.tar.gz" "${DOWNLOAD}/${NAME}.tar.gz.good"
+cp "${DOWNLOAD}/checksums.txt" "${DOWNLOAD}/checksums.txt.good"
+MANY_DIR=${TMP}/many/${NAME}
+mkdir -p "$MANY_DIR"
+MANY_I=0
+while [ "$MANY_I" -lt 10001 ]; do
+  : >"${MANY_DIR}/m${MANY_I}"
+  MANY_I=$((MANY_I + 1))
+done
+tar -czf "${DOWNLOAD}/${NAME}.tar.gz" -C "${TMP}/many" "$NAME"
+if command -v sha256sum >/dev/null 2>&1; then
+  MANY_HASH=$(sha256sum "${DOWNLOAD}/${NAME}.tar.gz" | awk '{print $1}')
+else
+  MANY_HASH=$(shasum -a 256 "${DOWNLOAD}/${NAME}.tar.gz" | awk '{print $1}')
+fi
+printf '%s  %s.tar.gz\n' "$MANY_HASH" "$NAME" >"${DOWNLOAD}/checksums.txt"
+TOO_MANY_PREFIX=${TMP}/too-many-prefix
+TOO_MANY_ERR=${TMP}/too-many.err
+if HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$TOO_MANY_PREFIX" 2>"$TOO_MANY_ERR"; then
+  printf 'installer accepted an archive with too many members\n' >&2
+  exit 1
+fi
+grep -q 'too many members' "$TOO_MANY_ERR"
+[ ! -e "$TOO_MANY_PREFIX" ]
+mv "${DOWNLOAD}/${NAME}.tar.gz.good" "${DOWNLOAD}/${NAME}.tar.gz"
+mv "${DOWNLOAD}/checksums.txt.good" "${DOWNLOAD}/checksums.txt"
 
 cat >"${PREFIX}/bin/hukou" <<'EOF'
 #!/bin/sh
@@ -433,14 +484,61 @@ REAL_TAR=$(command -v tar)
 ATTEST_PASS_PREFIX=${TMP}/attest-pass-prefix
 ATTEST_PASS_LOG=${TMP}/attest-pass-gh.log
 GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$ATTEST_PASS_LOG" \
+  GH_MOCK_EXPECT_IDENTITY_REGEX='^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v9\.9\.9$' \
+  GH_MOCK_EXPECT_SOURCE_REF='refs/tags/v9.9.9' \
   HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
   "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$ATTEST_PASS_PREFIX" >/dev/null
 [ "$("${ATTEST_PASS_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
 [ "$(wc -l <"$ATTEST_PASS_LOG" | tr -d ' ')" = 1 ]
+# A pinned install must pin the identity to the exact tag and pass the same
+# ref via --source-ref; the mock also enforces both values above.
 case "$(cat "$ATTEST_PASS_LOG")" in
-  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*\$") ;;
+  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v9\.9\.9\$ --source-ref refs/tags/v9.9.9") ;;
   *)
     printf 'unexpected gh attestation invocation: %s\n' "$(cat "$ATTEST_PASS_LOG")" >&2
+    exit 1
+    ;;
+esac
+# The default latest install keeps the loose identity pattern and must NOT
+# pass --source-ref: the tag is only discovered from the redirect itself, so
+# nothing is pinned yet. GitHub's /latest redirect is simulated with a curl
+# wrapper because file:// cannot follow Location responses.
+LATEST_CURL_DIR=${TMP}/latest-curl
+mkdir -p "$LATEST_CURL_DIR"
+cat >"${LATEST_CURL_DIR}/curl" <<'EOF'
+#!/bin/sh
+for LATEST_ARG in "$@"; do
+  case "$LATEST_ARG" in
+    */latest)
+      printf '%s' "$LATEST_EFFECTIVE_URL"
+      exit 0
+      ;;
+  esac
+done
+exec "$REAL_CURL" "$@"
+EOF
+chmod 0755 "${LATEST_CURL_DIR}/curl"
+
+ATTEST_LATEST_PREFIX=${TMP}/attest-latest-prefix
+ATTEST_LATEST_LOG=${TMP}/attest-latest-gh.log
+REAL_LATEST_CURL=$(command -v curl)
+GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$ATTEST_LATEST_LOG" \
+  PATH="${LATEST_CURL_DIR}:${PATH}" \
+  REAL_CURL="$REAL_LATEST_CURL" LATEST_EFFECTIVE_URL="file://${TMP}/releases/tag/v9.9.9" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --prefix "$ATTEST_LATEST_PREFIX" >/dev/null
+[ "$("${ATTEST_LATEST_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+[ "$(wc -l <"$ATTEST_LATEST_LOG" | tr -d ' ')" = 1 ]
+case "$(cat "$ATTEST_LATEST_LOG")" in
+  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*\$") ;;
+  *)
+    printf 'unexpected gh attestation invocation for latest: %s\n' "$(cat "$ATTEST_LATEST_LOG")" >&2
+    exit 1
+    ;;
+esac
+case "$(cat "$ATTEST_LATEST_LOG")" in
+  *--source-ref*)
+    printf 'latest install must not pass --source-ref\n' >&2
     exit 1
     ;;
 esac

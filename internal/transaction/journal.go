@@ -536,7 +536,7 @@ func (t *Transaction) Apply(role string) error {
 	if !ok {
 		return i18n.Errorf("unknown transaction role %q", role)
 	}
-	return convergeMutation(t.dir, *mutation, mutation.After)
+	return convergeMutation(t.dir, t.dataRoot, *mutation, mutation.After)
 }
 
 // Verify checks one participant against its captured before or after state
@@ -574,8 +574,12 @@ func (t *Transaction) VerifyAfter() error {
 }
 
 // Commit writes and durably syncs the transaction's irreversible decision.
-// If Commit returns an error, callers must invoke Recover rather than assuming
-// either outcome; the marker may have become visible before a sync error.
+// The marker is created empty and then filled with "<id>\n", so a crash inside
+// that window leaves an empty or partially written marker; recovery (and
+// repair planning) classify such torn markers as never-committed and roll the
+// transaction back. If Commit returns an error, callers must invoke Recover
+// rather than assuming either outcome; the marker may have become visible
+// before a sync error.
 func (t *Transaction) Commit() error {
 	if t == nil || t.done {
 		return i18n.Errorf("transaction is not active")
@@ -627,7 +631,7 @@ func (t *Transaction) Abort() error {
 	if committed {
 		return i18n.Errorf("cannot abort transaction %s: COMMIT exists", t.intent.ID)
 	}
-	if err := recoverLoaded(t.txRoot, t.dir, t.intent, false); err != nil {
+	if err := recoverLoaded(t.dataRoot, t.txRoot, t.dir, t.intent, false); err != nil {
 		return err
 	}
 	t.done = true
@@ -733,7 +737,9 @@ func captureRegular(sourcePath, dir, payloadName string) (State, error) {
 		return State{}, i18n.Errorf("source is not a regular file: %s", sourcePath)
 	}
 	payloadPath := filepath.Join(dir, payloadName)
-	src, err := os.Open(sourcePath)
+	// safeopen: a FIFO swapped in after the Lstat above must fail closed,
+	// never block the transaction lock on an open with no writer.
+	src, err := safeopen.Open(sourcePath)
 	if err != nil {
 		return State{}, err
 	}

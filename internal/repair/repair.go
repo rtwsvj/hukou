@@ -735,6 +735,12 @@ func validateTransactionState(value statejournal.State) error {
 	return nil
 }
 
+// validateCommitMarker mirrors statejournal's torn-COMMIT semantics so repair
+// planning converges on the same states recovery does: an absent marker, an
+// empty marker, or a trimmed byte-prefix of "<id>\n" is acceptable (Apply
+// routes through Recover, which rolls a torn transaction back), while alien
+// content and topology violations stay errors that surface as
+// ErrNotRepairable.
 func validateCommitMarker(dir, id string) error {
 	path := filepath.Join(dir, "COMMIT")
 	data, err := readStableRegular(path, 256)
@@ -744,8 +750,8 @@ func validateCommitMarker(dir, id string) error {
 	if err != nil {
 		return i18n.Wrapf("inspect transaction commit marker: %w", err)
 	}
-	if string(data) != id+"\n" {
-		return i18n.Errorf("invalid transaction commit marker")
+	if _, err := statejournal.ClassifyCommitMarker(string(data), id); err != nil {
+		return i18n.Wrapf("inspect transaction commit marker: %w", err)
 	}
 	return nil
 }

@@ -46,6 +46,7 @@ hukou_is_strict_semver() {
 REPO=${HUKOU_REPO:-rtwsvj/hukou}
 RELEASE_BASE_URL=${HUKOU_RELEASE_BASE_URL:-https://github.com/${REPO}/releases}
 VERSION=latest
+VERSION_PINNED=0
 PREFIX=${HUKOU_PREFIX:-${HOME}/.local}
 DRY_RUN=0
 FORCE=0
@@ -94,6 +95,13 @@ die() {
 # unescaped, unanchored prefix regex to the SAN, so neither pins the identity
 # precisely.
 #
+# When a specific version is requested, the identity is pinned further: the
+# SAN regex must end at refs/tags/<VERSION> exactly and --source-ref is passed
+# to gh, so an attestation minted for any other tag of the same workflow
+# cannot be replayed against this download (release assets are mutable). The
+# looser v-tag pattern applies only to the default latest install, where the
+# tag is discovered from the redirect itself.
+#
 # When the gh CLI is missing or unauthenticated the installer falls back to
 # transport trust only (HTTPS plus the SHA-256 comparison against a
 # checksums.txt served from the same origin) with a warning, so pipe-to-sh
@@ -120,15 +128,26 @@ verify_attestation() {
     return 0
   fi
 
-  # Anchor the certificate identity to this repository's release workflow
-  # running for a release tag ref. Regex metacharacters in a mirror-supplied
-  # HUKOU_REPO are escaped so the identity stays a literal match.
+  # Anchor the certificate identity to this repository's release workflow.
+  # Regex metacharacters in a mirror-supplied HUKOU_REPO are escaped so the
+  # identity stays a literal match; a pinned VERSION is escaped the same way
+  # and must terminate the SAN ref, so no other tag can satisfy it.
   attestation_repo_pattern=$(printf '%s' "$REPO" | sed 's/[][\.*^$+?{}|()]/\\&/g')
-  attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*$'
-  gh attestation verify "$attestation_subject" \
-    --repo "$REPO" \
-    --cert-identity-regex "$attestation_identity_regex" >/dev/null 2>&1 \
-    || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
+  if [ "$VERSION_PINNED" -eq 1 ]; then
+    attestation_tag_pattern=$(printf '%s' "$VERSION" | sed 's/[][\.*^$+?{}|()]/\\&/g')
+    attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/'"${attestation_tag_pattern}"'$'
+    gh attestation verify "$attestation_subject" \
+      --repo "$REPO" \
+      --cert-identity-regex "$attestation_identity_regex" \
+      --source-ref "refs/tags/$VERSION" >/dev/null 2>&1 \
+      || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
+  else
+    attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*$'
+    gh attestation verify "$attestation_subject" \
+      --repo "$REPO" \
+      --cert-identity-regex "$attestation_identity_regex" >/dev/null 2>&1 \
+      || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
+  fi
   printf 'Verified build-provenance attestation for %s (%s)\n' "${attestation_subject##*/}" "$REPO"
 }
 
@@ -203,6 +222,7 @@ while [ "$#" -gt 0 ]; do
     --version)
       [ "$#" -ge 2 ] || die "--version requires a value"
       VERSION=$2
+      VERSION_PINNED=1
       shift 2
       ;;
     --prefix)
@@ -305,12 +325,19 @@ trap cleanup EXIT HUP INT TERM
 
 CHECKSUMS=${TMP_DIR}/checksums.txt
 ARCHIVE_PATH=${TMP_DIR}/${ARCHIVE}
-
 curl -fsSL --proto "$CURL_PROTOCOLS" --proto-redir "$CURL_PROTOCOLS" --tlsv1.2 --retry 2 --retry-delay 1 \
+  --connect-timeout 15 --max-time 120 --max-filesize 1073741824 \
   -o "$CHECKSUMS" "${DOWNLOAD_BASE}/checksums.txt" || die "cannot download checksums.txt"
 curl -fsSL --proto "$CURL_PROTOCOLS" --proto-redir "$CURL_PROTOCOLS" --tlsv1.2 --retry 2 --retry-delay 1 \
+  --connect-timeout 15 --max-time 600 --max-filesize 1073741824 \
   -o "$ARCHIVE_PATH" "${DOWNLOAD_BASE}/${ARCHIVE}" || die "cannot download $ARCHIVE"
 
+# Decompression bombs and runaway transfers are refused before anything reads
+# the archive. curl's own --max-filesize cannot see sizes on every transport,
+# so the compressed size is re-checked on disk as a backstop.
+
+ARCHIVE_SIZE=$(wc -c <"$ARCHIVE_PATH" | tr -d ' ')
+[ "$ARCHIVE_SIZE" -le 1073741824 ] || die "$ARCHIVE exceeds the 1073741824-byte compressed-size sanity limit ($ARCHIVE_SIZE bytes)"
 # The archive is the attested subject; verify it before trusting the SHA-256
 # comparison below and before any tar inspection or extraction runs.
 verify_attestation "$ARCHIVE_PATH"
@@ -335,6 +362,8 @@ fi
 MEMBERS=${TMP_DIR}/members.txt
 tar -tzf "$ARCHIVE_PATH" >"$MEMBERS" || die "cannot inspect $ARCHIVE"
 [ -s "$MEMBERS" ] || die "$ARCHIVE is empty"
+MEMBER_COUNT=$(wc -l <"$MEMBERS" | tr -d ' ')
+[ "$MEMBER_COUNT" -le 10000 ] || die "$ARCHIVE contains too many members ($MEMBER_COUNT); refusing extraction"
 while IFS= read -r MEMBER; do
   case "$MEMBER" in
     /*|..|../*|*/..|*/../*) die "unsafe archive member: $MEMBER" ;;

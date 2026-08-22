@@ -2,8 +2,10 @@ package archive
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,5 +135,123 @@ func TestExtractPoisonTruncatedAndEmpty(t *testing.T) {
 	_ = os.WriteFile(junk, bytes.Repeat([]byte{0x00}, 64), 0o644)
 	if _, err := Extract(junk, dir, "tool"); err == nil {
 		t.Fatal("junk stream must fail")
+	}
+}
+
+func TestExtractPoisonTarMemberBudget(t *testing.T) {
+	// 20001 zero-size regular entries: discovery must refuse on the member
+	// budget instead of walking an unbounded table of contents.
+	var headers []tar.Header
+	for i := 0; i < MaxHeaderEntries+1; i++ {
+		headers = append(headers, regularHeader(fmt.Sprintf("f%05d.txt", i), 0, 0o644))
+	}
+	path := buildTarGzStream(t, headers, nil)
+
+	dest := t.TempDir()
+	_, err := Extract(path, dest, "tool")
+	if err == nil || !strings.Contains(err.Error(), "member budget") {
+		t.Fatalf("expected member-budget error, got %v", err)
+	}
+}
+
+func TestExtractPoisonTarCandidateBudget(t *testing.T) {
+	// More executable-like entries than the candidate cap: refuse instead of
+	// materializing a giant ambiguity report.
+	var headers []tar.Header
+	for i := 0; i < MaxExecCandidates+1; i++ {
+		headers = append(headers, regularHeader(fmt.Sprintf("bin%03d", i), 0, 0o755))
+	}
+	path := buildTarGzStream(t, headers, nil)
+
+	dest := t.TempDir()
+	_, err := Extract(path, dest, "tool")
+	if err == nil || !strings.Contains(err.Error(), "candidate budget") {
+		t.Fatalf("expected candidate-budget error, got %v", err)
+	}
+}
+
+// rawUstarHeader builds a single 512-byte ustar header block by hand, so a
+// hostile archive can declare an arbitrary Size without ever writing the
+// matching body (the standard library writer refuses to do that).
+func rawUstarHeader(name string, size int64, mode int64) []byte {
+	blk := make([]byte, 512)
+	copy(blk[0:100], name)
+	copy(blk[100:108], fmt.Sprintf("%07o\x00", mode))
+	copy(blk[108:116], fmt.Sprintf("%07o\x00", 0)) // uid
+	copy(blk[116:124], fmt.Sprintf("%07o\x00", 0)) // gid
+	copy(blk[124:136], fmt.Sprintf("%011o\x00", size))
+	copy(blk[136:148], fmt.Sprintf("%011o\x00", 0)) // mtime
+	for i := 148; i < 156; i++ {
+		blk[i] = ' ' // checksum placeholder
+	}
+	blk[156] = '0' // TypeReg
+	copy(blk[257:263], "ustar\x00")
+	copy(blk[263:265], "00")
+	sum := 0
+	for _, c := range blk {
+		sum += int(c)
+	}
+	copy(blk[148:154], fmt.Sprintf("%06o", sum))
+	return blk
+}
+
+func TestExtractPoisonTarDeclaredSizeBudget(t *testing.T) {
+	// A header declaring more than the cumulative declared-size budget must
+	// be refused from metadata alone, before any decompressed body byte is
+	// read (no 5 GiB body exists behind the header at all).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hostile.tar.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	if _, err := gz.Write(rawUstarHeader("tool", 5<<30, 0o755)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gz.Write(make([]byte, 1024)); err != nil { // end-of-archive marker
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	_, err = Extract(path, dest, "tool")
+	if err == nil || !strings.Contains(err.Error(), "declared-size budget") {
+		t.Fatalf("expected declared-size-budget error, got %v", err)
+	}
+}
+
+func TestExtractPoisonZipDeclaredSizeBudget(t *testing.T) {
+	// A zip whose central directory declares a single 5 GiB entry must fail
+	// the cumulative declared-size check before any body is read.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hostile.zip")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	h := &zip.FileHeader{Name: "tool", Method: zip.Store}
+	h.CompressedSize64 = 0
+	h.UncompressedSize64 = 5 << 30 // declared, not real
+	if _, err := w.CreateRaw(h); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := t.TempDir()
+	_, err = Extract(path, dest, "tool")
+	if err == nil || !strings.Contains(err.Error(), "declared-size budget") {
+		t.Fatalf("expected declared-size-budget error, got %v", err)
 	}
 }

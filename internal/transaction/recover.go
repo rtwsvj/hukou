@@ -73,9 +73,12 @@ var quarantineNameSuffix = func() (string, error) {
 // summary before recovery continues on the known journals. Unknown real
 // directories keep the fail-closed contract: they may be journal layouts from a
 // newer hukou, and demoting one automatically could destroy the only recovery
-// evidence, so Recover reports them and changes nothing else. Quarantined
-// containers are left untouched, so a recovery that is interrupted and retried
-// converges on the same result.
+// evidence, so Recover reports them and changes nothing else. Fully formed
+// quarantined containers are left untouched, so a recovery that is interrupted
+// and retried converges on the same result; the debris of a container whose
+// creation was interrupted (empty, or META-only with no payload) proves that
+// nothing was ever quarantined and is discarded so recovery converges without
+// manual surgery.
 func Recover(dataRoot string) (RecoverSummary, error) {
 	var summary RecoverSummary
 	root, err := filepath.Abs(dataRoot)
@@ -97,7 +100,17 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 			return summary, i18n.Wrapf("inspect unknown transaction entry %s: %w", err, name)
 		}
 		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
-			unknownDirs = append(unknownDirs, name)
+			// The one exception to the fail-closed rule for unknown
+			// directories: recognizable debris of an interrupted quarantine
+			// allocation carries no recovery evidence, so it is removed and
+			// recovery proceeds.
+			discarded, err := discardQuarantineResidue(txRoot, name, info)
+			if err != nil {
+				return summary, err
+			}
+			if !discarded {
+				unknownDirs = append(unknownDirs, name)
+			}
 			continue
 		}
 		record, err := quarantineEntry(txRoot, name)
@@ -164,7 +177,7 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 	if err != nil {
 		return summary, i18n.Wrapf("inspect transaction commit decision: %w", err)
 	}
-	return summary, recoverLoaded(txRoot, pendingDir, intent, committed)
+	return summary, recoverLoaded(root, txRoot, pendingDir, intent, committed)
 }
 
 // quarantineNonDirectories splits a known-prefix bucket into real journal
@@ -251,7 +264,7 @@ func quarantineEntry(txRoot, name string) (QuarantineRecord, error) {
 	return QuarantineRecord{Original: name, Quarantined: containerName}, nil
 }
 
-func recoverLoaded(txRoot, dir string, intent Intent, committed bool) error {
+func recoverLoaded(dataRoot, txRoot, dir string, intent Intent, committed bool) error {
 	targetAfter := committed
 	// Classify every participant before touching any of them. This is the
 	// fail-closed boundary that prevents one unknown external update from being
@@ -281,7 +294,7 @@ func recoverLoaded(txRoot, dir string, intent Intent, committed bool) error {
 		if targetAfter {
 			target = mutation.After
 		}
-		if err := convergeMutation(dir, mutation, target); err != nil {
+		if err := convergeMutation(dir, dataRoot, mutation, target); err != nil {
 			return i18n.Wrapf("recover %s resource %s: %w", err, intent.ID, mutation.Role)
 		}
 	}
@@ -291,7 +304,7 @@ func recoverLoaded(txRoot, dir string, intent Intent, committed bool) error {
 	return finalizeDirectory(txRoot, dir, intent.ID)
 }
 
-func convergeMutation(dir string, mutation Mutation, target State) error {
+func convergeMutation(payloadDir, dataRoot string, mutation Mutation, target State) error {
 	targetMatches, err := matchesState(mutation.Path, target)
 	if err != nil {
 		return err
@@ -330,10 +343,10 @@ func convergeMutation(dir string, mutation Mutation, target State) error {
 	if testBeforeApplyHook != nil {
 		testBeforeApplyHook(mutation.Path)
 	}
-	if err := verifyStatePayload(dir, target); err != nil {
+	if err := verifyStatePayload(payloadDir, target); err != nil {
 		return err
 	}
-	if err := applyState(dir, mutation.Path, other, target); err != nil {
+	if err := applyState(payloadDir, dataRoot, mutation.Path, other, target); err != nil {
 		return err
 	}
 	ok, err := matchesState(mutation.Path, target)
@@ -475,7 +488,7 @@ func verifyStatePayload(dir string, state State) error {
 	return nil
 }
 
-func applyState(dir, path string, current, target State) error {
+func applyState(payloadDir, dataRoot, path string, current, target State) error {
 	switch target.Kind {
 	case KindAbsent:
 		if err := requireExpectedState(path, current); err != nil {
@@ -491,16 +504,18 @@ func applyState(dir, path string, current, target State) error {
 		// own preparation created (e.g. the adopt original's staging chain).
 		// Roll those empty directories back too so the store converges to the
 		// pre-transaction topology instead of leaving residue that doctor
-		// reports as broken. The walk never removes a direct child of the
-		// journal root — store/, transactions/, manifest.json and friends are
-		// permanent hukou namespaces — and stops at the first non-empty
+		// reports as broken. The walk is anchored to the data root: it never
+		// removes the data root, any of its ancestors, or a direct child of it
+		// — store/, transactions/, manifest.json and friends are permanent
+		// hukou namespaces — never removes a direct child of the filesystem
+		// root or of $HOME outside it, and stops at the first non-empty
 		// directory it does not own.
-		return removeEmptyParents(path, dir)
+		return removeEmptyParents(path, dataRoot)
 	case KindRegular:
 		if current.Kind == KindAbsent {
-			return installRegularNoReplace(filepath.Join(dir, target.Payload), path, os.FileMode(target.Mode))
+			return installRegularNoReplace(filepath.Join(payloadDir, target.Payload), path, os.FileMode(target.Mode))
 		}
-		return replaceRegular(filepath.Join(dir, target.Payload), path, os.FileMode(target.Mode), current)
+		return replaceRegular(filepath.Join(payloadDir, target.Payload), path, os.FileMode(target.Mode), current)
 	case KindSymlink:
 		if current.Kind == KindAbsent {
 			return installSymlinkNoReplace(target.LinkTarget, path)
@@ -665,6 +680,30 @@ func installSymlinkNoReplace(target, destination string) error {
 	return nil
 }
 
+// ClassifyCommitMarker applies the torn-COMMIT semantics shared by journal
+// recovery and repair planning. Commit creates the marker empty and then
+// writes "<id>\n" into it, so a crash inside that window leaves either an
+// empty file or a byte-prefix of the decision. Such a marker never became
+// durable, so it classifies as committed=false and recovery rolls back,
+// exactly like an absent marker. Only the fully written marker counts as
+// committed; any other content is alien or corrupt evidence and is a hard
+// error that preserves the bytes for diagnosis.
+func ClassifyCommitMarker(data, id string) (bool, error) {
+	if data == id+"\n" {
+		return true, nil
+	}
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" || strings.HasPrefix(id+"\n", trimmed) {
+		return false, nil
+	}
+	return false, i18n.Errorf("invalid COMMIT marker contents")
+}
+
+// hasValidCommit reports whether the pending journal holds a durable COMMIT
+// decision, using ClassifyCommitMarker's torn-write semantics: empty markers
+// and trimmed byte-prefixes of "<id>\n" are committed=false (rollback), the
+// exact marker is committed=true, and alien content is a hard error.
+// Topology violations (symlink, non-regular file, oversized) stay hard errors.
 func hasValidCommit(dir, id string) (bool, error) {
 	path := filepath.Join(dir, commitFileName)
 	info, err := os.Lstat(path)
@@ -681,10 +720,7 @@ func hasValidCommit(dir, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if string(data) != id+"\n" {
-		return false, i18n.Errorf("invalid COMMIT marker contents")
-	}
-	return true, nil
+	return ClassifyCommitMarker(string(data), id)
 }
 
 func finalizeDirectory(txRoot, pendingDir, id string) error {
@@ -723,18 +759,38 @@ func requireRealDirectory(path string) error {
 }
 
 // removeEmptyParents removes empty ancestor directories left behind by an
-// absent-state rollback. It stops before touching the journal root itself or
-// any of its direct children, and at the first non-empty directory.
-func removeEmptyParents(path, journalRoot string) error {
-	dir := filepath.Dir(path)
+// absent-state rollback. The exact stop rule:
+//
+//   - It never removes the data root, any ancestor of the data root, or any
+//     direct child of the data root. hukou's own namespace — store/,
+//     transactions/, manifest.json and friends — is permanent, and ascending
+//     past the data root must never prune directories hukou does not own.
+//   - Live resources usually sit outside the data root (e.g. ~/bin/tool).
+//     There the walk keeps pruning genuinely empty parents so the pre-
+//     transaction topology converges, but it never removes a directory whose
+//     parent is the filesystem root or $HOME, nor $HOME itself. Rolling back
+//     an absent ~/bin/tool can therefore never delete ~/bin, and /usr and
+//     friends are equally out of reach even when they have become empty.
+//   - At the first non-empty directory it stops.
+func removeEmptyParents(path, dataRoot string) error {
+	dataRoot = filepath.Clean(dataRoot)
+	sep := string(filepath.Separator)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	dir := filepath.Dir(filepath.Clean(path))
 	for {
-		if dir == "" || dir == journalRoot || filepath.Dir(dir) == journalRoot {
+		parent := filepath.Dir(dir)
+		if dir == "" || dir == sep || dir == home ||
+			dir == dataRoot || parent == dataRoot || parent == home ||
+			isProperAncestor(dir, dataRoot) {
 			return nil
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				dir = filepath.Dir(dir)
+				dir = parent
 				continue
 			}
 			return i18n.Wrapf("inspect rollback residue directory %s: %w", err, dir)
@@ -744,11 +800,81 @@ func removeEmptyParents(path, journalRoot string) error {
 		}
 		if err := durablefs.Remove(dir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				dir = filepath.Dir(dir)
+				dir = parent
 				continue
 			}
 			return i18n.Wrapf("remove empty rollback residue directory %s: %w", err, dir)
 		}
-		dir = filepath.Dir(dir)
+		dir = parent
 	}
+}
+
+// isProperAncestor reports whether absolute cleaned dir lies strictly above
+// candidate on the same filesystem path (dir == filepath.Dir(candidate) or
+// higher).
+func isProperAncestor(dir, candidate string) bool {
+	for p := filepath.Dir(candidate); ; p = filepath.Dir(p) {
+		if p == dir {
+			return true
+		}
+		if p == filepath.Dir(p) {
+			// Reached the filesystem root without passing dir.
+			return false
+		}
+	}
+}
+
+// discardQuarantineResidue reports whether name is recognizable debris of an
+// interrupted quarantineEntry allocation and, when it is, removes it so that
+// recovery converges without manual surgery. quarantineEntry creates the
+// container first and writes META before moving the payload in, so exactly two
+// partial shapes are possible, and both prove nothing was ever quarantined:
+//
+//   - an empty container: the process died between Mkdir and the META write;
+//   - a META-only container: the process died between the META write and the
+//     payload rename, so the original entry still sits at its source and this
+//     recovery pass quarantines it again into a fresh container.
+//
+// Anything else (a bad name, a symlinked container, payload without META,
+// unexpected extra entries) is not recognizable debris; the caller then keeps
+// its fail-closed treatment as an unknown directory. Callers pass the Lstat
+// info already taken by Inspect classification.
+func discardQuarantineResidue(txRoot, name string, info os.FileInfo) (bool, error) {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !quarantineContainerNameValid(name) {
+		return false, nil
+	}
+	entries, err := os.ReadDir(filepath.Join(txRoot, name))
+	if err != nil {
+		return false, i18n.Wrapf("inspect quarantine residue container %s: %w", err, name)
+	}
+	residue := false
+	switch len(entries) {
+	case 0:
+		residue = true
+	case 1:
+		entry := entries[0]
+		residue = entry.Name() == quarantineMetaFileName && entry.Type().IsRegular()
+	}
+	if !residue {
+		return false, nil
+	}
+	if err := durablefs.RemoveAll(filepath.Join(txRoot, name)); err != nil {
+		return false, i18n.Wrapf("remove interrupted quarantine container %s: %w", err, name)
+	}
+	return true, nil
+}
+
+// quarantineContainerNameValid reports whether name is exactly
+// "quarantined-" followed by 16 lowercase hex digits, the shape every
+// quarantine container receives from quarantineNameSuffix.
+func quarantineContainerNameValid(name string) bool {
+	if len(name) != len(quarantinedPrefix)+quarantinedHexLen || !strings.HasPrefix(name, quarantinedPrefix) {
+		return false
+	}
+	suffix := name[len(quarantinedPrefix):]
+	if strings.ToLower(suffix) != suffix {
+		return false
+	}
+	_, err := hex.DecodeString(suffix)
+	return err == nil
 }

@@ -1170,7 +1170,7 @@ func mustConvergeForTest(t *testing.T, tx *Transaction, role string, after bool)
 	if after {
 		target = mutation.After
 	}
-	if err := convergeMutation(tx.dir, *mutation, target); err != nil {
+	if err := convergeMutation(tx.dir, tx.dataRoot, *mutation, target); err != nil {
 		t.Fatal(err)
 	}
 }

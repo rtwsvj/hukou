@@ -52,3 +52,26 @@ func TestOpenFIFOFailsClosedPromptly(t *testing.T) {
 		t.Fatal("Open blocked on a FIFO for 5s; O_NONBLOCK is not working")
 	}
 }
+
+// TestOpenSetsCloseOnExec asserts every descriptor Open returns is
+// close-on-exec. Callers hash and copy untrusted download artifacts while
+// upgrade flows spawn subprocesses; a leaked fd would let a child inherit a
+// handle on attacker-influenced content.
+func TestOpenSetsCloseOnExec(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bin")
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := Open(p)
+	if err != nil {
+		t.Fatalf("Open regular file: %v", err)
+	}
+	defer f.Close()
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), uintptr(syscall.F_GETFD), 0)
+	if errno != 0 {
+		t.Fatalf("fcntl F_GETFD: %v", errno)
+	}
+	if flags&syscall.FD_CLOEXEC == 0 {
+		t.Fatal("descriptor lacks FD_CLOEXEC; it would leak into exec'd children")
+	}
+}

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -238,6 +240,19 @@ func policyNeedsApply(p exportPolicy) bool {
 	return p.Mode != "" && (p.Mode != "semver" || p.Channel != "stable" || p.PinnedTag != "")
 }
 
+// isValidDigest reports whether value is exactly 64 hexadecimal characters —
+// the canonical SHA-256 digest shape hukou persists. The manifest package
+// keeps an equivalent unexported check for entry validation; import re-checks
+// the exported list here so a missing or malformed digest is refused before
+// anything reaches the adopt path.
+func isValidDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 // maxExportDocBytes bounds the toolset list import will read; 1 MiB is
 // orders of magnitude beyond any realistic list.
 const maxExportDocBytes = 1 << 20
@@ -245,8 +260,11 @@ const maxExportDocBytes = 1 << 20
 // readExportDoc loads and strictly validates a toolset-list file: the file
 // must be a regular file (no symlink) within the size cap, the schema
 // version must be current, unknown fields and duplicate tool names are
-// rejected, and every entry's repo/tag/archive name/policy values are checked
-// before anything is imported.
+// rejected, and every entry's repo/tag/archive name/digest/policy values are
+// checked before anything is imported. A github entry must carry a
+// well-formed sha256 (64 hex characters) so the empty-digest trust bypass is
+// structurally impossible; adopted_sha256 and pinned_tag are validated when
+// present.
 func readExportDoc(file string) (*exportDoc, error) {
 	info, err := os.Lstat(file)
 	if err != nil {
@@ -294,6 +312,12 @@ func readExportDoc(file string) (*exportDoc, error) {
 			if err := manifest.ValidateRepository(t.Repo); err != nil {
 				return nil, i18n.Errorf("tool %q: %v", t.Name, err)
 			}
+			if !isValidDigest(t.SHA256) {
+				return nil, i18n.Errorf("tool %q: sha256 must be a 64-hex-character SHA-256 digest", t.Name)
+			}
+			if t.AdoptedSHA256 != "" && !isValidDigest(t.AdoptedSHA256) {
+				return nil, i18n.Errorf("tool %q: adopted_sha256 must be a 64-hex-character SHA-256 digest", t.Name)
+			}
 		case "local":
 		default:
 			return nil, i18n.Errorf("tool %q: unknown type %q (expected github or local)", t.Name, t.Type)
@@ -315,6 +339,11 @@ func readExportDoc(file string) (*exportDoc, error) {
 		case "", "stable", "prerelease":
 		default:
 			return nil, i18n.Errorf("tool %q: unknown update channel %q", t.Name, t.UpdatePolicy.Channel)
+		}
+		if t.UpdatePolicy.PinnedTag != "" {
+			if err := store.ValidateTag(t.UpdatePolicy.PinnedTag); err != nil {
+				return nil, i18n.Errorf("tool %q: %v", t.Name, err)
+			}
 		}
 	}
 	if statejournal.CheckClean(dataRoot()) != nil {

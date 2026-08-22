@@ -24,6 +24,24 @@ const MaxEntryBytes int64 = 512 << 20
 // MaxTotalBytes is the maximum total extracted bytes across all entries (512 MiB).
 const MaxTotalBytes int64 = 512 << 20
 
+// MaxHeaderEntries bounds how many non-directory archive members the
+// discovery pass will examine (10000). Legitimate release archives carry a
+// handful of binaries; anything larger is treated as hostile and refused
+// before any body is read.
+const MaxHeaderEntries = 10000
+
+// MaxExecCandidates bounds how many executable-like entries the discovery
+// pass will accumulate (256). Beyond that the ambiguity itself is treated as
+// hostile rather than reported entry by entry.
+const MaxExecCandidates = 256
+
+// MaxDeclaredBytes is the maximum cumulative declared uncompressed size of
+// the regular entries examined during discovery (4 GiB), taken straight from
+// the tar/zip headers. No decompression is needed to know it, so this bounds
+// the decompression work a lying-header bomb can force before extraction
+// ever starts.
+const MaxDeclaredBytes int64 = 4 << 30
+
 // Extract unpacks the archive at archivePath into destDir and returns the path
 // of the extracted binary.
 //
@@ -105,6 +123,11 @@ func findTarTarget(archivePath, wantName string) (string, error) {
 	}
 	defer gz.Close()
 
+	// Discovery-pass budgets: refuse pathological archives before any body
+	// is read. Fail closed, naming the violated budget.
+	var examined int
+	var declared int64
+
 	tr := tar.NewReader(gz)
 
 	var exact *tarEntry
@@ -118,9 +141,19 @@ func findTarTarget(archivePath, wantName string) (string, error) {
 		if err != nil {
 			return "", i18n.Wrapf("read tar header: %w", err)
 		}
-
+		if h.Typeflag == tar.TypeDir {
+			continue
+		}
+		examined++
+		if examined > MaxHeaderEntries {
+			return "", i18n.Errorf("archive member budget exceeded: more than %d entries examined", MaxHeaderEntries)
+		}
 		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
 			continue
+		}
+		declared += h.Size
+		if declared < 0 || declared > MaxDeclaredBytes {
+			return "", i18n.Errorf("archive declared-size budget exceeded: entries declare %d total bytes, limit is %d", declared, MaxDeclaredBytes)
 		}
 
 		name := filepath.Clean(h.Name)
@@ -134,8 +167,10 @@ func findTarTarget(archivePath, wantName string) (string, error) {
 			exact = &cp
 			continue
 		}
-
 		if isExecutableLike(base, h.Mode) {
+			if len(candidates) >= MaxExecCandidates {
+				return "", i18n.Errorf("archive candidate budget exceeded: more than %d executable-looking entries", MaxExecCandidates)
+			}
 			candidates = append(candidates, tarEntry{name: h.Name, mode: h.Mode})
 		}
 	}
@@ -212,6 +247,10 @@ func extractZip(archivePath, destDir, wantName string) (string, error) {
 // extraction are intentionally separate so ambiguous archives cannot leave
 // partially extracted files behind.
 func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
+	// Discovery-pass budgets, mirroring the tar path: refuse pathological
+	// archives from central-directory metadata alone, before any body read.
+	var examined int
+	var declared uint64
 	var exact *zip.File
 	var candidates []*zip.File
 
@@ -219,8 +258,16 @@ func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
 		if zf.FileInfo().IsDir() {
 			continue
 		}
+		examined++
+		if examined > MaxHeaderEntries {
+			return nil, i18n.Errorf("archive member budget exceeded: more than %d entries examined", MaxHeaderEntries)
+		}
 		if zf.Mode()&os.ModeSymlink != 0 {
 			continue
+		}
+		declared += zf.UncompressedSize64
+		if declared > uint64(MaxDeclaredBytes) {
+			return nil, i18n.Errorf("archive declared-size budget exceeded: entries declare %d total bytes, limit is %d", declared, uint64(MaxDeclaredBytes))
 		}
 		name := filepath.Clean(filepath.FromSlash(zf.Name))
 		base := filepath.Base(name)
@@ -234,6 +281,9 @@ func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
 		}
 
 		if isExecutableLike(base, int64(zf.Mode())) {
+			if len(candidates) >= MaxExecCandidates {
+				return nil, i18n.Errorf("archive candidate budget exceeded: more than %d executable-looking entries", MaxExecCandidates)
+			}
 			candidates = append(candidates, zf)
 		}
 	}

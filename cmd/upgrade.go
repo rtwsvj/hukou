@@ -38,6 +38,24 @@ var (
 // upgrade flow end to end. Production code never sets it.
 var upgradeTestHookAfterStoreNewVersion func(name, tag string)
 
+// upgradeTestHookBeforeExtract, when non-nil, runs immediately after the
+// downloaded asset has passed publisher-checksum verification and immediately
+// before archive.Extract opens it. It exists exclusively so adversarial tests
+// can inject deterministically inside the verify→extract window (for example,
+// swapping the asset bytes after they were verified). Production code never
+// sets it.
+var upgradeTestHookBeforeExtract func(assetPath string)
+
+// dirEntryIsRegular reports whether the directory entry names a regular file,
+// confirmed with Lstat instead of the entry's cached dirent type bits. On
+// filesystems that return DT_UNKNOWN the type bits read as zero, so
+// DirEntry.Type().IsRegular() would spuriously report false and abort a
+// legitimate upgrade or adoption; Lstat resolves the real mode.
+func dirEntryIsRegular(dir string, entry os.DirEntry) bool {
+	info, err := os.Lstat(filepath.Join(dir, entry.Name()))
+	return err == nil && info.Mode().IsRegular()
+}
+
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade [name ...]",
 	Short: "Upgrade adopted tools from GitHub releases",
@@ -299,10 +317,24 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		return err
 	}
 	defer os.RemoveAll(extractDir)
+	if upgradeTestHookBeforeExtract != nil {
+		upgradeTestHookBeforeExtract(finalAssetPath)
+	}
 
 	extractedPath, err := archive.Extract(finalAssetPath, extractDir, wantArchiveExe(e))
 	if err != nil {
 		return i18n.Wrapf("extract: %w", err)
+	}
+	// Close the verify→extract window: the asset was hash-verified above, but
+	// Extract re-opened it by path. Re-hash the same path and refuse unless the
+	// bytes still match the verified digest; otherwise a swap between
+	// verification and extraction would be installed without verification.
+	recheckSHA, err := store.SHA256File(finalAssetPath)
+	if err != nil {
+		return i18n.Wrapf("re-hash extracted asset: %w", err)
+	}
+	if recheckSHA != assetSHA {
+		return i18n.Errorf("asset %s changed between checksum verification and extraction (verified sha256=%s, now %s); refusing", chosen, assetSHA, recheckSHA)
 	}
 	// The store version directory must hold the artifact under the TOOL name,
 	// not the archive-internal name (which --exe may differ from). Rename the
@@ -389,7 +421,7 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		if len(originalEntries) != 0 {
 			return i18n.Errorf("original backup namespace is not empty")
 		}
-	} else if len(originalEntries) != 1 || originalEntries[0].Name() != filepath.Base(originalPath) || !originalEntries[0].Type().IsRegular() {
+	} else if len(originalEntries) != 1 || originalEntries[0].Name() != filepath.Base(originalPath) || !dirEntryIsRegular(filepath.Dir(originalPath), originalEntries[0]) {
 		return i18n.Errorf("original backup namespace has unexpected contents")
 	}
 
@@ -461,7 +493,7 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 			return abortStateTransaction(tx, i18n.Wrapf("adopt original: %w", err))
 		}
 		originalEntries, entriesErr := os.ReadDir(filepath.Dir(originalPath))
-		if entriesErr != nil || len(originalEntries) != 1 || originalEntries[0].Name() != filepath.Base(originalPath) || !originalEntries[0].Type().IsRegular() {
+		if entriesErr != nil || len(originalEntries) != 1 || originalEntries[0].Name() != filepath.Base(originalPath) || !dirEntryIsRegular(filepath.Dir(originalPath), originalEntries[0]) {
 			return abortStateTransaction(tx, i18n.Errorf("original backup namespace changed during upgrade: %v", entriesErr))
 		}
 	}

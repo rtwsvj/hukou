@@ -32,10 +32,16 @@ subprocess.
 ### Changed
 
 - Manager subprocesses run with an allowlisted environment (PATH, HOME,
-  toolchain/locale variables, `HOMEBREW_*`, proxy variables) instead of the
-  full parent environment, so secrets like `GITHUB_TOKEN` or `AWS_*` cannot
-  leak into brew formulas or npm lifecycle scripts;
-  `HUKOU_UP_ENV_PASSTHRU=FOO,BAR` (or `*`) is the escape hatch.
+  toolchain/locale variables, the non-secret `HOMEBREW_NO_AUTO_UPDATE` /
+  `HOMEBREW_NO_INSTALL_CLEANUP` / `HOMEBREW_NO_ENV_HINTS` settings, proxy
+  variables) instead of the full parent environment. A fixed denylist —
+  `HOMEBREW_GITHUB_API_TOKEN`, `HOMEBREW_GITHUB_PACKAGES_TOKEN`,
+  `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`,
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — is stripped before every
+  other rule and wins even over `HUKOU_UP_ENV_PASSTHRU=*`, so no brew or npm
+  credential can leak into formulas or lifecycle scripts;
+  `HUKOU_UP_ENV_PASSTHRU=FOO,BAR` (or `*`) remains the escape hatch for
+  everything else.
 - On unix, a timeout or Ctrl-C terminates the manager's whole process group
   (SIGTERM, then SIGKILL after a grace period), so grandchildren such as
   brew's curl die with the manager instead of being orphaned.

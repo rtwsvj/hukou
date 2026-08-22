@@ -84,3 +84,56 @@ func TestTableRowCountMismatchPanics(t *testing.T) {
 	tr := NewTable(&buf, "A", "B")
 	tr.Row("only-one")
 }
+
+// Row sanitizes every cell by default: an ESC smuggled into a cell renders
+// as '?' and cannot shift or spoof the column layout.
+func TestTableRowSanitizesEscCell(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTable(&buf, "NAME", "VER")
+	tr.Row("\x1b[31mevil", "v1")
+	tr.Row("ok-but-longer-name", "v2")
+	if err := tr.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("raw ESC reached output: %q", out)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("want 3 lines, got %d: %q", len(lines), out)
+	}
+	// "?[31mevil" is 9 display columns ('?' + "[31m" + "evil"),
+	// "ok-but-longer-name" is 18; the second column must start at 18+2=20
+	// on every line.
+	const wantCol = 20
+	markers := []string{"VER", "v1", "v2"}
+	for i, line := range lines {
+		idx := strings.Index(line, markers[i])
+		if idx < 0 {
+			t.Fatalf("row %d marker %q missing: %q", i, markers[i], line)
+		}
+		if got := DisplayWidth(line[:idx]); got != wantCol {
+			t.Fatalf("row %d column offset = %d, want %d: %q", i, got, wantCol, line)
+		}
+	}
+}
+
+func TestTableRowSanitizationIsIdempotent(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewTable(&buf, "A")
+	// sanitizeField swaps the ESC for '?' and leaves the now-harmless
+	// "[31m" as printable text; a second pass must not change anything.
+	pre := SanitizeField("pre\x1b[31msanitized")
+	if pre != "pre?[31msanitized" {
+		t.Fatalf("SanitizeField baseline changed: %q", pre)
+	}
+	tr.Row(pre)
+	if err := tr.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	want := "A\npre?[31msanitized\n"
+	if buf.String() != want {
+		t.Fatalf("pre-sanitized cell changed by Row: %q, want %q", buf.String(), want)
+	}
+}

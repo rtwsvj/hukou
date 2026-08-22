@@ -19,15 +19,16 @@ import (
 )
 
 const (
-	defaultBaseURL     = "https://api.github.com"
-	maxRetries         = 3
-	apiTimeout         = 30 * time.Second
-	downloadTimeout    = 10 * time.Minute
-	maxRedirects       = 5
-	maxRetryAfter      = 60 * time.Second
-	defaultMaxDownload = 512 << 20 // 512 MiB
-	releasesPerPage    = 100
-	maxReleasePages    = 10
+	defaultBaseURL      = "https://api.github.com"
+	maxRetries          = 3
+	apiTimeout          = 30 * time.Second
+	downloadTimeout     = 10 * time.Minute
+	maxRedirects        = 5
+	maxRetryAfter       = 60 * time.Second
+	defaultMaxDownload  = 512 << 20 // 512 MiB
+	defaultMaxJSONBytes = 32 << 20  // 32 MiB, plenty for release lists
+	releasesPerPage     = 100
+	maxReleasePages     = 10
 )
 
 // Production hosts allowed for HTTPS requests and redirects.
@@ -79,6 +80,9 @@ func (e *StatusError) Error() string {
 
 type RateLimitError struct {
 	Reset string
+	// Reset carries the X-RateLimit-Reset header value, sanitized at
+	// ingestion like StatusError.Body: it is server-controlled text that
+	// Error() renders verbatim when it does not parse as a timestamp.
 }
 
 func (e *RateLimitError) Error() string {
@@ -176,8 +180,9 @@ func (c *Client) List(owner, repo string) ([]Release, error) {
 
 // Download streams downloadURL into a temporary file under destDir.
 // expectedSize, when > 0, is the Asset.Size from the release API: the body is
-// limited to expectedSize+1 bytes and the actual count must match exactly.
-// When expectedSize is 0, a global cap of 512 MiB applies.
+// limited to min(expectedSize, 512 MiB)+1 bytes and the actual count must
+// match exactly. A declared size above the 512 MiB cap is refused before any
+// request is made. When expectedSize is 0, the global cap applies alone.
 //
 // When the direct attempt stalls (measured throughput below the configured
 // floor for the configured grace period) or fails with a transport error, the
@@ -191,6 +196,13 @@ func (c *Client) Download(downloadURL, destDir string, expectedSize int64) (stri
 	}
 	if err := c.validateURL(u); err != nil {
 		return "", err
+	}
+	// The expected size comes from the release manifest, which a compromised
+	// or hostile endpoint controls. Refuse absurd sizes before any request so
+	// no bytes are ever fetched, rather than discovering the violation after
+	// streaming.
+	if expectedSize > defaultMaxDownload {
+		return "", i18n.Errorf("refusing download: declared size %d bytes exceeds the %d byte limit", expectedSize, defaultMaxDownload)
 	}
 	path, err := c.downloadWithTransport(downloadURL, destDir, expectedSize, nil)
 	if err == nil {
@@ -261,7 +273,7 @@ func (c *Client) downloadWithTransport(downloadURL, destDir string, expectedSize
 	}
 
 	limit := expectedSize
-	if limit <= 0 {
+	if limit <= 0 || limit > defaultMaxDownload {
 		limit = defaultMaxDownload
 	}
 
@@ -300,8 +312,15 @@ func (c *Client) downloadWithTransport(downloadURL, destDir string, expectedSize
 
 // retryableDownloadErr reports whether the failure is worth one proxy retry:
 // our own slow-transfer sentinel, transport-level errors (dial/reset/EOF),
-// and timeouts. HTTP status errors and size-limit violations are not.
+// and timeouts. HTTP status errors and size-limit violations are not — the
+// *StatusError check comes first because a server-controlled error body can
+// contain transport-flavored substrings ("unexpected EOF") that must never
+// flip this decision.
 func retryableDownloadErr(err error) bool {
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		return false
+	}
 	if errors.Is(err, errSlowDownload) {
 		return true
 	}
@@ -346,7 +365,10 @@ func (c *Client) fetchJSON(path string, target any) error {
 		return responseStatusError(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+	// Bound the response body so a hostile or misbehaving endpoint cannot
+	// balloon memory while we decode release metadata. Truncation at the cap
+	// surfaces as a json decode error and fails closed.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, defaultMaxJSONBytes+1)).Decode(target); err != nil {
 		return err
 	}
 	return nil
@@ -377,7 +399,7 @@ func (c *Client) do(req *http.Request, client *http.Client) (*http.Response, err
 
 		if resp.StatusCode == http.StatusForbidden && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			drainClose(resp.Body)
-			return nil, &RateLimitError{Reset: resp.Header.Get("X-RateLimit-Reset")}
+			return nil, &RateLimitError{Reset: sanitize.Terminal(resp.Header.Get("X-RateLimit-Reset"))}
 		}
 
 		if retryable(resp) && attempt < maxRetries {

@@ -38,6 +38,12 @@ func dataRoot() string {
 // error instead of exit.
 func resolveDataRoot(getenv func(string) string, userHomeDir func() (string, error)) (string, error) {
 	if v := getenv("HUKOU_DATA_DIR"); v != "" {
+		// A relative HUKOU_DATA_DIR would scatter state into whatever
+		// directory hukou happened to be started from — same failure mode as
+		// the old "./hukou" fallback, so it is rejected outright.
+		if !filepath.IsAbs(v) {
+			return "", i18n.Errorf("cannot determine the hukou data directory: HUKOU_DATA_DIR must be an absolute path, got %q", v)
+		}
 		return v, nil
 	}
 	home, _ := userHomeDir()
@@ -56,15 +62,54 @@ func storeRoot() string    { return filepath.Join(dataRoot(), "store") }
 
 func newStore() *store.Store { return &store.Store{Root: storeRoot()} }
 
+// Seam hooks for tests: production defaults keep the real filesystem and the
+// real effective uid.
+var (
+	lstatDataRoot   = os.Lstat
+	effectiveUID    = os.Geteuid
+	dataRootFileUID = ownerOfFileInfo
+)
+
+// checkDataRootTrust is the fail-closed trust gate for the hukou data
+// directory: it must be a real directory (no symlink), owned by the effective
+// user, and not group- or other-writable. This deliberately also refuses
+// running under sudo (or any other privilege escalation) against a
+// user-owned root, because a privileged writer could be steered into
+// replaying state an attacker prepared as another user.
+func checkDataRootTrust(root string) error {
+	fi, err := lstatDataRoot(root)
+	if err != nil {
+		return i18n.Errorf("cannot inspect the hukou data directory %s: %v", root, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return i18n.Errorf("refusing to use the hukou data directory %s: it is a symbolic link, not a real directory", root)
+	}
+	if !fi.IsDir() {
+		return i18n.Errorf("refusing to use the hukou data directory %s: it is not a directory (%s)", root, fi.Mode())
+	}
+	euid := effectiveUID()
+	if uid := dataRootFileUID(fi); uid >= 0 && uid != euid {
+		return i18n.Errorf("refusing to use the hukou data directory %s: it is owned by uid %d but hukou runs as uid %d; running hukou with elevated privileges against another user's data root is unsupported", root, uid, euid)
+	}
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		return i18n.Errorf("refusing to use the hukou data directory %s: it is group- or other-writable (%s); it must belong to the current user and not be writable by anyone else", root, fi.Mode())
+	}
+	return nil
+}
+
 func acquireMutationLock(stderr io.Writer) (*state.Lock, error) {
-	if err := durablefs.MkdirAll(dataRoot(), 0o755); err != nil {
+	root := dataRoot()
+	if err := durablefs.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	lock, err := state.Acquire(filepath.Join(dataRoot(), "state.lock"))
+	if err := checkDataRootTrust(root); err != nil {
+		return nil, err
+	}
+	lock, err := state.Acquire(filepath.Join(root, "state.lock"))
 	if err != nil {
 		return nil, err
 	}
-	summary, err := statejournal.Recover(dataRoot())
+	summary, err := statejournal.Recover(root)
 	reportRecoverSummary(stderr, summary)
 	if err != nil {
 		return nil, errors.Join(i18n.Wrapf("recover unfinished transaction: %w", err), lock.Release())

@@ -141,20 +141,30 @@ real run persisted (see below).
     spawned (brew's `curl`, say) is killed with it instead of orphaned. On
     non-unix platforms only the direct child is killed.
   - **Proxy inheritance:** when the environment has no explicit
-    `HTTPS_PROXY`/`https_proxy`, the executor injects the OS system proxy
-    (where the platform reports one, currently macOS) as `HTTP_PROXY`,
-    `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms, preserving any
-    `NO_PROXY`. `HUKOU_UP_NO_PROXY_INHERIT=1` disables this; injection is
-    announced on stderr with the proxy's host:port only (never credentials).
+    `HTTPS_PROXY`/`https_proxy` (a variable that is present but empty counts
+    as explicit too — `HTTPS_PROXY=` says "no proxy for this run"), the
+    executor injects the OS system proxy (where the platform reports one,
+    currently macOS) as `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their
+    lowercase forms, preserving any `NO_PROXY`.
+    `HUKOU_UP_NO_PROXY_INHERIT=1` disables this; injection is announced on
+    stderr with the proxy's host:port only (never credentials).
   - **Environment allowlist:** manager subprocesses do NOT inherit the full
-    parent environment (it may carry `GITHUB_TOKEN`, `AWS_*` and other
-    secrets that brew formulas or npm lifecycle scripts must never see). Only
-    an allowlist passes: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`,
-    `TMPDIR`/`TEMP`/`TMP`, `LANG`, `TERM`, `COLORTERM`, `CI`, `XDG_*`,
-    `LC_*`, `HOMEBREW_*`, `NO_PROXY`/`no_proxy`, and the proxy variables.
+    parent environment (it may carry secrets that brew formulas or npm
+    lifecycle scripts must never see). Only an allowlist passes: `PATH`,
+    `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`/`TEMP`/`TMP`, `LANG`,
+    `TERM`, `COLORTERM`, `CI`, `XDG_*`, `LC_*`, the non-secret brew settings
+    `HOMEBREW_NO_AUTO_UPDATE` / `HOMEBREW_NO_INSTALL_CLEANUP` /
+    `HOMEBREW_NO_ENV_HINTS`, `NO_PROXY`/`no_proxy`, and the proxy variables.
+    A fixed denylist — `HOMEBREW_GITHUB_API_TOKEN`,
+    `HOMEBREW_GITHUB_PACKAGES_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`,
+    `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_ACCESS_KEY_ID`,
+    `AWS_SECRET_ACCESS_KEY` — is stripped before every other rule, so these
+    never reach a manager subprocess even via passthru.
     `HUKOU_UP_ENV_PASSTHRU=FOO,BAR` passes additional named variables;
-    `HUKOU_UP_ENV_PASSTHRU=*` restores full inheritance (announced on
-    stderr).
+    `HUKOU_UP_ENV_PASSTHRU=*` restores full inheritance except for the
+    denylist (announced on stderr). Manager output is streamed through the
+    same control-character sanitizer as other untrusted text, so a
+    subprocess cannot paint fake reports with ANSI escape sequences.
 - A failing manager is reported and does **not** stop the rest; the report is
   still printed. An interrupt (SIGINT/Ctrl-C, or SIGTERM on unix) stops the run:
   no further manager — external or the internal `hukou` step — is launched (the

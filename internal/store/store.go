@@ -317,7 +317,10 @@ func (s *Store) PutWithDigest(name, tag, srcPath string) (string, error) {
 		return "", err
 	}
 
-	src, err := os.Open(srcPath)
+	// safeopen, not os.Open: the earlier Stat re-check above races with an
+	// attacker swapping srcPath for a FIFO, and a plain open would block
+	// forever on it while holding the mutation lock. safeopen fails closed.
+	src, err := safeopen.Open(srcPath)
 	if err != nil {
 		return "", err
 	}
@@ -957,7 +960,12 @@ func atomicCopyFileWithMode(fs durableOperations, srcPath, dstPath, stagingDir s
 		return err
 	}
 
-	src, err := os.Open(srcPath)
+	// safeopen, not os.Open: there is no pre-open regular-file check on this
+	// path (callers race with a swap to a FIFO between their own Lstat and
+	// here), and a plain open would block forever on a FIFO while the caller
+	// holds the mutation lock. safeopen fails closed; the Stat re-check below
+	// is kept as defense in depth.
+	src, err := safeopen.Open(srcPath)
 	if err != nil {
 		return err
 	}

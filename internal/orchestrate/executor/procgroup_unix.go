@@ -19,10 +19,12 @@ const termKillGrace = 2 * time.Second
 // CommandContext's Cancel hook with group-wide termination, so a timeout or
 // an interrupt (signal.NotifyContext cancelling the run context) kills the
 // manager AND its descendants — brew's curl, say — instead of orphaning them.
-func configureProc(cmd *exec.Cmd) {
+// waitDone must be closed once cmd.Wait has returned (runOne owns that); the
+// SIGKILL escalation consults it to spare an already-reaped group.
+func configureProc(cmd *exec.Cmd, waitDone <-chan struct{}) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		return terminateProcGroup(cmd.Process.Pid)
+		return terminateProcGroup(cmd.Process.Pid, waitDone)
 	}
 }
 
@@ -30,11 +32,25 @@ func configureProc(cmd *exec.Cmd) {
 // escalates to SIGKILL after termKillGrace. A group that is already gone
 // (ESRCH) is success, not an error; the escalation timer ignores errors for
 // the same reason.
-func terminateProcGroup(pid int) error {
+//
+// The escalation timer checks waitDone — closed once the manager has been
+// reaped — before firing: a manager that exits promptly on SIGTERM must not be
+// followed by a blind SIGKILL into a pgid the kernel may have handed to an
+// unrelated process. The check is inherently racy — the group could die in the
+// window between check and kill — but the timer only runs while Wait has not
+// yet returned, bounding PID-reuse exposure to that live-child window; this is
+// accepted and documented here rather than papered over with pidfd, which is
+// not portable.
+func terminateProcGroup(pid int, waitDone <-chan struct{}) error {
 	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	time.AfterFunc(termKillGrace, func() {
+		select {
+		case <-waitDone:
+			return // manager already reaped; the pgid is spent, do not signal it
+		default:
+		}
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 	})
 	return nil

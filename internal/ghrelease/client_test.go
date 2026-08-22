@@ -3,6 +3,7 @@ package ghrelease
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -792,5 +794,139 @@ func TestTransportErrorStripsQueryFromURLError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "/asset.tar.gz") {
 		t.Fatalf("error lost the URL path entirely: %v", err)
+	}
+}
+
+// TestStatusErrorBodyDoesNotTriggerProxyRetry: a *StatusError's body is
+// server-controlled text; if it happens to contain transport-flavored
+// substrings ("unexpected EOF", "connection reset") the proxy retry decision
+// must still say no. Before the *StatusError guard in retryableDownloadErr,
+// these bodies flipped the decision via substring matching.
+func TestStatusErrorBodyDoesNotTriggerProxyRetry(t *testing.T) {
+	for _, body := range []string{"unexpected EOF", "read: connection reset by peer", "dial: connection refused"} {
+		err := fmt.Errorf("download attempt failed: %w", &StatusError{
+			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
+			URL:        "https://example.test/asset.tar.gz",
+			Body:       body,
+		})
+		if retryableDownloadErr(err) {
+			t.Fatalf("body %q: status error treated as retryable", body)
+		}
+	}
+}
+
+// TestDownload502WithEOFBodyNotProxied: a 502 whose error body contains "EOF"
+// must surface as a StatusError without a second round of attempts through
+// the system proxy — the request count stays at exactly maxRetries+1.
+func TestDownload502WithEOFBodyNotProxied(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, "unexpected EOF")
+	}))
+	defer server.Close()
+
+	c := testClient(server)
+	c.Sleep = func(time.Duration) {}
+	_, err := c.Download(server.URL+"/asset.tar.gz", t.TempDir(), 10)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if got := atomic.LoadInt32(&requests); got != maxRetries+1 {
+		t.Fatalf("requests=%d, want exactly %d (a proxy retry would add more)", got, maxRetries+1)
+	}
+	if retryableDownloadErr(err) {
+		t.Fatal("502 with EOF-bearing body classified as retryable")
+	}
+}
+
+// TestRateLimitResetHeaderSanitized: the X-RateLimit-Reset value is
+// server-controlled and rendered verbatim by RateLimitError.Error() when it
+// does not parse as a timestamp; control characters must be stripped at
+// ingestion so ANSI/OSC payloads cannot ride the error onto the terminal.
+func TestRateLimitResetHeaderSanitized(t *testing.T) {
+	hostile := "\x1b]0;pwned\x071700000000"
+	c := New("")
+	c.Sleep = func(time.Duration) {}
+	c.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		resp := &http.Response{
+			StatusCode: http.StatusForbidden,
+			Status:     "403 Forbidden",
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("rate limit exceeded")),
+			Request:    req,
+		}
+		resp.Header.Set("X-RateLimit-Remaining", "0")
+		resp.Header.Set("X-RateLimit-Reset", hostile)
+		return resp, nil
+	})}
+
+	_, err := c.Latest("owner", "repo")
+	if err == nil {
+		t.Fatal("expected a rate-limit error")
+	}
+	msg := err.Error()
+	for _, bad := range []string{"\x1b", "\x07", "pwned]0;"} {
+		if strings.Contains(msg, bad) {
+			t.Fatalf("hostile Reset header leaked into error message: %q", msg)
+		}
+	}
+	if !strings.Contains(msg, "1700000000") {
+		t.Fatalf("sanitized Reset lost its numeric payload: %q", msg)
+	}
+}
+
+// TestDownloadRefusesOversizedExpectedSizeBeforeRequest: a declared size
+// above the global cap is refused before any request leaves the process, so
+// a hostile manifest cannot even start a multi-gigabyte fetch.
+func TestDownloadRefusesOversizedExpectedSizeBeforeRequest(t *testing.T) {
+	var requests int32
+	c := New("")
+	c.Sleep = func(time.Duration) {}
+	c.DownloadClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&requests, 1)
+		return nil, errors.New("request must never be made")
+	})}
+
+	twoGiB := int64(2) << 30
+	_, err := c.Download("https://github.com/owner/repo/releases/download/v1/asset.tar.gz", t.TempDir(), twoGiB)
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	if !strings.Contains(err.Error(), strconv.FormatInt(twoGiB, 10)) || !strings.Contains(err.Error(), strconv.FormatInt(defaultMaxDownload, 10)) {
+		t.Fatalf("refusal must name both sizes, got: %v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("requests=%d, want 0 (refusal must happen before any request)", got)
+	}
+}
+
+// TestFetchJSONFailsClosedOverCap: a JSON response larger than
+// defaultMaxJSONBytes is truncated by the bounded reader and json.Decode
+// fails closed instead of buffering unbounded server-controlled bytes. The
+// body is deliberately valid JSON when read in full, so only the cap can
+// produce the failure.
+func TestFetchJSONFailsClosedOverCap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"tag_name":"`)
+		io.WriteString(w, strings.Repeat("a", defaultMaxJSONBytes+(4<<20)))
+		io.WriteString(w, `"}`)
+	}))
+	defer server.Close()
+
+	c := testClient(server)
+	release, err := c.Latest("owner", "repo")
+	if err == nil {
+		t.Fatal("expected truncation to fail the decode")
+	}
+	if release.TagName != "" {
+		t.Fatalf("partial decode leaked through: %+v", release)
 	}
 }

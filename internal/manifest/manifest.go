@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/i18n"
@@ -526,7 +527,10 @@ func validDigest(value string) bool {
 }
 
 // ValidateRepository accepts an empty value for local entries; otherwise it
-// requires the canonical owner/repo shape persisted by hukou.
+// requires the canonical owner/repo shape persisted by hukou and rejects
+// control characters and non-printable runes, which no legitimate GitHub
+// owner or repo name contains and which could otherwise smuggle terminal
+// escape sequences into rendered tables.
 func ValidateRepository(value string) error {
 	if value == "" {
 		return nil
@@ -534,6 +538,11 @@ func ValidateRepository(value string) error {
 	parts := strings.Split(value, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.TrimSpace(value) != value {
 		return i18n.Errorf("repository must be owner/repo")
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || !unicode.IsPrint(r) {
+			return i18n.Errorf("invalid repository %q: control character not allowed", value)
+		}
 	}
 	return nil
 }
