@@ -46,10 +46,13 @@ skipped with a warning; a missing executable is a per-tool error. The exported
 update policy (channel/pin) is re-applied when it differs from the adopt
 default.
 
-The exported tag is advisory: import records the binary's honest local
+The exported tag is advisory only: import records the binary's honest local
 version (from its Go build information) whenever one can be derived, and
-falls back to the exported tag — with an explicit warning that its
-provenance is unverified — only for builds without usable version metadata.
+replaces an exported semantic version tag with the neutral "imported"
+sentinel when the binary carries no usable build metadata — offline import
+cannot bind a digest to a release, so untrusted semantic tags are never
+recorded. Non-semantic exported tags survive as advisory labels with an
+explicit unverified-provenance warning.
 --dry-run prints the whole plan and writes nothing; --only restricts
 the run to the named tools. The exit status is non-zero when any tool fails.`,
 	Args: cobra.ExactArgs(1),
@@ -248,12 +251,13 @@ func actualVersionTag(binPath string) string {
 }
 
 // resolveImportTag decides which tag the manifest records for an imported
-// tool and returns any provenance warning to print. Import is offline, so the
-// exported tag is advisory: whenever the binary yields a real Go build
-// version, that actual version wins. The exported tag survives only when no
-// actual version can be derived (non-Go or "(devel)" builds) — and even then
-// only with an explicit warning that its provenance is unverified, since a
-// digest match alone cannot bind a tag to this machine's build history.
+// tool and returns any provenance warning to print. Import is offline, so
+// the exported tag is advisory: whenever the binary yields a real Go build
+// version, that actual version wins. When no actual version can be derived
+// (non-Go or "(devel)" builds), an exported SEMANTIC tag is untrusted
+// provenance and is replaced by the neutral "imported" sentinel — recording
+// "v999.0.0" would freeze the tool's upgrades forever. Only non-semantic
+// exported tags survive, as advisory labels with an explicit warning.
 func resolveImportTag(t exportEntry, binPath, actualSHA string) (tag string, warn string) {
 	actual := actualVersionTag(binPath)
 	if actual != "" {

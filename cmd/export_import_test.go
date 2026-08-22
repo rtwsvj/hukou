@@ -214,9 +214,10 @@ func TestImportMissingBinaryFailsAndLeavesNothing(t *testing.T) {
 // is not provenance. Import therefore records the binary's honest local
 // version whenever it can be derived, warns when it disagrees with the
 // exported tag (a malicious list claiming v999.0.0 must never freeze
-// upgrades), and falls back to the exported tag only for builds without
-// usable version metadata — still with an explicit unverified-provenance
-// warning.
+// upgrades), and replaces an exported SEMANTIC tag with the neutral
+// "imported" sentinel for builds without usable version metadata; only
+// non-semantic exported tags survive, as advisory labels with an explicit
+// unverified-provenance warning.
 func TestImportTagProvenance(t *testing.T) {
 	t.Setenv("HUKOU_DATA_DIR", t.TempDir())
 	binDir := t.TempDir()
