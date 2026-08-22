@@ -139,7 +139,6 @@ verify_attestation() {
   # attestation minted for any other release cannot be replayed against this
   # download even though release assets are mutable. The historical
   # pinned/unpinned split is gone: replay protection applies to latest too.
-  attestation_repo_pattern=$(printf '%s' "$REPO" | sed 's/[][\.*^$+?{}|()]/\\&/g')
   attestation_tag_pattern=$(printf '%s' "$VERSION" | sed 's/[][\.*^$+?{}|()]/\\&/g')
   attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/'"${attestation_tag_pattern}"'$'
   if gh attestation verify "$attestation_subject" \
@@ -151,13 +150,18 @@ verify_attestation() {
   fi
   # Older gh builds support attestation verification but not --source-ref.
   # Without the flag the exact identity regex still pins the tag (the SAN
-  # must terminate at refs/tags/<VERSION>), so a retry without it is safe for
-  # optional mode — but only with a loud warning. Required mode fails closed:
-  # an operator demanding provenance deserves a working --source-ref.
+  # must terminate at refs/tags/<VERSION>), so a retry without it is safe
+  # for optional mode — but only with a loud warning naming the gh
+  # limitation. Required mode fails closed: an operator demanding full
+  # provenance deserves a working --source-ref, not a silently degraded one.
+  if [ "$REQUIRE_ATTESTATION" -eq 1 ]; then
+    die "attestation verification failed for ${attestation_subject##*/} (repo $REPO, tag $VERSION): gh is too old for --source-ref and HUKOU_REQUIRE_ATTESTATION is set"
+  fi
   if gh attestation verify "$attestation_subject" \
     --repo "$REPO" \
     --cert-identity-regex "$attestation_identity_regex" >/dev/null 2>&1; then
-    printf 'install.sh: WARNING: gh is too old for --source-ref; verified via exact-tag identity regex only\n' >&2
+    printf 'install.sh: WARNING: gh is too old for --source-ref; verified via the exact-tag identity regex only (upgrade gh to also bind refs/tags/%s)\n' "$VERSION" >&2
+    printf 'Verified build-provenance attestation for %s (%s @ %s)\n' "${attestation_subject##*/}" "$REPO" "$VERSION"
     return 0
   fi
   die "attestation verification failed for ${attestation_subject##*/} (repo $REPO, tag $VERSION)"

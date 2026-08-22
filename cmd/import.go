@@ -271,9 +271,17 @@ func resolveImportTag(t exportEntry, binPath, actualSHA string) (tag string, war
 		// still the more honest record when they differ textually.
 		return actual, i18n.T("warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q", t.Name, t.Tag, actual)
 	}
-	// No derivable actual version: fall back to the exported tag, but never
-	// silently — provenance is unverified either way.
-	return t.Tag, i18n.T("warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q", t.Name, t.Tag, t.Tag)
+	// No derivable actual version (non-Go or "(devel)" builds). A digest
+	// match proves which bytes are on PATH, not which upstream tag published
+	// them, so a semver-looking exported tag is still untrusted provenance —
+	// recording "v999.0.0" would freeze the tool's upgrades forever. Such
+	// tags are replaced by the neutral "imported" sentinel; only
+	// non-semantic exported tags survive as advisory labels, and never
+	// silently.
+	if versionpolicy.IsSemanticTag(t.Tag) {
+		return "imported", i18n.T("warning: %s: binary carries no usable build metadata; untrusted semantic tag %q replaced by the neutral sentinel imported (offline import cannot bind a digest to a release)", t.Name, t.Tag)
+	}
+	return t.Tag, i18n.T("warning: %s: exported tag %q could not be verified offline; recording it as an advisory label only", t.Name, t.Tag)
 }
 
 // policyNeedsApply reports whether the exported policy differs from the adopt

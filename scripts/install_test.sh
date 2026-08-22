@@ -42,6 +42,17 @@ if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
   exit 1
 fi
 if [ "${1:-}" = attestation ] && [ "${2:-}" = verify ]; then
+  # GH_MOCK_OLD_GH=yes emulates an old gh release: any invocation carrying
+  # --source-ref is rejected outright (unknown flag), while the same
+  # verification without the flag behaves exactly like the modern mock.
+  if [ "${GH_MOCK_OLD_GH:-no}" = yes ]; then
+    for OLD_ARG in "$@"; do
+      if [ "$OLD_ARG" = --source-ref ]; then
+        printf 'gh-mock(old): unknown flag: --source-ref\n' >&2
+        exit 1
+      fi
+    done
+  fi
   if [ -n "${GH_MOCK_LOG:-}" ]; then
     printf '%s\n' "$*" >>"$GH_MOCK_LOG"
   fi
@@ -533,6 +544,51 @@ case "$(cat "$ATTEST_LATEST_LOG")" in
   "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v9\.9\.9\$ --source-ref refs/tags/v9.9.9") ;;
   *)
     printf 'unexpected gh attestation invocation for latest: %s\n' "$(cat "$ATTEST_LATEST_LOG")" >&2
+    exit 1
+    ;;
+esac
+
+# Old-gh behavior: the mock rejects any invocation carrying --source-ref.
+# Case A (required mode): the retry must NOT run; the install dies with an
+# explicit message naming both --source-ref and HUKOU_REQUIRE_ATTESTATION,
+# before any archive inspection or extraction (no tar spy mark).
+OLD_GH_REQUIRED_PREFIX=${TMP}/old-gh-required-prefix
+OLD_GH_REQUIRED_ERR=${TMP}/old-gh-required.err
+if GH_MOCK_AUTH=yes GH_MOCK_OLD_GH=yes GH_MOCK_VERIFY=pass HUKOU_REQUIRE_ATTESTATION=1 \
+  REAL_TAR="$REAL_TAR" TAR_SPY_MARK="${TMP}/old-gh-required-tar-mark" PATH="${TAR_SPY_DIR}:${PATH}" \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$OLD_GH_REQUIRED_PREFIX" >/dev/null 2>"$OLD_GH_REQUIRED_ERR"; then
+  printf 'installer accepted an old gh without --source-ref under HUKOU_REQUIRE_ATTESTATION=1\n' >&2
+  exit 1
+fi
+grep -q -- '--source-ref' "$OLD_GH_REQUIRED_ERR"
+grep -q 'HUKOU_REQUIRE_ATTESTATION is set' "$OLD_GH_REQUIRED_ERR"
+[ ! -e "${TMP}/old-gh-required-tar-mark" ]
+[ ! -e "$OLD_GH_REQUIRED_PREFIX" ]
+
+# Case B (optional mode): the retry without --source-ref succeeds, but only
+# with a loud warning on stderr naming the old-gh limitation. The exact-tag
+# identity regex still pins the resolved tag, so provenance stays bound to
+# refs/tags/v9.9.9 even without the flag.
+OLD_GH_OPTIONAL_PREFIX=${TMP}/old-gh-optional-prefix
+OLD_GH_OPTIONAL_LOG=${TMP}/old-gh-optional.log
+OLD_GH_OPTIONAL_ERR=${TMP}/old-gh-optional.err
+GH_MOCK_AUTH=yes GH_MOCK_OLD_GH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$OLD_GH_OPTIONAL_LOG" \
+  GH_MOCK_EXPECT_IDENTITY_REGEX='^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v9\.9\.9$' \
+  HUKOU_ALLOW_FILE_URL=1 HUKOU_RELEASE_BASE_URL="file://${TMP}/releases" \
+  "$ROOT/scripts/install.sh" --version "$VERSION" --prefix "$OLD_GH_OPTIONAL_PREFIX" >/dev/null 2>"$OLD_GH_OPTIONAL_ERR"
+[ "$("${OLD_GH_OPTIONAL_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
+grep -q 'gh is too old for --source-ref' "$OLD_GH_OPTIONAL_ERR"
+case "$(cat "$OLD_GH_OPTIONAL_LOG")" in
+  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v9\.9\.9\$") ;;
+  *)
+    printf 'unexpected retry invocation for old gh: %s\n' "$(cat "$OLD_GH_OPTIONAL_LOG")" >&2
+    exit 1
+    ;;
+esac
+case "$(cat "$OLD_GH_OPTIONAL_LOG")" in
+  *--source-ref*)
+    printf 'retry must not pass --source-ref\n' >&2
     exit 1
     ;;
 esac

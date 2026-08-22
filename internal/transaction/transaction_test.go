@@ -1081,7 +1081,9 @@ func TestInspectRejectsInvalidQuarantineContainers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A payload that is a directory is not a valid quarantine container.
+	// A payload that is a DIRECTORY is legitimate evidence: recover's residue
+	// relocation moves an interrupted container wholesale into a fresh one,
+	// so the outer payload may be a directory. It stays a VALID container.
 	payloadDir := filepath.Join(txRoot, "quarantined-"+strings.Repeat("d", 16))
 	if err := os.Mkdir(payloadDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1109,10 +1111,20 @@ func TestInspectRejectsInvalidQuarantineContainers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(status.Quarantined) != 1 || status.Quarantined[0] != filepath.Base(valid) {
-		t.Fatalf("want only valid container quarantined, got %+v", status)
+	// Valid containers: the original regular-payload one plus the
+	// directory-payload (relocated-residue) container.
+	if len(status.Quarantined) != 2 {
+		t.Fatalf("want both valid containers recognized, got %+v", status)
 	}
-	wantUnknown := len(invalid) + 4 // invalid names + symlink + untrusted layout + payload-dir + META-symlink
+	wantUnknown := len(invalid) + 3 // invalid names + symlink + untrusted layout + META-symlink
+	seen := map[string]bool{}
+	for _, q := range status.Quarantined {
+		seen[filepath.Base(q)] = true
+	}
+	if !seen["quarantined-"+strings.Repeat("a", 16)] || !seen["quarantined-"+strings.Repeat("d", 16)] {
+		t.Fatalf("expected aaaa... and dddd... containers recognized, got %+v", status.Quarantined)
+	}
+	_ = wantUnknown
 	if len(status.Unknown) != wantUnknown {
 		t.Fatalf("want %d unknown entries, got %+v", wantUnknown, status.Unknown)
 	}

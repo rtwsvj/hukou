@@ -255,3 +255,103 @@ func TestExtractPoisonZipDeclaredSizeBudget(t *testing.T) {
 		t.Fatalf("expected declared-size-budget error, got %v", err)
 	}
 }
+
+// TestExtractPoisonCandidateBudgetYieldsToExactMatch guards the documented
+// selection precedence: an archive stuffed past MaxExecCandidates with junk
+// executables must still extract the exact basename match when one exists,
+// and must still fail with the candidate-budget error when it does not.
+func TestExtractPoisonCandidateBudgetYieldsToExactMatch(t *testing.T) {
+	junk := func(i int) []byte { return bytes.Repeat([]byte{byte('A' + i%26)}, 64) }
+
+	t.Run("exact after overflow wins", func(t *testing.T) {
+		dir := t.TempDir()
+		archivePath := filepath.Join(dir, "tool.tar.gz")
+		f, err := os.Create(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz := gzip.NewWriter(f)
+		tw := tar.NewWriter(gz)
+		for i := range MaxExecCandidates + 10 {
+			name := fmt.Sprintf("junk-%04d", i)
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(junk(i)))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(junk(i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := []byte("#!/bin/sh\necho exact\n")
+		if err := tw.WriteHeader(&tar.Header{Name: "tool", Mode: 0o755, Size: int64(len(want))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(want); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		dest := t.TempDir()
+		handle, err := os.Open(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { handle.Close() })
+		got, err := Extract(handle, dest, "tool")
+		if err != nil {
+			t.Fatalf("exact match after candidate overflow must win: %v", err)
+		}
+		data, err := os.ReadFile(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, want) {
+			t.Fatalf("wrong member extracted: %q", data)
+		}
+	})
+
+	t.Run("overflow without exact still fails budget", func(t *testing.T) {
+		dir := t.TempDir()
+		archivePath := filepath.Join(dir, "tool.tar.gz")
+		f, err := os.Create(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gz := gzip.NewWriter(f)
+		tw := tar.NewWriter(gz)
+		for i := range MaxExecCandidates + 10 {
+			name := fmt.Sprintf("junk-%04d", i)
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(junk(i)))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(junk(i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		handle, err := os.Open(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { handle.Close() })
+		if _, err := Extract(handle, t.TempDir(), "tool"); err == nil || !strings.Contains(err.Error(), "candidate budget exceeded") {
+			t.Fatalf("err=%v, want candidate-budget error", err)
+		}
+	})
+}

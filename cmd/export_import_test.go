@@ -95,7 +95,14 @@ func TestExportImportRoundTrip(t *testing.T) {
 		t.Fatalf("toola not imported; manifest entries: %+v", m.Entries)
 	}
 	e := m.Get("toola")
-	if e.Repo != "owner/repo" || e.Tag != "v1.0.0" || e.ArchiveExe != "inner-a" {
+	if e == nil {
+		t.Fatalf("toola not imported; manifest entries: %+v", m.Entries)
+	}
+	// The destination binary is a plain script with no Go build metadata, so
+	// the exported semantic tag cannot be bound offline and import records
+	// the neutral "imported" sentinel instead (repo/archive-exe/policy still
+	// round-trip exactly).
+	if e.Repo != "owner/repo" || e.Tag != "imported" || e.ArchiveExe != "inner-a" {
 		t.Fatalf("toola import metadata wrong: %+v", e)
 	}
 	if e.UpdatePolicy.Mode != "github-latest" {
@@ -235,8 +242,8 @@ func TestImportTagProvenance(t *testing.T) {
 		t.Fatalf("importOne mismatch: %+v (stderr: %s)", res, errBuf.String())
 	}
 	warning := errBuf.String()
-	if !strings.Contains(warning, "could not be verified offline") || !strings.Contains(warning, "v999.0.0") {
-		t.Fatalf("warning missing unverified-provenance notice and tag:\n%s", warning)
+	if !strings.Contains(warning, "neutral sentinel imported") || !strings.Contains(warning, "v999.0.0") {
+		t.Fatalf("warning missing untrusted-tag notice:\n%s", warning)
 	}
 	m, err := loadManifest()
 	if err != nil {
@@ -246,29 +253,32 @@ func TestImportTagProvenance(t *testing.T) {
 	if e == nil {
 		t.Fatal("toola not adopted")
 	}
-	if e.Tag != "v999.0.0" {
-		t.Fatalf("tag = %q, want the exported-tag fallback %q", e.Tag, "v999.0.0")
+	// A semantic exported tag on a binary with no derivable version is
+	// untrusted provenance: recording v999.0.0 would freeze upgrades, so it
+	// must be replaced by the neutral "imported" sentinel.
+	if e.Tag != "imported" {
+		t.Fatalf("tag = %q, want the neutral \"imported\" sentinel", e.Tag)
 	}
 	if e.SHA256 != shaV2 {
 		t.Fatalf("entry sha256 = %s, want the actual binary's %s", e.SHA256, shaV2)
 	}
-
-	// toolb: sha matches the list and no actual version is derivable, so the
-	// exported tag stands — but provenance stays explicitly unverified.
+	// toolb: sha matches the list but no actual version is derivable. Even a
+	// digest match cannot bind a tag offline, so the semantic exported tag is
+	// still replaced by the neutral sentinel — with an explicit warning.
 	errBuf.Reset()
 	res = importOne(exportEntry{Name: "toolb", Type: "github", Repo: "owner/repo", Tag: "v1.0.0", SHA256: shaV1}, false, &errBuf)
 	if res.Status != "ok" {
 		t.Fatalf("importOne match: %+v (stderr: %s)", res, errBuf.String())
 	}
-	if strings.Contains(errBuf.String(), "differs from the exported list") {
-		t.Fatalf("false-positive mismatch warning on a matching sha:\n%s", errBuf.String())
+	if !strings.Contains(errBuf.String(), "neutral sentinel imported") {
+		t.Fatalf("missing untrusted-tag warning on a matching sha:\n%s", errBuf.String())
 	}
 	m, err = loadManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := m.Get("toolb"); e == nil || e.Tag != "v1.0.0" {
-		t.Fatalf("matching import did not keep the exported tag: %+v", e)
+	if e := m.Get("toolb"); e == nil || e.Tag != "imported" {
+		t.Fatalf("semantic tag without derivable version must become \"imported\": %+v", e)
 	}
 
 	// toolc: a v999 tag whose sha256 matches the real binary used to be
@@ -347,8 +357,8 @@ func TestImportTagProvenance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if e := m.Get("toold"); e == nil || e.Tag != "v999.0.0" {
-			t.Fatalf("(devel) build must keep the advisory exported tag: %+v", e)
+		if e := m.Get("toold"); e == nil || e.Tag != "imported" {
+			t.Fatalf("(devel) build carries no derivable version; untrusted semantic tag must become \"imported\": %+v", e)
 		}
 		return
 	}

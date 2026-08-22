@@ -188,9 +188,12 @@ func QuarantinedPrefix() string { return quarantinedPrefix }
 // quarantined container. The name must be exactly "quarantined-" followed by
 // 16 lowercase hex digits; the path must be a real directory (not a symlink);
 // and its contents must be exactly the expected META regular file and a
-// non-directory payload entry, with no other names. Containers that fail any
-// of these checks are treated as Unknown so they are fail-closed rather than
-// silently purged.
+// payload entry, with no other names. The payload may be a regular file (the
+// normal case: a moved transaction entry) OR a directory — recover's residue
+// relocation moves an interrupted, incomplete container wholesale into a
+// fresh container, so a directory payload is legitimate preserved evidence,
+// not corruption. Containers that fail any check are treated as Unknown so
+// they are fail-closed rather than silently purged.
 func IsValidQuarantineContainer(txRoot, name string) bool {
 	if txRoot == "" || name == "" {
 		return false
@@ -230,8 +233,13 @@ func IsValidQuarantineContainer(txRoot, name string) bool {
 			}
 			hasMeta = true
 		case quarantinePayloadName:
-			payloadInfo, err := os.Lstat(filepath.Join(path, entry.Name()))
-			if err != nil || payloadInfo.IsDir() {
+			// The payload preserves whatever the original transaction-root
+			// entry was — a regular file, a symlink (stray links are
+			// quarantined verbatim), or a directory (recover relocates an
+			// interrupted container wholesale). Only its presence and the
+			// exact two-entry layout are checked; Lstat confirms it exists
+			// without following it.
+			if _, err := os.Lstat(filepath.Join(path, entry.Name())); err != nil {
 				return false
 			}
 			hasPayload = true

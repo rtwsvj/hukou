@@ -948,8 +948,10 @@ errors and always exit non-zero after the report is written.`: `receipt 从本�
 	"executable not found on PATH":     "PATH 上找不到该程序",
 	"apply update policy: %v":          "应用更新策略：%v",
 	" (policy reapplied)":              "（策略已重新应用）",
-	"warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q":                                     "警告：%s：导出标签 %q 无法离线验证；改记二进制实际版本 %q",
-	"warning: %s: exported tag %q and the binary's actual version %q are both semantic versions but disagree; recording the actual version %q": "警告：%s：导出标签 %q 与二进制实际版本 %q 均为语义化版本但不一致；改记实际版本 %q",
+	"warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q":                                                                         "警告：%s：导出标签 %q 无法离线验证；改记二进制实际版本 %q",
+	"warning: %s: exported tag %q and the binary's actual version %q are both semantic versions but disagree; recording the actual version %q":                                     "警告：%s：导出标签 %q 与二进制实际版本 %q 均为语义化版本但不一致；改记实际版本 %q",
+	"warning: %s: binary carries no usable build metadata; untrusted semantic tag %q replaced by the neutral sentinel imported (offline import cannot bind a digest to a release)": "警告：%s：二进制不携带可用的构建元数据；不可信的语义化标签 %q 已替换为中立哨兵值 imported（离线导入无法将摘要绑定到某个发布版本）",
+	"warning: %s: exported tag %q could not be verified offline; recording it as an advisory label only":                                                                           "警告：%s：导出标签 %q 无法离线验证；仅作为参考标签记录",
 	`export writes a portable, machine-readable list of every adopted tool
 (its repository, tag, archive-internal name, SHA-256, and update policy) so
 the same set can be re-registered on another machine with "hukou import".

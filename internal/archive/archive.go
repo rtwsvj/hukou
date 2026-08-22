@@ -138,6 +138,11 @@ func findTarTarget(f *os.File, wantName string) (string, error) {
 
 	var exact *tarEntry
 	var candidates []tarEntry
+	// MaxExecCandidates overflow is recorded, not fatal: the documented
+	// selection rule gives an exact basename match precedence over the
+	// executable-candidate heuristic, so the scan continues and the budget
+	// only fails the archive when no exact match exists.
+	candidateOverflow := false
 
 	for {
 		h, err := tr.Next()
@@ -175,7 +180,8 @@ func findTarTarget(f *os.File, wantName string) (string, error) {
 		}
 		if isExecutableLike(base, h.Mode) {
 			if len(candidates) >= MaxExecCandidates {
-				return "", i18n.Errorf("archive candidate budget exceeded: more than %d executable-looking entries", MaxExecCandidates)
+				candidateOverflow = true
+				continue
 			}
 			candidates = append(candidates, tarEntry{name: h.Name, mode: h.Mode})
 		}
@@ -184,6 +190,10 @@ func findTarTarget(f *os.File, wantName string) (string, error) {
 	if exact != nil {
 		return exact.name, nil
 	}
+	if candidateOverflow {
+		return "", i18n.Errorf("archive candidate budget exceeded: more than %d executable-looking entries", MaxExecCandidates)
+	}
+
 	if len(candidates) == 0 {
 		return "", i18n.Errorf("no binary found in archive")
 	}
@@ -256,6 +266,9 @@ func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
 	var declared uint64
 	var exact *zip.File
 	var candidates []*zip.File
+	// Deferred like the tar path: candidate overflow must not mask a later
+	// exact basename match.
+	zipCandidateOverflow := false
 
 	for _, zf := range files {
 		if zf.FileInfo().IsDir() {
@@ -285,7 +298,10 @@ func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
 
 		if isExecutableLike(base, int64(zf.Mode())) {
 			if len(candidates) >= MaxExecCandidates {
-				return nil, i18n.Errorf("archive candidate budget exceeded: more than %d executable-looking entries", MaxExecCandidates)
+				// Deferred, not fatal: an exact basename match later in
+				// the central directory still wins (documented precedence).
+				zipCandidateOverflow = true
+				continue
 			}
 			candidates = append(candidates, zf)
 		}
@@ -293,6 +309,9 @@ func findZipTarget(files []*zip.File, wantName string) (*zip.File, error) {
 
 	if exact != nil {
 		return exact, nil
+	}
+	if zipCandidateOverflow {
+		return nil, i18n.Errorf("archive candidate budget exceeded: more than %d executable-looking entries", MaxExecCandidates)
 	}
 
 	if len(candidates) == 0 {
