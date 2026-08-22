@@ -42,7 +42,7 @@ const MaxExecCandidates = 256
 // ever starts.
 const MaxDeclaredBytes int64 = 4 << 30
 
-// Extract unpacks the archive at archivePath into destDir and returns the path
+// Extract unpacks the archive read from f into destDir and returns the path
 // of the extracted binary.
 //
 // wantName is the expected binary base name (without directory). Extraction
@@ -55,24 +55,32 @@ const MaxDeclaredBytes int64 = 4 << 30
 // All entries are checked for directory traversal attacks: the cleaned entry
 // path must stay inside destDir. Each entry and the total extracted size are
 // capped at 512 MiB.
-func Extract(archivePath, destDir, wantName string) (string, error) {
+//
+// Extract reads exclusively through the provided descriptor: it never opens
+// anything by path, so a caller can verify the bytes by hashing the same
+// handle and be certain extraction consumed exactly those bytes (no
+// pathname-reopen race between verification and extraction). Multi-pass
+// formats re-read the SAME descriptor after Seek(0); on return the offset is
+// left wherever the last pass ended, so callers must Seek(0) before reading
+// again. The caller retains ownership of f and closes it.
+func Extract(f *os.File, destDir, wantName string) (string, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", i18n.Wrapf("create dest dir: %w", err)
 	}
 
-	switch DetectFormat(archivePath) {
+	switch DetectFormat(f.Name()) {
 	case FormatTarGz:
-		return extractTarGz(archivePath, destDir, wantName)
+		return extractTarGz(f, destDir, wantName)
 	case FormatTarXz:
 		return "", i18n.Errorf("xz archives are not supported yet (.tar.xz/.txz)")
 	case FormatUnsupported:
-		return "", i18n.Errorf("unsupported archive format: %s", filepath.Base(archivePath))
+		return "", i18n.Errorf("unsupported archive format: %s", filepath.Base(f.Name()))
 	case FormatZip:
-		return extractZip(archivePath, destDir, wantName)
+		return extractZip(f, destDir, wantName)
 	case FormatGz:
-		return extractGz(archivePath, destDir, wantName)
+		return extractGz(f, destDir, wantName)
 	default:
-		return copyBareFile(archivePath, destDir, wantName)
+		return copyBareFile(f, destDir, wantName)
 	}
 }
 
@@ -94,15 +102,19 @@ func safeJoin(destDir, target string) (string, error) {
 	return clean, nil
 }
 
-func extractTarGz(archivePath, destDir, wantName string) (string, error) {
+func extractTarGz(f *os.File, destDir, wantName string) (string, error) {
 	// First pass: inspect headers without writing anything.
-	target, err := findTarTarget(archivePath, wantName)
+	target, err := findTarTarget(f, wantName)
 	if err != nil {
 		return "", err
 	}
 
-	// Second pass: extract the chosen entry.
-	return extractTarEntry(archivePath, destDir, target)
+	// Second pass over the SAME descriptor: rewind and extract the chosen
+	// entry without ever reopening the archive by path.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", i18n.Wrapf("rewind archive: %w", err)
+	}
+	return extractTarEntry(f, destDir, target)
 }
 
 type tarEntry struct {
@@ -110,13 +122,7 @@ type tarEntry struct {
 	mode int64
 }
 
-func findTarTarget(archivePath, wantName string) (string, error) {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
+func findTarTarget(f *os.File, wantName string) (string, error) {
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return "", i18n.Wrapf("open gzip: %w", err)
@@ -187,13 +193,7 @@ func findTarTarget(archivePath, wantName string) (string, error) {
 	return candidates[0].name, nil
 }
 
-func extractTarEntry(archivePath, destDir, wantEntry string) (string, error) {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
+func extractTarEntry(f *os.File, destDir, wantEntry string) (string, error) {
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return "", i18n.Wrapf("open gzip: %w", err)
@@ -224,12 +224,15 @@ func extractTarEntry(archivePath, destDir, wantEntry string) (string, error) {
 	}
 }
 
-func extractZip(archivePath, destDir, wantName string) (string, error) {
-	zr, err := zip.OpenReader(archivePath)
+func extractZip(f *os.File, destDir, wantName string) (string, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	zr, err := zip.NewReader(f, info.Size())
 	if err != nil {
 		return "", i18n.Wrapf("open zip: %w", err)
 	}
-	defer zr.Close()
 
 	target, err := findZipTarget(zr.File, wantName)
 	if err != nil {
@@ -373,13 +376,7 @@ func writeLimited(r io.Reader, destDir, name string, mode os.FileMode, totalSoFa
 	return n, nil
 }
 
-func extractGz(archivePath, destDir, wantName string) (string, error) {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
+func extractGz(f *os.File, destDir, wantName string) (string, error) {
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return "", i18n.Wrapf("open gzip: %w", err)
@@ -412,29 +409,23 @@ func extractGz(archivePath, destDir, wantName string) (string, error) {
 	return outPath, nil
 }
 
-func copyBareFile(archivePath, destDir, wantName string) (string, error) {
+func copyBareFile(f *os.File, destDir, wantName string) (string, error) {
 	outPath, err := safeJoin(destDir, wantName)
 	if err != nil {
 		return "", err
 	}
-	if err := copyFileLimited(archivePath, outPath, 0o755); err != nil {
+	if err := copyFileLimited(f, outPath, 0o755); err != nil {
 		return "", err
 	}
 	return outPath, nil
 }
 
-func copyFileLimited(src, dst string, perm os.FileMode) error {
-	sf, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer sf.Close()
-
+func copyFileLimited(src io.Reader, dst string, perm os.FileMode) error {
 	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(df, io.LimitReader(sf, MaxEntryBytes+1))
+	n, err := io.Copy(df, io.LimitReader(src, MaxEntryBytes+1))
 	if err != nil {
 		df.Close()
 		os.Remove(dst)

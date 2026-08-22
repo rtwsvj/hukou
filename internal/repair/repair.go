@@ -20,6 +20,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/durablefs"
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
+	"github.com/rtwsvj/hukou/internal/roottrust"
 	"github.com/rtwsvj/hukou/internal/state"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
@@ -170,8 +171,15 @@ func Apply(dataRoot string, plan Plan) (result Result, retErr error) {
 	if err := validatePlan(plan); err != nil {
 		return result, err
 	}
+	// existingDataRoot inspects with Lstat and refuses anything that is not a
+	// real directory; the trust gate then applies the same fail-closed rules
+	// as every other mutating path (real dir, owned by the effective user,
+	// not group/other-writable) BEFORE any directory is created or synced.
 	root, err := existingDataRoot(dataRoot)
 	if err != nil {
+		return result, i18n.Wrapf("%w: %v", ErrStateChanged, err)
+	}
+	if err := roottrust.Check(root, roottrust.Hooks{}); err != nil {
 		return result, i18n.Wrapf("%w: %v", ErrStateChanged, err)
 	}
 	// Reaffirm the existing root's durability, but do not call the normal
@@ -737,10 +745,13 @@ func validateTransactionState(value statejournal.State) error {
 
 // validateCommitMarker mirrors statejournal's torn-COMMIT semantics so repair
 // planning converges on the same states recovery does: an absent marker, an
-// empty marker, or a trimmed byte-prefix of "<id>\n" is acceptable (Apply
-// routes through Recover, which rolls a torn transaction back), while alien
-// content and topology violations stay errors that surface as
-// ErrNotRepairable.
+// empty marker, or a strict raw byte-prefix of "<id>\n" (the full id without
+// its trailing newline included) is acceptable (Apply routes through Recover,
+// which rolls a torn transaction back), while any other content — whitespace
+// mutations, suffix corruption, alien bytes — and topology violations stay
+// errors that surface as ErrNotRepairable. There is deliberately no
+// whitespace tolerance: newline is the last byte Commit writes, so content
+// no interrupted write of this marker can produce is corruption, not torn.
 func validateCommitMarker(dir, id string) error {
 	path := filepath.Join(dir, "COMMIT")
 	data, err := readStableRegular(path, 256)
@@ -830,9 +841,15 @@ func existingDataRoot(path string) (string, error) {
 		return "", err
 	}
 	root = filepath.Clean(root)
-	info, err := os.Stat(root)
+	// Lstat, not Stat: a symlinked data root must be refused here so the trust
+	// gate below judges the path hukou was pointed at, not wherever the link
+	// happens to lead.
+	info, err := os.Lstat(root)
 	if err != nil {
 		return "", i18n.Wrapf("data root must already exist: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", i18n.Errorf("data root %s is a symbolic link, not a real directory", root)
 	}
 	if !info.IsDir() {
 		return "", i18n.Errorf("data root is not a directory")

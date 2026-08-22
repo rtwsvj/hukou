@@ -9,9 +9,11 @@ import (
 
 // TestHasValidCommitClassifiesTornMarkers pins the torn-COMMIT contract at the
 // classifier level: only the exact fully written "<id>\n" marker counts as
-// committed, anything the crash window can plausibly leave behind (empty file,
-// partial write, missing trailing newline) classifies as never-committed, and
-// alien content stays a hard error.
+// committed, a strict raw byte-prefix of those bytes — including the empty
+// file and the full id without its trailing newline — classifies as
+// never-committed, and every other content (whitespace mutations included:
+// newline is the last byte Commit writes) is corruption and stays a hard
+// error that preserves the bytes.
 func TestHasValidCommitClassifiesTornMarkers(t *testing.T) {
 	fixture := newMatrixFixture(t)
 	id := fixture.tx.intent.ID
@@ -25,7 +27,8 @@ func TestHasValidCommitClassifiesTornMarkers(t *testing.T) {
 	}{
 		{name: "exact durable decision", content: id + "\n", wantCommitted: true},
 		{name: "empty marker", content: "", wantCommitted: false},
-		{name: "whitespace only marker", content: "\n", wantCommitted: false},
+		{name: "newline-only marker is corruption, not torn", content: "\n", wantErr: "invalid COMMIT marker contents"},
+		{name: "trailing space after full decision is corruption", content: id + "\n ", wantErr: "invalid COMMIT marker contents"},
 		{name: "single byte prefix", content: id[:1], wantCommitted: false},
 		{name: "two byte prefix", content: id[:2], wantCommitted: false},
 		{name: "full id without newline", content: id, wantCommitted: false},
@@ -90,6 +93,7 @@ func TestRecoverRollsBackTornCommitMarker(t *testing.T) {
 	}{
 		{name: "empty COMMIT marker", content: func(string) string { return "" }},
 		{name: "partial byte prefix of decision", content: func(id string) string { return id[:2] }},
+		{name: "full id without trailing newline", content: func(id string) string { return id }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

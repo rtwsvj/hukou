@@ -236,3 +236,34 @@ bricked by drift" into "adopted agent reconciles".
 - managers.json: support per-manager env passthru? Proposal: no for r1 —
   the allowlist + denylist is the contract; exceptions invite the EO-1 class
   of leak back.
+
+## Appendix A — Machine survey (2026-08-22, this workstation)
+
+Facts gathered read-only (binary strings, live configs, GitHub/npm registry
+API). Auto-updaters currently **ON** are marked ⚠.
+
+| Tool | Upstream | Native updater | Disable switch | Checksum source | Preset |
+|---|---|---|---|---|---|
+| opencode (~/.opencode) | anomalyco/opencode | ⚠ autoupdate config key; patch releases auto-install | `OPENCODE_DISABLE_AUTOUPDATE=1` (presence alone skips the whole check) or `"autoupdate": false` | GitHub API per-asset `digest` (no checksums.txt asset) | adopt + `drift=adopt`, updater kept |
+| grok 1.0.5 (~/.local/bin) | xAI (closed; x.ai CDN) | ⚠ `~/.grok/config.toml` `auto_update = true` today | `GROK_DISABLE_AUTOUPDATER=1`, `[cli] auto_update = false`, or `--no-auto-update` | **none published** | adopt requires explicit `--allow-unverified` decision, or observe-only |
+| grok 0.1.4 (/opt/homebrew) | stale npm generation | notify-only wrapper, no updater | — (remove: `npm rm -g @xai-official/grok`; shares ~/.grok state with 1.0.5) | npm dist.integrity | remove (PATH ambiguity, not adopt) |
+| hermes (~/.hermes) | NousResearch/hermes-agent | git-pull manual only; 6h notify banner; no auto-install | nothing to disable (`updates:` schema has backup knobs only) | none (source tree; pin by git SHA not file hash) | observe-only + delegated manager if desired |
+| omp (~/.local/bin) | can1357/oh-my-pi | ⚠ `startup.checkUpdate` default true; `marketplace.autoUpdate` notify/auto; local shim omp-upgrade execs `omp update` | `startup.checkUpdate: false`, `marketplace.autoUpdate: off` in ~/.omp/agent/config.yml; neutralize the shim | SHA256SUMS.txt + API digests | adopt + `drift=adopt`, updater kept |
+| pi (/opt/homebrew, npm) | earendil-works/pi | manual `pi update` shells to owning package manager; notify-only banner | nothing auto to disable | SHA256SUMS + API digests | npm manager covers it; optional adopt for lineage |
+| openclaw (/opt/homebrew, npm) | openclaw/openclaw | daemon auto-updater exists but **default OFF** (`update.auto.enabled`) | keep `update.auto.enabled` absent/false | none (npm is the artifact channel; dist.integrity sha512) | npm manager covers it |
+
+### Design implication: API-digest verification
+
+GitHub's release API returns a server-computed `digest` (sha256) for every
+asset — confirmed present for opencode, oh-my-pi, kimi-code and pi. It is
+served from the same origin under the same TLS as the release metadata
+hukou already trusts, and it is exactly as resistant to repo-write compromise
+as a publisher checksums.txt (both are attacker-forgeable with repo access).
+hukou should therefore accept *either* a checksum asset **or** the API
+`digest` field when deciding "publisher checksum present" — this unlocks
+fail-closed adoption for opencode without any publisher-side change.
+Implementation note: `ghrelease.Asset` gains the digest field;
+`resolvePublisherChecksum` treats a matching API digest as
+`checksum_verified: true` with `checksum_asset: "(api-digest)"` recorded in
+the audit trail. Same-origin honesty rule stays intact: the digest must come
+from the same API response as the asset URL, never fetched separately.

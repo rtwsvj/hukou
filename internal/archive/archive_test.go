@@ -13,6 +13,19 @@ import (
 	"testing"
 )
 
+// openArchive opens path for reading and hands the descriptor to Extract.
+// The new single-descriptor Extract never opens anything by path, so tests
+// drive it through a real file handle. The handle is closed by t.Cleanup.
+func openArchive(t *testing.T, path string) *os.File {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
 func makeTarGz(t *testing.T, entries []struct {
 	name string
 	body string
@@ -127,7 +140,7 @@ func TestExtractTarGzExactMatch(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "mytool")
+	out, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +162,7 @@ func TestExtractTarGzExactExe(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "mytool")
+	out, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +182,7 @@ func TestExtractTarGzHeuristicExecutable(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "wanted")
+	out, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +205,7 @@ func TestExtractTarGzHeuristicNoExtension(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "wanted")
+	out, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +228,7 @@ func TestExtractTarGzMultipleCandidates(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "wanted")
+	_, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err == nil {
 		t.Fatal("expected error for multiple candidates")
 	}
@@ -237,7 +250,7 @@ func TestExtractTarGzPathTraversalRejected(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "wanted")
+	_, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err == nil {
 		t.Fatal("expected path traversal error")
 	}
@@ -256,7 +269,7 @@ func TestExtractTarGzAbsolutePathRejected(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "wanted")
+	_, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err == nil {
 		t.Fatal("expected absolute path error")
 	}
@@ -275,7 +288,7 @@ func TestExtractZipExactMatch(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "mytool")
+	out, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +307,7 @@ func TestExtractZipNestedExactReturnsActualPath(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "mytool")
+	out, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +331,7 @@ func TestExtractZipNestedHeuristicReturnsActualPath(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "mytool")
+	out, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +355,7 @@ func TestExtractZipDuplicateExactWritesNothing(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "mytool")
+	_, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err == nil || !strings.Contains(err.Error(), "multiple entries match") {
 		t.Fatalf("expected duplicate exact-match error, got %v", err)
 	}
@@ -366,7 +379,7 @@ func TestExtractZipMultipleCandidates(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "wanted")
+	_, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -385,7 +398,7 @@ func TestExtractZipPathTraversalRejected(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "wanted")
+	_, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err == nil {
 		t.Fatal("expected path traversal error")
 	}
@@ -398,7 +411,7 @@ func TestExtractGzRenames(t *testing.T) {
 	archive := makeGz(t, "gzipped binary")
 	dest := t.TempDir()
 
-	out, err := Extract(archive, dest, "renamed-tool")
+	out, err := Extract(openArchive(t, archive), dest, "renamed-tool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +431,7 @@ func TestExtractBareFile(t *testing.T) {
 	}
 
 	dest := t.TempDir()
-	out, err := Extract(src, dest, "rawtool")
+	out, err := Extract(openArchive(t, src), dest, "rawtool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +450,7 @@ func TestExtractTarXzUnsupported(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Extract(path, t.TempDir(), "tool")
+	_, err := Extract(openArchive(t, path), t.TempDir(), "tool")
 	if err == nil {
 		t.Fatal("expected xz error")
 	}
@@ -454,7 +467,7 @@ func TestExtractTXZUnsupported(t *testing.T) {
 	}
 
 	dest := t.TempDir()
-	_, err := Extract(path, dest, "tool")
+	_, err := Extract(openArchive(t, path), dest, "tool")
 	if err == nil {
 		t.Fatal("expected xz error")
 	}
@@ -508,7 +521,7 @@ func TestExtractKnownUnsupportedFormatIsNeverBare(t *testing.T) {
 				t.Fatal(err)
 			}
 			dest := t.TempDir()
-			if _, err := Extract(path, dest, "tool"); err == nil {
+			if _, err := Extract(openArchive(t, path), dest, "tool"); err == nil {
 				t.Fatal("expected unsupported-format error")
 			}
 			if _, err := os.Stat(filepath.Join(dest, "tool")); !os.IsNotExist(err) {
@@ -525,7 +538,7 @@ func TestExtractRejectsUnsafeWantedNameForBareAndGzip(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, archive := range []string{bare, makeGz(t, "binary")} {
-		if _, err := Extract(archive, t.TempDir(), "../escape"); err == nil {
+		if _, err := Extract(openArchive(t, archive), t.TempDir(), "../escape"); err == nil {
 			t.Fatalf("expected unsafe wanted name rejection for %s", archive)
 		}
 	}
@@ -539,7 +552,7 @@ func TestExtractZipSkipsSymlinkEntry(t *testing.T) {
 	}{
 		{"tool", "../../outside", int64(os.ModeSymlink | 0o777)},
 	})
-	if _, err := Extract(archive, t.TempDir(), "tool"); err == nil {
+	if _, err := Extract(openArchive(t, archive), t.TempDir(), "tool"); err == nil {
 		t.Fatal("expected ZIP symlink entry to be rejected")
 	}
 }
@@ -584,7 +597,7 @@ func TestExtractDoesNotAllowZipSlip(t *testing.T) {
 	}{
 		{"../foo", "bad", 0o755},
 	})
-	_, err := Extract(archive, t.TempDir(), "foo")
+	_, err := Extract(openArchive(t, archive), t.TempDir(), "foo")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -600,7 +613,7 @@ func TestExtractTarGzNoBinary(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	_, err := Extract(archive, dest, "wanted")
+	_, err := Extract(openArchive(t, archive), dest, "wanted")
 	if err == nil {
 		t.Fatal("expected no binary error")
 	}
@@ -649,7 +662,7 @@ func TestExtractTarGzSkipsNonRegular(t *testing.T) {
 	f.Close()
 
 	dest := t.TempDir()
-	out, err := Extract(path, dest, "wanted")
+	out, err := Extract(openArchive(t, path), dest, "wanted")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,7 +678,7 @@ func TestExtractGzNotGzip(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not gzipped"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Extract(path, t.TempDir(), "tool")
+	_, err := Extract(openArchive(t, path), t.TempDir(), "tool")
 	if err == nil {
 		t.Fatal("expected gzip error")
 	}
@@ -713,7 +726,7 @@ func TestExtractNormalizesArchiveMode(t *testing.T) {
 	})
 
 	dest := t.TempDir()
-	out, err := Extract(archive, dest, "mytool")
+	out, err := Extract(openArchive(t, archive), dest, "mytool")
 	if err != nil {
 		t.Fatal(err)
 	}

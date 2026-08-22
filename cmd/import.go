@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
@@ -17,6 +18,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/store"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 	"github.com/rtwsvj/hukou/internal/verify"
+	"github.com/rtwsvj/hukou/internal/versionpolicy"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +44,13 @@ re-runs the full adoption inspection (ownership gate included, override with
 with a warning; local entries (no repository) cannot be reproduced and are
 skipped with a warning; a missing executable is a per-tool error. The exported
 update policy (channel/pin) is re-applied when it differs from the adopt
-default. --dry-run prints the whole plan and writes nothing; --only restricts
+default.
+
+The exported tag is advisory: import records the binary's honest local
+version (from its Go build information) whenever one can be derived, and
+falls back to the exported tag — with an explicit warning that its
+provenance is unverified — only for builds without usable version metadata.
+--dry-run prints the whole plan and writes nothing; --only restricts
 the run to the named tools. The exit status is non-zero when any tool fails.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runImport,
@@ -183,20 +191,26 @@ func importOne(t exportEntry, force bool, stderr io.Writer) importResult {
 	if err != nil {
 		return importResult{Name: t.Name, Status: "error", Detail: i18n.T("executable not found on PATH")}
 	}
-	// Never trust the exported tag blindly: the binary on this machine's PATH
-	// may be a different build than on the export machine (common), and a
-	// malicious list could record v999.0.0 to freeze upgrades. Re-hash the
-	// real binary; on mismatch, warn and record the actual version instead.
-	tag := t.Tag
-	if t.SHA256 != "" {
-		actualSHA, err := verify.SHA256File(binPath)
-		if err != nil {
-			return importResult{Name: t.Name, Status: "error", Detail: i18n.T("hash binary on PATH: %v", err)}
-		}
-		if actualSHA != t.SHA256 {
-			tag = actualVersionTag(binPath)
-			fmt.Fprintf(stderr, "%s\n", i18n.T("warning: %s: binary on PATH (sha256 %s) differs from the exported list (%s); recording actual version %q instead of tag %q", t.Name, actualSHA, t.SHA256, tag, t.Tag))
-		}
+	// Never trust the exported tag blindly: import is documented offline, so
+	// no release lookup can confirm that the recorded (tag, sha256) pair is
+	// real. The digest alone is not provenance — a malicious list can pin
+	// v999.0.0 to freeze upgrades while shipping the matching digest of the
+	// binary it knows this machine runs. Import therefore records the honest
+	// local version derived from the binary itself and treats the exported
+	// tag as advisory:
+	//   - when the binary carries a REAL Go build version, that version wins;
+	//     if both it and the exported tag are clean semantic versions and they
+	//     disagree, the actual version is recorded with a warning naming both;
+	//   - otherwise (non-Go or "(devel)" builds) fall back to the exported
+	//     tag only when its digest matches the binary, with an explicit
+	//     unverified-provenance warning.
+	actualSHA, err := verify.SHA256File(binPath)
+	if err != nil {
+		return importResult{Name: t.Name, Status: "error", Detail: i18n.T("hash binary on PATH: %v", err)}
+	}
+	tag, warn := resolveImportTag(t, binPath, actualSHA)
+	if warn != "" {
+		fmt.Fprintf(stderr, "%s\n", warn)
 	}
 	var out, errBuf bytes.Buffer
 	if err := doAdoptWithDeps(&out, &errBuf, binPath, t.Repo, false, tag, force, t.ArchiveExe, runSecurityGate, saveManifest); err != nil {
@@ -224,14 +238,42 @@ func importOne(t exportEntry, force bool, stderr io.Writer) importResult {
 	return importResult{Name: t.Name, Status: "ok", Detail: detail}
 }
 
-// actualVersionTag derives the honest tag for a PATH binary whose hash does
-// not match the export list: the Go build info version when the binary
-// carries one, else the neutral "imported" — never the mismatched list tag.
+// actualVersionTag derives the honest version for a binary: the Go build info
+// version when the binary carries a real one (not "(devel)"), else "".
 func actualVersionTag(binPath string) string {
 	if goInfo, ok := provenance.ReadGoBinary(binPath); ok && goInfo.Version != "" && goInfo.Version != "(devel)" {
 		return goInfo.Version
 	}
-	return "imported"
+	return ""
+}
+
+// resolveImportTag decides which tag the manifest records for an imported
+// tool and returns any provenance warning to print. Import is offline, so the
+// exported tag is advisory: whenever the binary yields a real Go build
+// version, that actual version wins. The exported tag survives only when no
+// actual version can be derived (non-Go or "(devel)" builds) — and even then
+// only with an explicit warning that its provenance is unverified, since a
+// digest match alone cannot bind a tag to this machine's build history.
+func resolveImportTag(t exportEntry, binPath, actualSHA string) (tag string, warn string) {
+	actual := actualVersionTag(binPath)
+	if actual != "" {
+		if t.Tag != actual && versionpolicy.IsSemanticTag(t.Tag) && versionpolicy.IsSemanticTag(actual) {
+			return actual, i18n.T("warning: %s: exported tag %q and the binary's actual version %q are both semantic versions but disagree; recording the actual version %q", t.Name, t.Tag, actual, actual)
+		}
+		if t.Tag == actual {
+			return actual, ""
+		}
+		if !strings.EqualFold(actualSHA, t.SHA256) {
+			return actual, i18n.T("warning: %s: binary on PATH (sha256 %s) differs from the exported list (%s); recording actual version %q instead of tag %q", t.Name, actualSHA, t.SHA256, actual, t.Tag)
+		}
+		// Digest matches but the build info carries a different spelling of
+		// the same or a non-semantic exported tag: the actual Go version is
+		// still the more honest record when they differ textually.
+		return actual, i18n.T("warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q", t.Name, t.Tag, actual)
+	}
+	// No derivable actual version: fall back to the exported tag, but never
+	// silently — provenance is unverified either way.
+	return t.Tag, i18n.T("warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q", t.Name, t.Tag, t.Tag)
 }
 
 // policyNeedsApply reports whether the exported policy differs from the adopt

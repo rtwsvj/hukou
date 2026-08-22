@@ -417,6 +417,80 @@ func TestUp_snapshotPersistFailureIsNonZeroAndReported(t *testing.T) {
 	}
 }
 
+// F2: acquireUpLock gates its root through the same fail-closed data-root
+// trust check as every mutating path. A group-writable root is refused with
+// no up.lock created inside it — whether that root is the data root or a
+// dedicated snapshots root, both are treated identically.
+func TestAcquireUpLockRefusesUntrustedRoot(t *testing.T) {
+	newGroupWritable := func(t *testing.T) string {
+		t.Helper()
+		root := filepath.Join(t.TempDir(), "root")
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(root, 0o770); err != nil { // explicit: Mkdir applies umask
+			t.Fatal(err)
+		}
+		return root
+	}
+	for _, name := range []string{"data root", "dedicated snapshots root"} {
+		t.Run(name, func(t *testing.T) {
+			root := newGroupWritable(t)
+			lock, err := acquireUpLock(root)
+			if err == nil {
+				_ = lock.Release()
+				t.Fatal("acquireUpLock must refuse a group-writable root")
+			}
+			if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "writable") {
+				t.Fatalf("error must name the untrusted root and reason, got: %v", err)
+			}
+			if _, statErr := os.Lstat(filepath.Join(root, "up.lock")); !os.IsNotExist(statErr) {
+				t.Fatalf("up.lock created in untrusted root (stat err: %v)", statErr)
+			}
+		})
+	}
+
+	// The happy path is unchanged: a private root acquires and releases.
+	root := t.TempDir()
+	lock, err := acquireUpLock(root)
+	if err != nil {
+		t.Fatalf("private root must be accepted, got: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// End-to-end: a real `up` run against an untrusted data root fails at lock
+// acquisition, before any manager runs and before the run creates anything
+// under the root beyond what already exists.
+func TestUp_realRunFailsClosedOnUntrustedDataRoot(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, binDir, "brew", "#!/bin/sh\n")
+	same := output.Report{Rows: []output.Row{row("brew", "/b/brew", "brew", "4.0")}}
+	fx := &fakeExecutor{}
+	var hukouCalled bool
+	deps := stubRunDeps(t, fakeLookPath(binDir), fx, &hukouCalled, same, same)
+
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o770); err != nil { // explicit: Mkdir applies umask
+		t.Fatal(err)
+	}
+	deps.dataRoot = func() string { return root }
+
+	var out, errb bytes.Buffer
+	err := doUpExecute(&out, &errb, upOptions{json: true}, deps)
+	if err == nil {
+		t.Fatal("run against an untrusted data root must fail")
+	}
+	if len(fx.calls) != 0 || hukouCalled {
+		t.Fatalf("managers ran despite the untrusted data root: calls=%v hukou=%v", fx.calls, hukouCalled)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "up.lock")); !os.IsNotExist(statErr) {
+		t.Fatalf("up.lock created in untrusted root (stat err: %v)", statErr)
+	}
+}
+
 func TestPersistSnapshotHistory_AtomicAndPruned(t *testing.T) {
 	root := t.TempDir()
 	snapsDir := filepath.Join(root, "snapshots")

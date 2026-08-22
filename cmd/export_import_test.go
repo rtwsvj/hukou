@@ -6,11 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rtwsvj/hukou/internal/manifest"
+	"github.com/rtwsvj/hukou/internal/provenance"
+	"github.com/rtwsvj/hukou/internal/versionpolicy"
 )
 
 func TestExportEmptyManifestFails(t *testing.T) {
@@ -199,16 +202,22 @@ func TestImportMissingBinaryFailsAndLeavesNothing(t *testing.T) {
 	}
 }
 
-// TestImportMismatchedSHAWarnsAndRecordsActualTag: the binary on this
-// machine's PATH is not the build the export list recorded (common version
-// skew — or a malicious list claiming v999.0.0 to freeze upgrades). Import
-// must warn and record the actual version, never the list's tag; a matching
-// SHA keeps the exported tag and stays silent.
-func TestImportMismatchedSHAWarnsAndRecordsActualTag(t *testing.T) {
+// TestImportTagProvenance: import is offline, so the exported (tag, sha256)
+// pair can never be confirmed against the release — a matching digest alone
+// is not provenance. Import therefore records the binary's honest local
+// version whenever it can be derived, warns when it disagrees with the
+// exported tag (a malicious list claiming v999.0.0 must never freeze
+// upgrades), and falls back to the exported tag only for builds without
+// usable version metadata — still with an explicit unverified-provenance
+// warning.
+func TestImportTagProvenance(t *testing.T) {
 	t.Setenv("HUKOU_DATA_DIR", t.TempDir())
 	binDir := t.TempDir()
 	writeExecutable(t, binDir, "toola", "v2-binary\n")
 	writeExecutable(t, binDir, "toolb", "v1-binary\n")
+	// PATH is pinned to binDir for importOne; remember the go tool's own
+	// directory so the toold fixture below can still invoke it directly.
+	goTool, _ := exec.LookPath("go")
 	t.Setenv("PATH", binDir)
 
 	sumV2 := sha256.Sum256([]byte("v2-binary\n"))
@@ -216,15 +225,18 @@ func TestImportMismatchedSHAWarnsAndRecordsActualTag(t *testing.T) {
 	sumV1 := sha256.Sum256([]byte("v1-binary\n"))
 	shaV1 := hex.EncodeToString(sumV1[:])
 
-	// toola: the list's sha256 belongs to a DIFFERENT build (v1), tag is a lie.
+	// toola: the list's sha256 belongs to a DIFFERENT build (v1). A shell
+	// script carries no Go build info, so no actual version is derivable;
+	// the exported tag is kept as the advisory fallback but its provenance
+	// must be flagged as unverified, and the real sha recorded on the entry.
 	var errBuf bytes.Buffer
 	res := importOne(exportEntry{Name: "toola", Type: "github", Repo: "owner/repo", Tag: "v999.0.0", SHA256: shaV1}, false, &errBuf)
 	if res.Status != "ok" {
 		t.Fatalf("importOne mismatch: %+v (stderr: %s)", res, errBuf.String())
 	}
 	warning := errBuf.String()
-	if !strings.Contains(warning, "v999.0.0") || !strings.Contains(warning, shaV1) || !strings.Contains(warning, shaV2) {
-		t.Fatalf("warning missing name/tag/both hashes:\n%s", warning)
+	if !strings.Contains(warning, "could not be verified offline") || !strings.Contains(warning, "v999.0.0") {
+		t.Fatalf("warning missing unverified-provenance notice and tag:\n%s", warning)
 	}
 	m, err := loadManifest()
 	if err != nil {
@@ -234,26 +246,22 @@ func TestImportMismatchedSHAWarnsAndRecordsActualTag(t *testing.T) {
 	if e == nil {
 		t.Fatal("toola not adopted")
 	}
-	if e.Tag == "v999.0.0" {
-		t.Fatal("manifest recorded the export list's fake tag")
-	}
-	// A shell script carries no Go build info, so the honest fallback is
-	// the neutral "imported" tag with the real sha recorded on the entry.
-	if e.Tag != "imported" {
-		t.Fatalf("tag = %q, want the neutral fallback %q", e.Tag, "imported")
+	if e.Tag != "v999.0.0" {
+		t.Fatalf("tag = %q, want the exported-tag fallback %q", e.Tag, "v999.0.0")
 	}
 	if e.SHA256 != shaV2 {
 		t.Fatalf("entry sha256 = %s, want the actual binary's %s", e.SHA256, shaV2)
 	}
 
-	// toolb: sha matches the list, so the exported tag stands and nothing warns.
+	// toolb: sha matches the list and no actual version is derivable, so the
+	// exported tag stands — but provenance stays explicitly unverified.
 	errBuf.Reset()
 	res = importOne(exportEntry{Name: "toolb", Type: "github", Repo: "owner/repo", Tag: "v1.0.0", SHA256: shaV1}, false, &errBuf)
 	if res.Status != "ok" {
 		t.Fatalf("importOne match: %+v (stderr: %s)", res, errBuf.String())
 	}
 	if strings.Contains(errBuf.String(), "differs from the exported list") {
-		t.Fatalf("false-positive warning on a matching sha:\n%s", errBuf.String())
+		t.Fatalf("false-positive mismatch warning on a matching sha:\n%s", errBuf.String())
 	}
 	m, err = loadManifest()
 	if err != nil {
@@ -263,9 +271,10 @@ func TestImportMismatchedSHAWarnsAndRecordsActualTag(t *testing.T) {
 		t.Fatalf("matching import did not keep the exported tag: %+v", e)
 	}
 
-	// toolc: a v999 tag whose sha256 matches the real binary is trusted —
-	// the digest is proof this machine runs exactly the build the list
-	// recorded, so the exported tag stands (documented behavior).
+	// toolc: a v999 tag whose sha256 matches the real binary used to be
+	// trusted outright. The digest proves the bytes but not the version:
+	// when the binary's Go build info yields a clean semver that disagrees,
+	// the ACTUAL version wins and both values are named in the warning.
 	writeExecutable(t, binDir, "toolc", "v3-binary\n")
 	sumV3 := sha256.Sum256([]byte("v3-binary\n"))
 	shaV3 := hex.EncodeToString(sumV3[:])
@@ -274,15 +283,110 @@ func TestImportMismatchedSHAWarnsAndRecordsActualTag(t *testing.T) {
 	if res.Status != "ok" {
 		t.Fatalf("importOne match-v999: %+v (stderr: %s)", res, errBuf.String())
 	}
-	if strings.Contains(errBuf.String(), "differs from the exported list") {
-		t.Fatalf("false-positive warning on a matching sha:\n%s", errBuf.String())
+	m, err = loadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := m.Get("toolc"); e == nil {
+		t.Fatal("toolc not adopted")
+	} else if e.SHA256 != shaV3 {
+		t.Fatalf("entry sha256 = %s, want the actual binary's %s", e.SHA256, shaV3)
+	}
+
+	// toold: a REAL Go binary carrying embedded build info. Even when the
+	// digest matches the list exactly, a derived semantic version must win
+	// over an absurd exported v999.0.0: both are clean semver and disagree,
+	// so the actual is recorded with a warning naming both. A plain offline
+	// `go build` stamps "(devel)", which import treats as "no derivable
+	// actual version"; in that case only the fallback branch runs.
+	if goTool == "" {
+		t.Skip("go tool not available to build the fixture binary")
+	}
+	tooldDir := t.TempDir()
+	tooldSrc := filepath.Join(tooldDir, "main.go")
+	tooldMod := filepath.Join(tooldDir, "go.mod")
+	if err := os.WriteFile(tooldSrc, []byte("package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(\"toold v1.2.3\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tooldMod, []byte("module example.com/toold\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built := filepath.Join(tooldDir, "toold")
+	buildCmd := exec.Command(goTool, "build", "-o", built, ".")
+	buildCmd.Dir = tooldDir
+	buildCmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(tooldDir, "gocache"), "GOPATH="+filepath.Join(tooldDir, "gopath"), "GOFLAGS=-mod=mod", "GOPROXY=off")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Skipf("cannot build fixture go binary: %v (%s)", err, out)
+	}
+	if _, ok := provenance.ReadGoBinary(built); !ok {
+		t.Fatal("fixture binary carries no Go build info; test setup broken")
+	}
+	// A plain offline `go build` records Version "(devel)", which import
+	// deliberately treats as "no derivable actual version": the exported tag
+	// survives as the advisory fallback. When the toolchain does stamp a real
+	// version (e.g. module-versioned builds), the branch below asserts that
+	// the derived semantic version wins over the absurd v999.0.0.
+	info, _ := provenance.ReadGoBinary(built)
+	if info.Version == "(devel)" || info.Version == "" {
+		dest := filepath.Join(binDir, "toold")
+		srcBytes, err := os.ReadFile(built)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, srcBytes, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sumD := sha256.Sum256(srcBytes)
+		shaD := hex.EncodeToString(sumD[:])
+		errBuf.Reset()
+		res = importOne(exportEntry{Name: "toold", Type: "github", Repo: "owner/repo", Tag: "v999.0.0", SHA256: shaD}, true, &errBuf)
+		if res.Status != "ok" {
+			t.Fatalf("importOne devel-binary: %+v (stderr: %s)", res, errBuf.String())
+		}
+		m, err = loadManifest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e := m.Get("toold"); e == nil || e.Tag != "v999.0.0" {
+			t.Fatalf("(devel) build must keep the advisory exported tag: %+v", e)
+		}
+		return
+	}
+	dest := filepath.Join(binDir, "toold")
+	srcBytes, err := os.ReadFile(built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, srcBytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sumD := sha256.Sum256(srcBytes)
+	shaD := hex.EncodeToString(sumD[:])
+	errBuf.Reset()
+	res = importOne(exportEntry{Name: "toold", Type: "github", Repo: "owner/repo", Tag: "v999.0.0", SHA256: shaD}, true, &errBuf)
+	if res.Status != "ok" {
+		t.Fatalf("importOne go-info: %+v (stderr: %s)", res, errBuf.String())
+	}
+	warnText := errBuf.String()
+	if !strings.Contains(warnText, "v999.0.0") || !strings.Contains(warnText, "are both semantic versions but disagree") {
+		t.Fatalf("expected semantic-disagreement warning naming v999.0.0:\n%s", warnText)
 	}
 	m, err = loadManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := m.Get("toolc"); e == nil || e.Tag != "v999.0.0" || e.SHA256 != shaV3 {
-		t.Fatalf("matching v999 import not trusted: %+v", e)
+	e = m.Get("toold")
+	if e == nil {
+		t.Fatal("toold not adopted")
+	}
+	if e.Tag == "v999.0.0" {
+		t.Fatal("manifest kept the exported tag despite derivable actual version")
+	}
+	if !versionpolicy.IsSemanticTag(e.Tag) {
+		t.Fatalf("recorded tag %q is not the derived semantic version", e.Tag)
+	}
+	if e.Tag != info.Version {
+		t.Fatalf("recorded tag %q != derived actual version %q", e.Tag, info.Version)
 	}
 }
 

@@ -365,8 +365,20 @@ func doUpExecute(stdout, stderr io.Writer, opts upOptions, deps upDeps) error {
 // acquireUpLock takes the cross-process `hukou up` lock (non-blocking): a
 // second concurrent up run fails immediately instead of interleaving manager
 // upgrades and snapshot history with the first. Dry-run never comes here.
+// root may be the data root itself or a dedicated snapshots root; either way
+// it passes through the same fail-closed trust gate (validate-before-create,
+// then re-validate after creation) as every other mutating path, because up
+// writes snapshot history under it.
 func acquireUpLock(root string) (*state.Lock, error) {
+	if err := checkDataRootTrust(root); err != nil {
+		if _, statErr := os.Lstat(root); !errors.Is(statErr, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	if err := durablefs.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+	if err := checkDataRootTrust(root); err != nil {
 		return nil, err
 	}
 	lockPath := filepath.Join(root, "up.lock")

@@ -499,10 +499,10 @@ case "$(cat "$ATTEST_PASS_LOG")" in
     exit 1
     ;;
 esac
-# The default latest install keeps the loose identity pattern and must NOT
-# pass --source-ref: the tag is only discovered from the redirect itself, so
-# nothing is pinned yet. GitHub's /latest redirect is simulated with a curl
-# wrapper because file:// cannot follow Location responses.
+# After latest resolution the tag is known exactly, so verification pins it
+# like a pinned install: exact-tag identity regex AND --source-ref. GitHub's
+# /latest redirect is simulated with a curl wrapper because file:// cannot
+# follow Location responses.
 LATEST_CURL_DIR=${TMP}/latest-curl
 mkdir -p "$LATEST_CURL_DIR"
 cat >"${LATEST_CURL_DIR}/curl" <<'EOF'
@@ -530,15 +530,9 @@ GH_MOCK_AUTH=yes GH_MOCK_VERIFY=pass GH_MOCK_LOG="$ATTEST_LATEST_LOG" \
 [ "$("${ATTEST_LATEST_PREFIX}/bin/hukou")" = "fixture hukou 9.9.9" ]
 [ "$(wc -l <"$ATTEST_LATEST_LOG" | tr -d ' ')" = 1 ]
 case "$(cat "$ATTEST_LATEST_LOG")" in
-  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*\$") ;;
+  "attestation verify "*"/${NAME}.tar.gz --repo rtwsvj/hukou --cert-identity-regex ^https://github\.com/rtwsvj/hukou/\.github/workflows/release\.yml@refs/tags/v9\.9\.9\$ --source-ref refs/tags/v9.9.9") ;;
   *)
     printf 'unexpected gh attestation invocation for latest: %s\n' "$(cat "$ATTEST_LATEST_LOG")" >&2
-    exit 1
-    ;;
-esac
-case "$(cat "$ATTEST_LATEST_LOG")" in
-  *--source-ref*)
-    printf 'latest install must not pass --source-ref\n' >&2
     exit 1
     ;;
 esac

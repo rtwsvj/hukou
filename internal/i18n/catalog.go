@@ -240,18 +240,21 @@ errors and always exit non-zero after the report is written.`: `receipt 从本�
 	"%d upgrade(s) failed: %w":            "%d 个升级失败：%w",
 	"cannot upgrade %s: update status %s": "无法升级 %s：更新状态 %s",
 	"%s: release has no publisher checksum asset; refuse to install without verification (pass --allow-unverified to override)": "%s：发布没有任何校验文件；未经校验拒绝安装（可加 --allow-unverified 显式允许）",
-	"asset %s not found in release": "发布中没有资产 %s",
-	"download asset: %w":            "下载资产：%w",
-	"preserve extension: %w":        "保留扩展名：%w",
-	"sha256 downloaded asset: %w":   "计算下载资产指纹：%w",
-	"extract: %w":                   "解压：%w",
-	"re-hash extracted asset: %w":   "复算解压前资产指纹：%w",
-	"asset %s changed between checksum verification and extraction (verified sha256=%s, now %s); refusing": "资产 %s 在校验通过与解压之间发生了变化（已验证 sha256=%s，当前 %s）；拒绝安装",
-	"rename extracted binary to tool name: %w":                                                             "把解压出的程序改名为工具名：%w",
-	"stat extracted binary: %w":                                                                            "检查解压出的程序：%w",
-	"extracted asset is not an executable regular file: %s":                                                "解压出的资产不是可执行的普通文件：%s",
-	"inspect bare executable: %w":                                                                          "检查裸可执行文件：%w",
-	"selected bare asset is not a recognized executable or shebang script: %s":                             "选中的裸资产不是可识别的可执行文件或脚本：%s",
+	"asset %s not found in release":   "发布中没有资产 %s",
+	"download asset: %w":              "下载资产：%w",
+	"open downloaded asset: %w":       "打开已下载资产：%w",
+	"rewind asset before extract: %w": "解压前回卷资产：%w",
+	"rewind asset after extract: %w":  "解压后回卷资产：%w",
+	"sha256 downloaded asset: %w":     "计算下载资产指纹：%w",
+	"preserve extension: %w":          "保留扩展名：%w",
+	"extract: %w":                     "解压：%w",
+	"re-hash extracted asset: %w":     "复算解压前资产指纹：%w",
+	"asset %s bytes changed during extraction (verified sha256=%s, now %s); refusing": "资产 %s 在解压期间字节发生变化（已验证 sha256=%s，当前 %s）；拒绝安装",
+	"rename extracted binary to tool name: %w":                                        "把解压出的程序改名为工具名：%w",
+	"stat extracted binary: %w":                                                       "检查解压出的程序：%w",
+	"extracted asset is not an executable regular file: %s":                           "解压出的资产不是可执行的普通文件：%s",
+	"inspect bare executable: %w":                                                     "检查裸可执行文件：%w",
+	"selected bare asset is not a recognized executable or shebang script: %s":        "选中的裸资产不是可识别的可执行文件或脚本：%s",
 	"store: %w": "仓库：%w",
 	"re-read current file before activation: %w":                  "激活前重读当前文件：%w",
 	"current file changed during the upgrade; refusing overwrite": "当前文件在升级期间发生变化；拒绝覆盖",
@@ -945,6 +948,8 @@ errors and always exit non-zero after the report is written.`: `receipt 从本�
 	"executable not found on PATH":     "PATH 上找不到该程序",
 	"apply update policy: %v":          "应用更新策略：%v",
 	" (policy reapplied)":              "（策略已重新应用）",
+	"warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q":                                     "警告：%s：导出标签 %q 无法离线验证；改记二进制实际版本 %q",
+	"warning: %s: exported tag %q and the binary's actual version %q are both semantic versions but disagree; recording the actual version %q": "警告：%s：导出标签 %q 与二进制实际版本 %q 均为语义化版本但不一致；改记实际版本 %q",
 	`export writes a portable, machine-readable list of every adopted tool
 (its repository, tag, archive-internal name, SHA-256, and update policy) so
 the same set can be re-registered on another machine with "hukou import".
@@ -953,9 +958,11 @@ The list is a data file: it always renders as JSON (to stdout, or to --output
 FILE with 0600 permissions). Export is read-only: it takes no lock, writes
 nothing except the explicitly requested file, and makes no network request.
 Entries without a repository (local adoptions) are included for the record but
-cannot be reproduced by import, which skips them with a warning.`: `export 把每个已收编工具（仓库、标签、安装包内程序名、指纹与更新策略）写成一份可迁移的机器可读清单，以便在另一台机器上用 "hukou import" 重新登记同一套工具。
+cannot be reproduced by import, which skips them with a warning. The recorded
+tags are advisory provenance: import verifies each binary's digest and records
+its honest local version rather than trusting the tag alone.`: `export 把每个已收编工具（仓库、标签、安装包内程序名、指纹与更新策略）写成一份可迁移的机器可读清单，以便在另一台机器上用 "hukou import" 重新登记同一套工具。
 
-清单是数据文件：始终以 JSON 输出（默认到标准输出，或用 --output FILE 以 0600 权限写文件）。export 全程只读：不取锁、除显式指定的文件外不写任何东西、不联网。没有仓库的条目（本地收编）会被记录在案，但无法被 import 重建，后者会以警告形式跳过。`,
+清单是数据文件：始终以 JSON 输出（默认到标准输出，或用 --output FILE 以 0600 权限写文件）。export 全程只读：不取锁、除显式指定的文件外不写任何东西、不联网。没有仓库的条目（本地收编）会被记录在案，但无法被 import 重建，后者会以警告形式跳过。记录的标签仅供参考：import 会校验各二进制的指纹并记录其真实本地版本，而非盲信标签。`,
 	`import re-registers, on this machine, the tools recorded in a list
 written by "hukou export".
 
@@ -965,10 +972,18 @@ re-runs the full adoption inspection (ownership gate included, override with
 with a warning; local entries (no repository) cannot be reproduced and are
 skipped with a warning; a missing executable is a per-tool error. The exported
 update policy (channel/pin) is re-applied when it differs from the adopt
-default. --dry-run prints the whole plan and writes nothing; --only restricts
+default.
+
+The exported tag is advisory: import records the binary's honest local
+version (from its Go build information) whenever one can be derived, and
+falls back to the exported tag — with an explicit warning that its
+provenance is unverified — only for builds without usable version metadata.
+--dry-run prints the whole plan and writes nothing; --only restricts
 the run to the named tools. The exit status is non-zero when any tool fails.`: `import 在本机重新登记 "hukou export" 清单中记录的工具。
 
-对每个 github 条目，该可执行文件必须已在 PATH 上存在：import 会完整重跑收编检查（含归属门，可用 --force 覆盖），绝不下载任何东西。已收编的条目以警告跳过；本地条目（无仓库）无法重建，以警告跳过；找不到可执行文件是逐工具错误。导出的更新策略（通道/锁定）与收编默认值不同时会被重新应用。--dry-run 打印完整计划且不写任何内容；--only 限定只处理指定工具。任一工具失败时退出码非零。`,
+对每个 github 条目，该可执行文件必须已在 PATH 上存在：import 会完整重跑收编检查（含归属门，可用 --force 覆盖），绝不下载任何东西。已收编的条目以警告跳过；本地条目（无仓库）无法重建，以警告跳过；找不到可执行文件是逐工具错误。导出的更新策略（通道/锁定）与收编默认值不同时会被重新应用。
+
+导出标签仅供参考：只要能推导出二进制的真实本地版本（来自其 Go 构建信息），import 就会记录真实版本；仅当构建没有可用的版本元数据时，才回退到导出标签——并显式警告其来源未经核实。--dry-run 打印完整计划且不写任何内容；--only 限定只处理指定工具。任一工具失败时退出码非零。`,
 	// ---- suggest (B2) ----
 	"Suggest GitHub repositories for an unmanaged binary (read-only)": "为无人管理的程序建议 GitHub 仓库（只读）",
 	"search GitHub repositories: %w":                                  "搜索 GitHub 仓库：%w",
@@ -1016,6 +1031,7 @@ you re-run adopt yourself with the repository you choose.`: `suggest 在 GitHub 
 	"canceled %s (step budget expired)":                "已取消 %s（步骤时限已到）",
 	"cannot determine the hukou data directory: neither HOME nor XDG_DATA_HOME is set; set HUKOU_DATA_DIR explicitly":                                                                     "无法确定 hukou 数据目录：HOME 与 XDG_DATA_HOME 均未设置；请显式设置 HUKOU_DATA_DIR",
 	"cannot determine the hukou data directory: HUKOU_DATA_DIR must be an absolute path, got %q":                                                                                          "无法确定 hukou 数据目录：HUKOU_DATA_DIR 必须是绝对路径，实际为 %q",
+	"cannot determine the hukou data directory: resolved data directory %q must be an absolute path; is XDG_DATA_HOME or HOME relative?":                                                  "无法确定 hukou 数据目录：解析出的数据目录 %q 必须是绝对路径；XDG_DATA_HOME 或 HOME 是否为相对路径？",
 	"cannot inspect the hukou data directory %s: %v":                                                                                                                                      "无法检查 hukou 数据目录 %s：%v",
 	"refusing to use the hukou data directory %s: it is a symbolic link, not a real directory":                                                                                            "拒绝使用 hukou 数据目录 %s：它是符号链接而非真实目录",
 	"refusing to use the hukou data directory %s: it is not a directory (%s)":                                                                                                             "拒绝使用 hukou 数据目录 %s：它不是目录（%s）",

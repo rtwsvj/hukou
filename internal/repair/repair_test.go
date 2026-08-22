@@ -414,6 +414,55 @@ func TestRecoverTransactionPlanFailsClosedOnUnknownDirectory(t *testing.T) {
 	}
 }
 
+// F2: Apply is a mutating path, so its lock acquisition must pass the same
+// fail-closed data-root trust gate as every other mutating path. A
+// group-writable root is refused with ErrStateChanged before any lock file or
+// directory sync happens.
+func TestApplyRefusesUntrustedDataRoot(t *testing.T) {
+	root, mainPath, backupPath, livePath := manifestBackupFixture(t)
+	if err := os.WriteFile(mainPath, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(root, ActionRestoreManifestBackup, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o770); err != nil { // explicit: Mkdir applies umask
+		t.Fatal(err)
+	}
+	_, err = Apply(root, plan)
+	if !errors.Is(err, ErrStateChanged) {
+		t.Fatalf("error = %v, want ErrStateChanged for an untrusted root", err)
+	}
+	if !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("error must cite the trust violation, got: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "state.lock")); !os.IsNotExist(statErr) {
+		t.Fatalf("state.lock created in untrusted root (stat err: %v)", statErr)
+	}
+	// The manifest backup was not restored through the untrusted root.
+	if got, _ := os.ReadFile(mainPath); string(got) != "{broken" {
+		t.Fatalf("apply mutated state in an untrusted root: %q", got)
+	}
+	_ = backupPath
+	_ = livePath
+}
+
+// existingDataRoot must inspect with Lstat: a symlinked data root is refused
+// outright instead of being silently followed to wherever it points.
+func TestExistingDataRootRefusesSymlink(t *testing.T) {
+	link := filepath.Join(t.TempDir(), "linked-root")
+	real := t.TempDir()
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := existingDataRoot(link); err == nil {
+		t.Fatal("existingDataRoot must refuse a symlinked data root")
+	} else if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("error must name the symlink refusal, got: %v", err)
+	}
+}
+
 func manifestBackupFixture(t *testing.T) (root, mainPath, backupPath, livePath string) {
 	t.Helper()
 	livePath = filepath.Join(t.TempDir(), "fixture-tool")

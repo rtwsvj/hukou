@@ -179,10 +179,18 @@ func (c *Client) List(owner, repo string) ([]Release, error) {
 }
 
 // Download streams downloadURL into a temporary file under destDir.
-// expectedSize, when > 0, is the Asset.Size from the release API: the body is
-// limited to min(expectedSize, 512 MiB)+1 bytes and the actual count must
-// match exactly. A declared size above the 512 MiB cap is refused before any
-// request is made. When expectedSize is 0, the global cap applies alone.
+//
+// Size contract:
+//   - expectedSize < 0 is refused before any request is made.
+//   - expectedSize > 0 is the Asset.Size from the release API: the body is
+//     limited to min(expectedSize, 512 MiB)+1 bytes and the actual count must
+//     match exactly. A declared size above the 512 MiB cap is refused before
+//     any request is made.
+//   - expectedSize == 0 means UNKNOWN: only the global 512 MiB cap applies,
+//     and no exact-match check runs. Zero-byte assets are legal — an asset
+//     that declares 0 bytes and streams 0 bytes succeeds, while one that
+//     declares 0 but streams more than 0 bytes also succeeds (the declared
+//     value was simply unknown, not authoritative).
 //
 // When the direct attempt stalls (measured throughput below the configured
 // floor for the configured grace period) or fails with a transport error, the
@@ -198,9 +206,12 @@ func (c *Client) Download(downloadURL, destDir string, expectedSize int64) (stri
 		return "", err
 	}
 	// The expected size comes from the release manifest, which a compromised
-	// or hostile endpoint controls. Refuse absurd sizes before any request so
-	// no bytes are ever fetched, rather than discovering the violation after
-	// streaming.
+	// or hostile endpoint controls. Refuse absurd or nonsensical sizes before
+	// any request so no bytes are ever fetched, rather than discovering the
+	// violation after streaming.
+	if expectedSize < 0 {
+		return "", i18n.Errorf("refusing download: declared size %d bytes is negative", expectedSize)
+	}
 	if expectedSize > defaultMaxDownload {
 		return "", i18n.Errorf("refusing download: declared size %d bytes exceeds the %d byte limit", expectedSize, defaultMaxDownload)
 	}
@@ -274,6 +285,9 @@ func (c *Client) downloadWithTransport(downloadURL, destDir string, expectedSize
 
 	limit := expectedSize
 	if limit <= 0 || limit > defaultMaxDownload {
+		// expectedSize == 0 means UNKNOWN (no exact-match check below); a
+		// negative size was already refused by Download. The global cap is
+		// the only bound in both cases.
 		limit = defaultMaxDownload
 	}
 
@@ -298,6 +312,9 @@ func (c *Client) downloadWithTransport(downloadURL, destDir string, expectedSize
 		os.Remove(tmpPath)
 		return "", i18n.Errorf("download exceeded size limit of %d bytes", limit)
 	}
+	// expectedSize == 0 means UNKNOWN: no exact-match check runs, so a
+	// zero-byte asset (n == 0) succeeds here and a declared-0-but-streamed
+	// asset also succeeds — the cap above is the only bound.
 	if expectedSize > 0 && n != expectedSize {
 		file.Close()
 		os.Remove(tmpPath)
@@ -366,9 +383,19 @@ func (c *Client) fetchJSON(path string, target any) error {
 	}
 
 	// Bound the response body so a hostile or misbehaving endpoint cannot
-	// balloon memory while we decode release metadata. Truncation at the cap
-	// surfaces as a json decode error and fails closed.
-	if err := json.NewDecoder(io.LimitReader(resp.Body, defaultMaxJSONBytes+1)).Decode(target); err != nil {
+	// balloon memory while we decode release metadata. The body is read into
+	// memory capped at defaultMaxJSONBytes+1; exceeding the cap is an
+	// explicit error BEFORE any decode, and json.Unmarshal (not a streaming
+	// Decoder) then rejects trailing garbage after the JSON value instead of
+	// silently ignoring it.
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, defaultMaxJSONBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(buf)) > defaultMaxJSONBytes {
+		return i18n.Errorf("github response exceeds %d byte limit", defaultMaxJSONBytes)
+	}
+	if err := json.Unmarshal(buf, target); err != nil {
 		return err
 	}
 	return nil

@@ -76,9 +76,9 @@ var quarantineNameSuffix = func() (string, error) {
 // evidence, so Recover reports them and changes nothing else. Fully formed
 // quarantined containers are left untouched, so a recovery that is interrupted
 // and retried converges on the same result; the debris of a container whose
-// creation was interrupted (empty, or META-only with no payload) proves that
-// nothing was ever quarantined and is discarded so recovery converges without
-// manual surgery.
+// creation was interrupted (empty, or META-only with no payload) is itself
+// moved intact into a fresh quarantined container — nothing is deleted, but
+// recovery still converges without manual surgery.
 func Recover(dataRoot string) (RecoverSummary, error) {
 	var summary RecoverSummary
 	root, err := filepath.Abs(dataRoot)
@@ -100,15 +100,18 @@ func Recover(dataRoot string) (RecoverSummary, error) {
 			return summary, i18n.Wrapf("inspect unknown transaction entry %s: %w", err, name)
 		}
 		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
-			// The one exception to the fail-closed rule for unknown
-			// directories: recognizable debris of an interrupted quarantine
-			// allocation carries no recovery evidence, so it is removed and
-			// recovery proceeds.
-			discarded, err := discardQuarantineResidue(txRoot, name, info)
+			// Recognizable debris of an interrupted quarantine allocation
+			// (an empty container, or one holding only its META file) is
+			// itself moved into a fresh quarantine container. Nothing is
+			// ever deleted here — ADR-0006 forbids automatic deletion, and
+			// the META-only case may still be the last record of the
+			// original entry's name. Moving wholesale keeps the evidence
+			// byte-identical while letting recovery converge.
+			relocated, err := relocateQuarantineResidue(txRoot, name)
 			if err != nil {
 				return summary, err
 			}
-			if !discarded {
+			if !relocated {
 				unknownDirs = append(unknownDirs, name)
 			}
 			continue
@@ -203,15 +206,40 @@ func quarantineNonDirectories(txRoot string, names []string, summary *RecoverSum
 	return kept, nil
 }
 
+// allocateQuarantineContainer creates a fresh quarantined-<16 hex> container
+// under txRoot. The exclusive-create mkdir primitive is the allocation
+// mechanism: a colliding random name is retried with a new name (never
+// exceeding quarantineNameAttempts), so an existing container — and with it
+// any quarantine evidence — is never overwritten.
+type quarantineContainer struct {
+	path string
+	name string
+}
+
+func allocateQuarantineContainer(txRoot string) (quarantineContainer, error) {
+	for range quarantineNameAttempts {
+		suffix, err := quarantineNameSuffix()
+		if err != nil {
+			return quarantineContainer{}, err
+		}
+		candidate := quarantinedPrefix + suffix
+		path := filepath.Join(txRoot, candidate)
+		if err := os.Mkdir(path, 0o700); err == nil {
+			return quarantineContainer{path: path, name: candidate}, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return quarantineContainer{}, err
+		}
+	}
+	return quarantineContainer{}, i18n.Errorf("cannot allocate a unique quarantine container under %s", txRoot)
+}
+
 // quarantineEntry moves one non-directory transaction-root entry (unknown
 // name, or a known-prefix stray such as a pending-* regular file) into a
-// fresh quarantined-<16 hex> container. The container is allocated with the
-// exclusive-create mkdir primitive and a colliding random name is retried with
-// a new name, so an existing container is never overwritten. The entry's bytes
-// are preserved verbatim under the fixed payload name and its original name is
-// recorded in the container's META file. On Unix a backslash is an ordinary
-// filename byte, so only names that cannot come from a directory entry are
-// rejected.
+// fresh quarantined-<16 hex> container from allocateQuarantineContainer.
+// The entry's bytes are preserved verbatim under the fixed payload name and
+// its original name is recorded in the container's META file. On Unix a
+// backslash is an ordinary filename byte, so only names that cannot come
+// from a directory entry are rejected.
 func quarantineEntry(txRoot, name string) (QuarantineRecord, error) {
 	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '/') {
 		return QuarantineRecord{}, i18n.Errorf("invalid transaction entry name %q", name)
@@ -224,44 +252,28 @@ func quarantineEntry(txRoot, name string) (QuarantineRecord, error) {
 	if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
 		return QuarantineRecord{}, i18n.Errorf("refuse to quarantine directory %q", name)
 	}
-	var container, containerName string
-	for attempt := 0; attempt < quarantineNameAttempts; attempt++ {
-		suffix, err := quarantineNameSuffix()
-		if err != nil {
-			return QuarantineRecord{}, err
-		}
-		candidate := quarantinedPrefix + suffix
-		path := filepath.Join(txRoot, candidate)
-		err = os.Mkdir(path, 0o700)
-		if err == nil {
-			container, containerName = path, candidate
-			break
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return QuarantineRecord{}, err
-		}
-	}
-	if container == "" {
-		return QuarantineRecord{}, i18n.Errorf("cannot allocate a unique quarantine container under %s", txRoot)
+	container, err := allocateQuarantineContainer(txRoot)
+	if err != nil {
+		return QuarantineRecord{}, err
 	}
 	meta := fmt.Sprintf("schema=hukou-quarantine-v1\noriginal_name=%q\nquarantined_at=%s\n",
 		name, time.Now().UTC().Format(time.RFC3339))
-	if err := durablefs.AtomicWriteFile(filepath.Join(container, quarantineMetaFileName), []byte(meta), 0o600); err != nil {
+	if err := durablefs.AtomicWriteFile(filepath.Join(container.path, quarantineMetaFileName), []byte(meta), 0o600); err != nil {
 		return QuarantineRecord{}, err
 	}
 	// durablefs.Rename only accepts same-parent moves; this move crosses from
 	// the transaction root into the container, so rename first and then reassert
 	// both affected directory entries explicitly.
-	if err := os.Rename(source, filepath.Join(container, quarantinePayloadName)); err != nil {
+	if err := os.Rename(source, filepath.Join(container.path, quarantinePayloadName)); err != nil {
 		return QuarantineRecord{}, err
 	}
-	if err := durablefs.SyncDir(container); err != nil {
+	if err := durablefs.SyncDir(container.path); err != nil {
 		return QuarantineRecord{}, err
 	}
 	if err := durablefs.SyncDir(txRoot); err != nil {
 		return QuarantineRecord{}, err
 	}
-	return QuarantineRecord{Original: name, Quarantined: containerName}, nil
+	return QuarantineRecord{Original: name, Quarantined: container.name}, nil
 }
 
 func recoverLoaded(dataRoot, txRoot, dir string, intent Intent, committed bool) error {
@@ -683,17 +695,19 @@ func installSymlinkNoReplace(target, destination string) error {
 // ClassifyCommitMarker applies the torn-COMMIT semantics shared by journal
 // recovery and repair planning. Commit creates the marker empty and then
 // writes "<id>\n" into it, so a crash inside that window leaves either an
-// empty file or a byte-prefix of the decision. Such a marker never became
-// durable, so it classifies as committed=false and recovery rolls back,
-// exactly like an absent marker. Only the fully written marker counts as
-// committed; any other content is alien or corrupt evidence and is a hard
-// error that preserves the bytes for diagnosis.
+// empty file or a strict raw byte-prefix of the decision bytes. Such a
+// marker never became durable, so it classifies as committed=false and
+// recovery rolls back, exactly like an absent marker. Only the fully written
+// marker counts as committed. There is deliberately no whitespace tolerance:
+// newline is the LAST byte Commit writes, so content like "\n" or "<id>\n "
+// cannot come from an interrupted write of this marker — it is corruption or
+// tampering, and it is a hard error that preserves the bytes for diagnosis.
 func ClassifyCommitMarker(data, id string) (bool, error) {
-	if data == id+"\n" {
+	decision := id + "\n"
+	if data == decision {
 		return true, nil
 	}
-	trimmed := strings.TrimSpace(data)
-	if trimmed == "" || strings.HasPrefix(id+"\n", trimmed) {
+	if len(data) < len(decision) && decision[:len(data)] == data {
 		return false, nil
 	}
 	return false, i18n.Errorf("invalid COMMIT marker contents")
@@ -701,8 +715,8 @@ func ClassifyCommitMarker(data, id string) (bool, error) {
 
 // hasValidCommit reports whether the pending journal holds a durable COMMIT
 // decision, using ClassifyCommitMarker's torn-write semantics: empty markers
-// and trimmed byte-prefixes of "<id>\n" are committed=false (rollback), the
-// exact marker is committed=true, and alien content is a hard error.
+// and strict raw byte-prefixes of "<id>\n" are committed=false (rollback),
+// the exact marker is committed=true, and any other content is a hard error.
 // Topology violations (symlink, non-regular file, oversized) stay hard errors.
 func hasValidCommit(dir, id string) (bool, error) {
 	path := filepath.Join(dir, commitFileName)
@@ -767,24 +781,46 @@ func requireRealDirectory(path string) error {
 //     past the data root must never prune directories hukou does not own.
 //   - Live resources usually sit outside the data root (e.g. ~/bin/tool).
 //     There the walk keeps pruning genuinely empty parents so the pre-
-//     transaction topology converges, but it never removes a directory whose
-//     parent is the filesystem root or $HOME, nor $HOME itself. Rolling back
-//     an absent ~/bin/tool can therefore never delete ~/bin, and /usr and
-//     friends are equally out of reach even when they have become empty.
+//     transaction topology converges, but it stops at the topmost directory
+//     the removed path actually names (origTop): after processing origTop it
+//     never ascends above it. Rolling back an absent ~/bin/tool can prune
+//     nothing above ~/bin — ~/local/bin/tool prunes bin/ and local/ but never
+//     $HOME's other children — and a rollback of /opt/tool can never delete
+//     a now-empty /opt. This bounds ancestor-symlink escape breadth: even if
+//     a path component is a symlink pointing elsewhere, only directories on
+//     that lexical chain at or below the original top-level name are ever
+//     considered.
+//   - It also never removes a directory whose parent is the filesystem
+//     root or $HOME, nor $HOME itself.
 //   - At the first non-empty directory it stops.
 func removeEmptyParents(path, dataRoot string) error {
 	dataRoot = filepath.Clean(dataRoot)
 	sep := string(filepath.Separator)
 	home, err := os.UserHomeDir()
 	if err != nil {
+		// No resolvable home: the $HOME guards degrade to no-ops while the
+		// filesystem-root and data-root guards still apply.
 		home = ""
 	}
-	dir := filepath.Dir(filepath.Clean(path))
+	cleaned := filepath.Clean(path)
+	// origTop is the first component of the ORIGINAL cleaned path under its
+	// volume root ("/opt" in "/opt/tool"). The walk may process origTop once
+	// but must never ascend past it.
+	origTop := ""
+	if filepath.IsAbs(cleaned) {
+		body := strings.TrimPrefix(cleaned, sep)
+		if i := strings.Index(body, sep); i >= 0 {
+			origTop = sep + body[:i]
+		} else {
+			origTop = sep + body
+		}
+	}
+	dir := filepath.Dir(cleaned)
 	for {
 		parent := filepath.Dir(dir)
-		if dir == "" || dir == sep || dir == home ||
-			dir == dataRoot || parent == dataRoot || parent == home ||
-			isProperAncestor(dir, dataRoot) {
+		if dir == "" || dir == sep || (dir == origTop && parent == sep) ||
+			dir == home || dir == dataRoot || parent == dataRoot ||
+			parent == home || isProperAncestor(dir, dataRoot) {
 			return nil
 		}
 		entries, err := os.ReadDir(dir)
@@ -796,6 +832,10 @@ func removeEmptyParents(path, dataRoot string) error {
 			return i18n.Wrapf("inspect rollback residue directory %s: %w", err, dir)
 		}
 		if len(entries) > 0 {
+			return nil
+		}
+		if dir == origTop {
+			// Processed the original top-level directory; do not ascend.
 			return nil
 		}
 		if err := durablefs.Remove(dir); err != nil {
@@ -824,42 +864,47 @@ func isProperAncestor(dir, candidate string) bool {
 	}
 }
 
-// discardQuarantineResidue reports whether name is recognizable debris of an
-// interrupted quarantineEntry allocation and, when it is, removes it so that
-// recovery converges without manual surgery. quarantineEntry creates the
-// container first and writes META before moving the payload in, so exactly two
-// partial shapes are possible, and both prove nothing was ever quarantined:
-//
-//   - an empty container: the process died between Mkdir and the META write;
-//   - a META-only container: the process died between the META write and the
-//     payload rename, so the original entry still sits at its source and this
-//     recovery pass quarantines it again into a fresh container.
-//
-// Anything else (a bad name, a symlinked container, payload without META,
-// unexpected extra entries) is not recognizable debris; the caller then keeps
-// its fail-closed treatment as an unknown directory. Callers pass the Lstat
-// info already taken by Inspect classification.
-func discardQuarantineResidue(txRoot, name string, info os.FileInfo) (bool, error) {
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !quarantineContainerNameValid(name) {
+// relocateQuarantineResidue reports whether name is recognizable debris of an
+// interrupted quarantine allocation — a correctly named container directory
+// holding nothing, or only its own META regular file. Such a container is
+// moved wholesale into a fresh quarantined-* container (the payload slot
+// holds the whole debris directory; META records it under its original name
+// with a residue note), so recovery converges without deleting anything and
+// the META — possibly the last record of the original entry's name —
+// survives byte-identical. Payload-only or multi-entry containers are NOT
+// recognizable debris: they stay Unknown and fail closed like any other
+// unknown directory.
+func relocateQuarantineResidue(txRoot, name string) (bool, error) {
+	if !quarantineContainerNameValid(name) {
 		return false, nil
 	}
-	entries, err := os.ReadDir(filepath.Join(txRoot, name))
+	containerPath := filepath.Join(txRoot, name)
+	entries, err := os.ReadDir(containerPath)
 	if err != nil {
 		return false, i18n.Wrapf("inspect quarantine residue container %s: %w", err, name)
 	}
-	residue := false
-	switch len(entries) {
-	case 0:
-		residue = true
-	case 1:
-		entry := entries[0]
-		residue = entry.Name() == quarantineMetaFileName && entry.Type().IsRegular()
-	}
+	residue := len(entries) == 0 ||
+		(len(entries) == 1 && entries[0].Name() == quarantineMetaFileName && entries[0].Type().IsRegular())
 	if !residue {
 		return false, nil
 	}
-	if err := durablefs.RemoveAll(filepath.Join(txRoot, name)); err != nil {
-		return false, i18n.Wrapf("remove interrupted quarantine container %s: %w", err, name)
+	outer, err := allocateQuarantineContainer(txRoot)
+	if err != nil {
+		return false, err
+	}
+	meta := fmt.Sprintf("schema=hukou-quarantine-v1\noriginal_name=%q\nquarantined_at=%s\nnote=interrupted quarantine allocation moved intact\n",
+		name, time.Now().UTC().Format(time.RFC3339))
+	if err := durablefs.AtomicWriteFile(filepath.Join(outer.path, quarantineMetaFileName), []byte(meta), 0o600); err != nil {
+		return false, err
+	}
+	if err := os.Rename(containerPath, filepath.Join(outer.path, quarantinePayloadName)); err != nil {
+		return false, i18n.Wrapf("move interrupted quarantine container %s: %w", err, name)
+	}
+	if err := durablefs.SyncDir(outer.path); err != nil {
+		return false, err
+	}
+	if err := durablefs.SyncDir(txRoot); err != nil {
+		return false, err
 	}
 	return true, nil
 }

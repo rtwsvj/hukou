@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/output"
+	"github.com/rtwsvj/hukou/internal/safeopen"
 	"github.com/rtwsvj/hukou/internal/scan"
 	"github.com/rtwsvj/hukou/internal/store"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
@@ -37,14 +40,6 @@ var (
 // example, tampering with the just-stored artifact) while driving the real
 // upgrade flow end to end. Production code never sets it.
 var upgradeTestHookAfterStoreNewVersion func(name, tag string)
-
-// upgradeTestHookBeforeExtract, when non-nil, runs immediately after the
-// downloaded asset has passed publisher-checksum verification and immediately
-// before archive.Extract opens it. It exists exclusively so adversarial tests
-// can inject deterministically inside the verify→extract window (for example,
-// swapping the asset bytes after they were verified). Production code never
-// sets it.
-var upgradeTestHookBeforeExtract func(assetPath string)
 
 // dirEntryIsRegular reports whether the directory entry names a regular file,
 // confirmed with Lstat instead of the entry's cached dirent type bits. On
@@ -268,30 +263,39 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	if err != nil {
 		return i18n.Wrapf("download asset: %w", err)
 	}
-	// Closure captures the final path after any rename that preserves extension.
-	finalAssetPath := assetPath
-	defer func() { _ = os.Remove(finalAssetPath) }()
-
-	// ghrelease.Download writes to a temp file without the original extension.
-	// archive.Extract decides the format by extension, so preserve it.
-	if ext := archiveExt(chosen); ext != "" && !strings.HasSuffix(strings.ToLower(filepath.Base(finalAssetPath)), ext) {
-		newPath := finalAssetPath + ext
-		if err := os.Rename(finalAssetPath, newPath); err != nil {
+	// ghrelease.Download writes to a temp file without the original
+	// extension. Format detection keys off the descriptor's name
+	// (DetectFormat(f.Name())), so preserve the extension on disk before the
+	// single open below.
+	if ext := archiveExt(chosen); ext != "" && !strings.HasSuffix(strings.ToLower(filepath.Base(assetPath)), ext) {
+		newPath := assetPath + ext
+		if err := os.Rename(assetPath, newPath); err != nil {
 			return i18n.Wrapf("preserve extension: %w", err)
 		}
-		finalAssetPath = newPath
+		assetPath = newPath
 	}
+	defer func() { _ = os.Remove(assetPath) }()
 
 	checksumAsset, checksums, err := downloadChecksums(client, release.Assets, chosen, tmpDir)
 	if err != nil {
 		return err
 	}
 
-	// Hash the downloaded asset exactly once. The same digest both records the
-	// asset SHA-256 in the manifest and drives the publisher-checksum comparison
-	// below, so the cross-boundary verification reuses it rather than re-reading
-	// the whole asset a second time.
-	assetSHA, err := store.SHA256File(finalAssetPath)
+	// Open the verified-to-be asset ONCE. Every later consumer — publisher
+	// checksum comparison, extraction, the pre-store re-check — reads this
+	// same descriptor, so there is no pathname re-open between verification
+	// and ingestion for an attacker to race. safeopen rejects non-regular
+	// files (FIFO/device/symlink swaps) fail-closed instead of blocking.
+	assetFile, err := safeopen.Open(assetPath)
+	if err != nil {
+		return i18n.Wrapf("open downloaded asset: %w", err)
+	}
+	defer assetFile.Close()
+
+	// Hash the downloaded asset exactly once. The same digest both records
+	// the asset SHA-256 in the manifest and drives the publisher-checksum
+	// comparison below.
+	assetSHA, err := sha256FileDescriptor(assetFile)
 	if err != nil {
 		return i18n.Wrapf("sha256 downloaded asset: %w", err)
 	}
@@ -317,25 +321,34 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 		return err
 	}
 	defer os.RemoveAll(extractDir)
-	if upgradeTestHookBeforeExtract != nil {
-		upgradeTestHookBeforeExtract(finalAssetPath)
-	}
 
-	extractedPath, err := archive.Extract(finalAssetPath, extractDir, wantArchiveExe(e))
+	// Extract consumes ONLY this handle (multi-pass formats rewind it via
+	// Seek(0), never reopening by path), then we rewind and re-hash the SAME
+	// descriptor as belt-and-braces before anything reaches the store. The
+	// digest must equal the verified one by construction; any deviation means
+	// the read itself was corrupted mid-flight.
+	if _, err := assetFile.Seek(0, io.SeekStart); err != nil {
+		return i18n.Wrapf("rewind asset before extract: %w", err)
+	}
+	extractedPath, err := archive.Extract(assetFile, extractDir, wantArchiveExe(e))
 	if err != nil {
 		return i18n.Wrapf("extract: %w", err)
 	}
-	// Close the verify→extract window: the asset was hash-verified above, but
-	// Extract re-opened it by path. Re-hash the same path and refuse unless the
-	// bytes still match the verified digest; otherwise a swap between
-	// verification and extraction would be installed without verification.
-	recheckSHA, err := store.SHA256File(finalAssetPath)
+	// Rewind the SAME descriptor and re-hash it as belt-and-braces before
+	// anything reaches the store. The digest must equal the verified one by
+	// construction; any deviation means the read itself was corrupted
+	// mid-flight.
+	if _, err := assetFile.Seek(0, io.SeekStart); err != nil {
+		return i18n.Wrapf("rewind asset after extract: %w", err)
+	}
+	recheckSHA, err := sha256FileDescriptor(assetFile)
 	if err != nil {
 		return i18n.Wrapf("re-hash extracted asset: %w", err)
 	}
 	if recheckSHA != assetSHA {
-		return i18n.Errorf("asset %s changed between checksum verification and extraction (verified sha256=%s, now %s); refusing", chosen, assetSHA, recheckSHA)
+		return i18n.Errorf("asset %s bytes changed during extraction (verified sha256=%s, now %s); refusing", chosen, assetSHA, recheckSHA)
 	}
+
 	// The store version directory must hold the artifact under the TOOL name,
 	// not the archive-internal name (which --exe may differ from). Rename the
 	// extracted member inside the scratch dir before ingestion so doctor's
@@ -695,4 +708,17 @@ func writeReleaseNotes(w io.Writer, release ghrelease.Release) {
 		}
 		fmt.Fprintf(w, "  %s\n", line)
 	}
+}
+
+// sha256FileDescriptor returns the hex-encoded SHA-256 of everything readable
+// from f, starting from its current offset. It is the descriptor-based
+// counterpart of store.SHA256File: the upgrade flow hashes, extracts from,
+// and re-hashes ONE open handle so no pathname re-open exists between
+// verification and ingestion.
+func sha256FileDescriptor(f *os.File) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/output"
-	"github.com/rtwsvj/hukou/internal/state"
 	"github.com/rtwsvj/hukou/internal/store"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 	"github.com/rtwsvj/hukou/internal/versionpolicy"
@@ -215,7 +213,7 @@ func doPolicySetWithSave(stdout, stderr io.Writer, name string, options policySe
 		return i18n.Wrapf("policy changes require clean transaction state: %w", err)
 	}
 
-	lock, err := state.Acquire(filepath.Join(dataRoot(), "state.lock"))
+	lock, err := trustedAcquire(dataRoot(), stderr)
 	if err != nil {
 		return i18n.Wrapf("acquire state lock: %w", err)
 	}

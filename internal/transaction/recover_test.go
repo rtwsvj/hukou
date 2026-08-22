@@ -3,6 +3,7 @@ package transaction
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -162,35 +163,100 @@ func TestRemoveEmptyParentsNeverPrunesHomeChildrenOrHome(t *testing.T) {
 	}
 }
 
+// TestRemoveEmptyParentsNeverAscendsAboveOrigTop pins the origTop stop rule:
+// origTop is the first component of the ORIGINAL cleaned path under its
+// volume root — "/opt" in "/opt/tool". After processing origTop the walk
+// stops, so a rollback of /opt/tool prunes opt/tool and everything below it
+// but never ascends into /opt's parent, however empty it has become. The
+// walk is anchored to the data root too, so the test anchors its protected
+// directory by making the data root the PARENT of the case tree: everything
+// directly under dataRoot is permanent by the existing rule, which lets us
+// observe exactly where the origTop boundary cuts.
+func TestRemoveEmptyParentsNeverAscendsAboveOrigTop(t *testing.T) {
+	// dataRoot doubles as the fake volume-root parent: its direct children
+	// are protected by the parent == dataRoot guard, mirroring how /opt is
+	// protected by (dir == origTop && parent == sep).
+	dataRoot := t.TempDir()
+	dataRoot = filepath.Clean(dataRoot)
+
+	// Shape of /opt/tool: direct child "a" of dataRoot holding "b" and the
+	// resource. origTop = dataRoot/a; pruning must remove a/b but stop at a.
+	ab := filepath.Join(dataRoot, "a", "b")
+	if err := os.MkdirAll(ab, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(ab, "tool")
+	if err := os.WriteFile(live, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(live); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeEmptyParents(live, dataRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataRoot, "a")); err != nil {
+		t.Fatalf("origTop directory was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataRoot, "a", "b")); !os.IsNotExist(err) {
+		t.Fatalf("empty dirs below origTop not pruned: %v", err)
+	}
+
+	// A second top-level child proves the boundary is per-path, not global:
+	// with live = dataRoot/c/tool, origTop = dataRoot/c, whose empty residue
+	// child goes while c itself stays.
+	c := filepath.Join(dataRoot, "c")
+	live = filepath.Join(c, "tool")
+	if err := os.MkdirAll(c, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(live); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeEmptyParents(filepath.Join(c, "tool"), dataRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(c); err != nil {
+		t.Fatalf("second origTop directory was removed: %v", err)
+	}
+}
+
 func quarantineMetaForTest(original string) []byte {
 	return []byte("schema=hukou-quarantine-v1\noriginal_name=\"" + original + "\"\nquarantined_at=2026-08-22T00:00:00Z\n")
 }
 
-func TestRecoverCleansEmptyQuarantineContainer(t *testing.T) {
+func TestRecoverRelocatesEmptyQuarantineContainerIntact(t *testing.T) {
 	root := t.TempDir()
 	txRoot := filepath.Join(root, transactionsDirName)
 	if err := os.MkdirAll(txRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// An interrupted allocation between Mkdir and the META write leaves an
-	// empty container; recovery must discard it instead of wedging.
+	// empty container; recovery must relocate it wholesale, never delete it.
 	container := filepath.Join(txRoot, "quarantined-0123456789abcdef")
 	if err := os.Mkdir(container, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	summary, err := Recover(root)
-	if err != nil {
+	if _, err := Recover(root); err != nil {
 		t.Fatalf("recovery did not proceed past empty container: %v", err)
 	}
-	if len(summary.Quarantined) != 0 {
-		t.Fatalf("unexpected quarantine records: %+v", summary.Quarantined)
-	}
 	if _, err := os.Lstat(container); !os.IsNotExist(err) {
-		t.Fatalf("empty quarantine container was not discarded: %v", err)
+		t.Fatalf("residue container still at transaction root: %v", err)
+	}
+	outer := findResidueContainer(t, txRoot)
+	if outer == "" {
+		t.Fatal("empty residue container was not preserved in a fresh container")
+	}
+	assertResidueMeta(t, outer)
+	if info, err := os.Stat(filepath.Join(outer, quarantinePayloadName)); err != nil || !info.IsDir() {
+		t.Fatalf("moved residue payload missing or not a directory: %v", err)
 	}
 }
 
-func TestRecoverCleansMetaOnlyQuarantineContainerAndRequarantinesSource(t *testing.T) {
+func TestRecoverRelocatesMetaOnlyContainerAndRequarantinesSource(t *testing.T) {
 	root := t.TempDir()
 	txRoot := filepath.Join(root, transactionsDirName)
 	if err := os.MkdirAll(txRoot, 0o700); err != nil {
@@ -198,7 +264,8 @@ func TestRecoverCleansMetaOnlyQuarantineContainerAndRequarantinesSource(t *testi
 	}
 	// Crash window between the META write and the payload rename: the source
 	// entry is still at the transaction root and the container holds only its
-	// META, so nothing was ever quarantined.
+	// META. Both survive: the source is re-quarantined fresh, the incomplete
+	// container is moved intact (it may be the last record of that name).
 	stray := filepath.Join(txRoot, "stale-debris")
 	if err := os.WriteFile(stray, []byte("junk"), 0o600); err != nil {
 		t.Fatal(err)
@@ -215,8 +282,20 @@ func TestRecoverCleansMetaOnlyQuarantineContainerAndRequarantinesSource(t *testi
 		t.Fatalf("recovery did not proceed past META-only container: %v", err)
 	}
 	if _, err := os.Lstat(container); !os.IsNotExist(err) {
-		t.Fatalf("META-only quarantine container was not discarded: %v", err)
+		t.Fatalf("META-only residue container still at transaction root: %v", err)
 	}
+	outer := findResidueContainer(t, txRoot)
+	if outer == "" {
+		t.Fatal("META-only residue container was not preserved in a fresh container")
+	}
+	movedMeta, err := os.ReadFile(filepath.Join(outer, quarantinePayloadName, quarantineMetaFileName))
+	if err != nil {
+		t.Fatalf("relocated container lost its META: %v", err)
+	}
+	if string(movedMeta) != string(quarantineMetaForTest("stale-debris")) {
+		t.Fatalf("relocated META not byte-identical: %q", movedMeta)
+	}
+	assertResidueMeta(t, outer)
 	// The still-present source entry is quarantined again into a fresh,
 	// fully formed container.
 	if len(summary.Quarantined) != 1 || summary.Quarantined[0].Original != "stale-debris" {
@@ -232,6 +311,38 @@ func TestRecoverCleansMetaOnlyQuarantineContainerAndRequarantinesSource(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(fresh, quarantineMetaFileName)); err != nil {
 		t.Fatalf("fresh container missing META: %v", err)
+	}
+}
+
+// findResidueContainer returns the quarantined-* container whose payload is
+// a directory — i.e. the wholesale-moved remains of an interrupted
+// allocation. Regular-file payloads belong to ordinary quarantine entries.
+func findResidueContainer(t *testing.T, txRoot string) string {
+	t.Helper()
+	entries, err := os.ReadDir(txRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), quarantinedPrefix) {
+			continue
+		}
+		payload := filepath.Join(txRoot, e.Name(), quarantinePayloadName)
+		if info, err := os.Lstat(payload); err == nil && info.IsDir() {
+			return filepath.Join(txRoot, e.Name())
+		}
+	}
+	return ""
+}
+
+func assertResidueMeta(t *testing.T, container string) {
+	t.Helper()
+	meta, err := os.ReadFile(filepath.Join(container, quarantineMetaFileName))
+	if err != nil {
+		t.Fatalf("outer container missing META: %v", err)
+	}
+	if !strings.Contains(string(meta), "interrupted quarantine allocation") {
+		t.Fatalf("META missing residue note: %q", meta)
 	}
 }
 

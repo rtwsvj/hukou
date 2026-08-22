@@ -13,6 +13,7 @@ import (
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/provenance"
+	"github.com/rtwsvj/hukou/internal/roottrust"
 	"github.com/rtwsvj/hukou/internal/scan"
 	"github.com/rtwsvj/hukou/internal/state"
 	"github.com/rtwsvj/hukou/internal/store"
@@ -54,7 +55,15 @@ func resolveDataRoot(getenv func(string) string, userHomeDir func() (string, err
 	if xdg == "" {
 		return "", i18n.Errorf("cannot determine the hukou data directory: neither HOME nor XDG_DATA_HOME is set; set HUKOU_DATA_DIR explicitly")
 	}
-	return filepath.Join(xdg, "hukou"), nil
+	root := filepath.Join(xdg, "hukou")
+	// Same error class as the HUKOU_DATA_DIR check above: whatever the source,
+	// a relative result scatters state into whatever directory hukou was
+	// started from. This also catches a relative XDG_DATA_HOME and a relative
+	// home-derived base.
+	if !filepath.IsAbs(root) {
+		return "", i18n.Errorf("cannot determine the hukou data directory: resolved data directory %q must be an absolute path; is XDG_DATA_HOME or HOME relative?", root)
+	}
+	return root, nil
 }
 
 func manifestPath() string { return filepath.Join(dataRoot(), "manifest.json") }
@@ -75,37 +84,58 @@ var (
 // user, and not group- or other-writable. This deliberately also refuses
 // running under sudo (or any other privilege escalation) against a
 // user-owned root, because a privileged writer could be steered into
-// replaying state an attacker prepared as another user.
+// replaying state an attacker prepared as another user. The canonical check
+// lives in internal/roottrust so the repair applier enforces the identical
+// gate; the seam vars above stay the test hooks for this package's callers.
 func checkDataRootTrust(root string) error {
-	fi, err := lstatDataRoot(root)
-	if err != nil {
-		return i18n.Errorf("cannot inspect the hukou data directory %s: %v", root, err)
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return i18n.Errorf("refusing to use the hukou data directory %s: it is a symbolic link, not a real directory", root)
-	}
-	if !fi.IsDir() {
-		return i18n.Errorf("refusing to use the hukou data directory %s: it is not a directory (%s)", root, fi.Mode())
-	}
-	euid := effectiveUID()
-	if uid := dataRootFileUID(fi); uid >= 0 && uid != euid {
-		return i18n.Errorf("refusing to use the hukou data directory %s: it is owned by uid %d but hukou runs as uid %d; running hukou with elevated privileges against another user's data root is unsupported", root, uid, euid)
-	}
-	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
-		return i18n.Errorf("refusing to use the hukou data directory %s: it is group- or other-writable (%s); it must belong to the current user and not be writable by anyone else", root, fi.Mode())
-	}
-	return nil
+	return roottrust.Check(root, roottrust.Hooks{
+		Lstat:        lstatDataRoot,
+		EffectiveUID: effectiveUID,
+		FileUID:      dataRootFileUID,
+	})
 }
 
-func acquireMutationLock(stderr io.Writer) (*state.Lock, error) {
-	root := dataRoot()
+// trustedAcquire is the single entry point for mutating paths: it validates
+// (or creates) the data root, runs the fail-closed trust gate, and only then
+// takes the state lock under that root. Every caller that is about to mutate
+// hukou state MUST go through this — acquiring the lock without the trust gate
+// would let a group-writable or foreign-owned root be locked and written.
+//
+// Known limitation (accepted for now): the gate validates the leaf path, but a
+// concurrent local attacker can still swap an ANCESTOR directory component of
+// root for a symlink between validation and use — the classic stat-then-use
+// TOCTOU. Fully closing it requires openat-style anchored traversal of every
+// path component (future ADR-grade work); until then this matches the threat
+// model of an advisory-lock CLI, and the leaf-level gate still blocks the
+// cheap attacks: pre-planted group-writable roots, foreign-owned roots, and a
+// symlinked leaf itself.
+func trustedAcquire(root string, stderr io.Writer) (*state.Lock, error) {
+	// Validate-before-create for the leaf: when the directory already exists,
+	// the trust gate sees exactly what the lock will be taken against; creation
+	// happens only when the leaf is missing. A missing leaf is fine — MkdirAll
+	// brings it into existence below and the gate re-runs on the fresh
+	// directory before any lock is taken.
+	if err := checkDataRootTrust(root); err != nil {
+		if _, statErr := lstatDataRoot(root); !errors.Is(statErr, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	if err := durablefs.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
 	if err := checkDataRootTrust(root); err != nil {
 		return nil, err
 	}
-	lock, err := state.Acquire(filepath.Join(root, "state.lock"))
+	return state.Acquire(filepath.Join(root, "state.lock"))
+}
+
+// acquireMutationLock resolves the data root and returns its locked,
+// trust-gated handle with automatic WAL recovery applied; see trustedAcquire.
+// The gate inside trustedAcquire is inseparable: there is no code path that
+// locks hukou state without passing it.
+func acquireMutationLock(stderr io.Writer) (*state.Lock, error) {
+	root := dataRoot()
+	lock, err := trustedAcquire(root, stderr)
 	if err != nil {
 		return nil, err
 	}

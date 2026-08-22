@@ -130,27 +130,39 @@ verify_attestation() {
 
   # Anchor the certificate identity to this repository's release workflow.
   # Regex metacharacters in a mirror-supplied HUKOU_REPO are escaped so the
-  # identity stays a literal match; a pinned VERSION is escaped the same way
-  # and must terminate the SAN ref, so no other tag can satisfy it.
+  # identity stays a literal match; the resolved VERSION is escaped the same
+  # way and must terminate the SAN ref, so no other tag can satisfy it.
   attestation_repo_pattern=$(printf '%s' "$REPO" | sed 's/[][\.*^$+?{}|()]/\\&/g')
-  if [ "$VERSION_PINNED" -eq 1 ]; then
-    attestation_tag_pattern=$(printf '%s' "$VERSION" | sed 's/[][\.*^$+?{}|()]/\\&/g')
-    attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/'"${attestation_tag_pattern}"'$'
-    gh attestation verify "$attestation_subject" \
-      --repo "$REPO" \
-      --cert-identity-regex "$attestation_identity_regex" \
-      --source-ref "refs/tags/$VERSION" >/dev/null 2>&1 \
-      || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
-  else
-    attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/v[0-9][^ ]*$'
-    gh attestation verify "$attestation_subject" \
-      --repo "$REPO" \
-      --cert-identity-regex "$attestation_identity_regex" >/dev/null 2>&1 \
-      || die "attestation verification failed for ${attestation_subject##*/} (repo $REPO)"
+  # By the time verification runs, VERSION is always the exact resolved tag
+  # (latest was resolved from the redirect above and validated as strict
+  # SemVer). Pin the identity to that exact tag AND pass --source-ref, so an
+  # attestation minted for any other release cannot be replayed against this
+  # download even though release assets are mutable. The historical
+  # pinned/unpinned split is gone: replay protection applies to latest too.
+  attestation_repo_pattern=$(printf '%s' "$REPO" | sed 's/[][\.*^$+?{}|()]/\\&/g')
+  attestation_tag_pattern=$(printf '%s' "$VERSION" | sed 's/[][\.*^$+?{}|()]/\\&/g')
+  attestation_identity_regex='^https://github\.com/'"${attestation_repo_pattern}"'/\.github/workflows/release\.yml@refs/tags/'"${attestation_tag_pattern}"'$'
+  if gh attestation verify "$attestation_subject" \
+    --repo "$REPO" \
+    --cert-identity-regex "$attestation_identity_regex" \
+    --source-ref "refs/tags/$VERSION" >/dev/null 2>&1; then
+    printf 'Verified build-provenance attestation for %s (%s @ %s)\n' "${attestation_subject##*/}" "$REPO" "$VERSION"
+    return 0
   fi
-  printf 'Verified build-provenance attestation for %s (%s)\n' "${attestation_subject##*/}" "$REPO"
-}
+  # Older gh builds support attestation verification but not --source-ref.
+  # Without the flag the exact identity regex still pins the tag (the SAN
+  # must terminate at refs/tags/<VERSION>), so a retry without it is safe for
+  # optional mode — but only with a loud warning. Required mode fails closed:
+  # an operator demanding provenance deserves a working --source-ref.
+  if gh attestation verify "$attestation_subject" \
+    --repo "$REPO" \
+    --cert-identity-regex "$attestation_identity_regex" >/dev/null 2>&1; then
+    printf 'install.sh: WARNING: gh is too old for --source-ref; verified via exact-tag identity regex only\n' >&2
+    return 0
+  fi
+  die "attestation verification failed for ${attestation_subject##*/} (repo $REPO, tag $VERSION)"
 
+}
 # Commit a prepared file by operating on the destination directory entry
 # itself. POSIX ln/mv may treat an existing directory (or a symlink to one) as
 # a container, so their default forms are not safe for this final step.

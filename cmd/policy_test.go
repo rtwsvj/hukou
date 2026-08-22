@@ -181,6 +181,40 @@ func TestPolicySetFailsClosedOnLockContention(t *testing.T) {
 	}
 }
 
+// F2: policy set is a mutating path, so its lock acquisition must pass the
+// data-root trust gate. A group-writable root is refused before any lock is
+// taken and without the manifest being touched.
+func TestPolicySetRefusesUntrustedDataRoot(t *testing.T) {
+	entry := policyFixtureEntry(t, "tool", manifest.DefaultUpdatePolicy())
+	root, _ := writePolicyFixture(t, []manifest.Entry{entry})
+	if err := os.Chmod(root, 0o770); err != nil { // explicit: Mkdir applies umask
+		t.Fatal(err)
+	}
+	t.Setenv("HUKOU_DATA_DIR", root)
+	before, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	err = doPolicySet(&out, &out, "tool", policySetOptions{
+		Channel: string(manifest.UpdateChannelPrerelease), ChannelSet: true,
+	})
+	if err == nil {
+		t.Fatal("policy set must refuse a group-writable data root")
+	}
+	if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("error must name the untrusted root and reason, got: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "state.lock")); !os.IsNotExist(statErr) {
+		t.Fatalf("state.lock created in untrusted root (stat err: %v)", statErr)
+	}
+	after, _ := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if string(after) != string(before) {
+		t.Fatal("manifest changed despite the refused policy set")
+	}
+}
+
 func TestPolicySetDoesNotRecoverPendingTransaction(t *testing.T) {
 	entry := policyFixtureEntry(t, "tool", manifest.DefaultUpdatePolicy())
 	root, lives := writePolicyFixture(t, []manifest.Entry{entry})

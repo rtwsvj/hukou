@@ -39,7 +39,7 @@ if [ -z "$version" ]; then
   echo "npm/build.sh: could not read version from npm/hukou/package.json" >&2
   exit 1
 fi
-if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
   echo "npm/build.sh: npm/hukou/package.json version \"$version\" is not semver" >&2
   exit 1
 fi
@@ -80,8 +80,16 @@ else
   echo "npm/build.sh: neither sha256sum nor shasum found; cannot verify dist/checksums.txt" >&2
   exit 1
 fi
+for p in "${platforms[@]}"; do
+  slug="${p//-/_}"
+  wanted="hukou_${version}_${slug}.tar.gz"
+  count=$(awk -v name="$wanted" '$2 == name || $2 == "*" name { n++ } END { print n + 0 }' checksums.txt)
+  if [ "$count" -ne 1 ]; then
+    echo "npm/build.sh: dist/checksums.txt must contain exactly one entry for $wanted, found $count" >&2
+    exit 1
+  fi
+done
 cd "$root"
-
 # Extract a single archive member to outdir/hukou. Both GNU tar and bsdtar
 # apply --strip-components before member-name matching, so the direct form
 # silently extracts nothing; a two-step extract-then-move works everywhere.

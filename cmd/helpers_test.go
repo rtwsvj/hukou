@@ -58,6 +58,39 @@ func TestResolveDataRootRejectsRelativeHUKOUDataDir(t *testing.T) {
 	}
 }
 
+// F3 hardening: the absoluteness rule applies to the whole resolution, not
+// just HUKOU_DATA_DIR. A relative XDG_DATA_HOME (or a relative home) must be
+// rejected with the same error class instead of producing a working-directory
+// -relative data root.
+func TestResolveDataRootRejectsRelativeXDGDataHome(t *testing.T) {
+	env := func(vars map[string]string) func(string) string {
+		return func(k string) string { return vars[k] }
+	}
+	home := func(h string, err error) func() (string, error) {
+		return func() (string, error) { return h, err }
+	}
+	cases := []struct {
+		name string
+		env  map[string]string
+		h    func() (string, error)
+	}{
+		{name: "relative XDG_DATA_HOME", env: map[string]string{"XDG_DATA_HOME": "relative/data"}, h: home("/home/u", nil)},
+		{name: "dot-slash XDG_DATA_HOME", env: map[string]string{"XDG_DATA_HOME": "./data"}, h: home("/home/u", nil)},
+		{name: "relative HOME", env: map[string]string{}, h: home("relative/home", nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveDataRoot(env(tc.env), tc.h)
+			if err == nil {
+				t.Fatalf("resolveDataRoot accepted a non-absolute result %q", got)
+			}
+			if !strings.Contains(err.Error(), "absolute path") {
+				t.Fatalf("error must name the absoluteness requirement, got: %v", err)
+			}
+		})
+	}
+}
+
 // checkDataRootTrust is the fail-closed gate on the data directory: real dir,
 // owned by the effective user, not group/other-writable.
 func TestCheckDataRootTrust(t *testing.T) {
@@ -197,4 +230,55 @@ func TestAcquireMutationLockAcceptsPrivateRoot(t *testing.T) {
 		t.Fatalf("expected a private user-owned root to be accepted, got: %v", err)
 	}
 	releaseMutationLock(lock, io.Discard)
+}
+
+// trustedAcquire's ordering contract for an EXISTING leaf: the trust gate must
+// judge exactly what the lock will be taken against — no MkdirAll may run
+// before validation, and a group-writable root is refused without a lock file
+// appearing in it.
+func TestTrustedAcquireValidatesExistingRootBeforeAnyWrite(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o770); err != nil { // explicit: Mkdir applies umask
+		t.Fatal(err)
+	}
+	lock, err := trustedAcquire(root, io.Discard)
+	if err == nil {
+		_ = lock.Release()
+		t.Fatal("expected trustedAcquire to refuse an existing group-writable root")
+	}
+	if !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("error must cite the trust violation, got: %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "state.lock")); !os.IsNotExist(statErr) {
+		t.Fatalf("state.lock created inside untrusted root (stat err: %v)", statErr)
+	}
+
+	// Same root, made private: now accepted end to end.
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock, err = trustedAcquire(root, io.Discard)
+	if err != nil {
+		t.Fatalf("private existing root must be accepted, got: %v", err)
+	}
+	releaseMutationLock(lock, io.Discard)
+}
+
+// A MISSING leaf is still created and then validated before locking: creation
+// is allowed, but the fresh directory is re-checked before state.Acquire.
+func TestTrustedAcquireCreatesMissingLeafThenValidates(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "created", "root")
+	lock, err := trustedAcquire(root, io.Discard)
+	if err != nil {
+		t.Fatalf("missing leaf under a private base must be created and locked, got: %v", err)
+	}
+	releaseMutationLock(lock, io.Discard)
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("leaf was not created as a directory: info=%v err=%v", info, err)
+	}
 }

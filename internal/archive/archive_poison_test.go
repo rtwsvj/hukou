@@ -74,7 +74,7 @@ func TestExtractPoisonArchiveBombs(t *testing.T) {
 	_ = f.Close()
 
 	dest := t.TempDir()
-	_, err := Extract(path, dest, "tool")
+	_, err := Extract(openArchive(t, path), dest, "tool")
 	if err == nil || !strings.Contains(err.Error(), "size limit") {
 		t.Fatalf("expected size-limit error, got %v", err)
 	}
@@ -84,7 +84,7 @@ func TestExtractPoisonTraversalAndAbsolute(t *testing.T) {
 	for _, name := range []string{"../evil", "/abs/evil", "a/../../evil"} {
 		path := buildTarGzStream(t, []tar.Header{regularHeader(name, 4, 0o755)}, [][]byte{[]byte("evil")})
 		dest := t.TempDir()
-		if _, err := Extract(path, dest, "evil"); err == nil {
+		if _, err := Extract(openArchive(t, path), dest, "evil"); err == nil {
 			t.Fatalf("traversal %q: expected rejection", name)
 		}
 		if _, err := os.Stat(filepath.Join(dest, "evil")); !os.IsNotExist(err) {
@@ -102,7 +102,7 @@ func TestExtractPoisonSymlinkHardlinkAndDirs(t *testing.T) {
 	}
 	path := buildTarGzStream(t, entries, [][]byte{[]byte("tool")})
 	dest := t.TempDir()
-	out, err := Extract(path, dest, "tool")
+	out, err := Extract(openArchive(t, path), dest, "tool")
 	if err != nil {
 		t.Fatalf("extract failed: %v", err)
 	}
@@ -122,18 +122,18 @@ func TestExtractPoisonTruncatedAndEmpty(t *testing.T) {
 	if err := os.WriteFile(path, []byte{0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Extract(path, dir, "tool"); err == nil {
+	if _, err := Extract(openArchive(t, path), dir, "tool"); err == nil {
 		t.Fatal("truncated gzip must fail")
 	}
 	// empty archive: no binary
 	empty := buildTarGzStream(t, nil, nil)
-	if _, err := Extract(empty, dir, "tool"); err == nil || !strings.Contains(err.Error(), "no binary found") {
+	if _, err := Extract(openArchive(t, empty), dir, "tool"); err == nil || !strings.Contains(err.Error(), "no binary found") {
 		t.Fatalf("empty archive: expected no-binary error, got %v", err)
 	}
 	// raw bytes that are neither gzip/zip/anything
 	junk := filepath.Join(dir, "junk.gz")
 	_ = os.WriteFile(junk, bytes.Repeat([]byte{0x00}, 64), 0o644)
-	if _, err := Extract(junk, dir, "tool"); err == nil {
+	if _, err := Extract(openArchive(t, junk), dir, "tool"); err == nil {
 		t.Fatal("junk stream must fail")
 	}
 }
@@ -148,7 +148,7 @@ func TestExtractPoisonTarMemberBudget(t *testing.T) {
 	path := buildTarGzStream(t, headers, nil)
 
 	dest := t.TempDir()
-	_, err := Extract(path, dest, "tool")
+	_, err := Extract(openArchive(t, path), dest, "tool")
 	if err == nil || !strings.Contains(err.Error(), "member budget") {
 		t.Fatalf("expected member-budget error, got %v", err)
 	}
@@ -164,7 +164,7 @@ func TestExtractPoisonTarCandidateBudget(t *testing.T) {
 	path := buildTarGzStream(t, headers, nil)
 
 	dest := t.TempDir()
-	_, err := Extract(path, dest, "tool")
+	_, err := Extract(openArchive(t, path), dest, "tool")
 	if err == nil || !strings.Contains(err.Error(), "candidate budget") {
 		t.Fatalf("expected candidate-budget error, got %v", err)
 	}
@@ -220,7 +220,7 @@ func TestExtractPoisonTarDeclaredSizeBudget(t *testing.T) {
 	}
 
 	dest := t.TempDir()
-	_, err = Extract(path, dest, "tool")
+	_, err = Extract(openArchive(t, path), dest, "tool")
 	if err == nil || !strings.Contains(err.Error(), "declared-size budget") {
 		t.Fatalf("expected declared-size-budget error, got %v", err)
 	}
@@ -250,7 +250,7 @@ func TestExtractPoisonZipDeclaredSizeBudget(t *testing.T) {
 	}
 
 	dest := t.TempDir()
-	_, err = Extract(path, dest, "tool")
+	_, err = Extract(openArchive(t, path), dest, "tool")
 	if err == nil || !strings.Contains(err.Error(), "declared-size budget") {
 		t.Fatalf("expected declared-size-budget error, got %v", err)
 	}

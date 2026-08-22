@@ -33,7 +33,9 @@ The list is a data file: it always renders as JSON (to stdout, or to --output
 FILE with 0600 permissions). Export is read-only: it takes no lock, writes
 nothing except the explicitly requested file, and makes no network request.
 Entries without a repository (local adoptions) are included for the record but
-cannot be reproduced by import, which skips them with a warning.`,
+cannot be reproduced by import, which skips them with a warning. The recorded
+tags are advisory provenance: import verifies each binary's digest and records
+its honest local version rather than trusting the tag alone.`,
 	Args: cobra.NoArgs,
 	RunE: runExport,
 }

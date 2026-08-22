@@ -1,18 +1,23 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/rtwsvj/hukou/internal/ghrelease"
+	"github.com/rtwsvj/hukou/internal/archive"
 	"github.com/rtwsvj/hukou/internal/manifest"
+	"github.com/rtwsvj/hukou/internal/sysproxy"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
 )
 
@@ -70,15 +75,62 @@ func TestDirEntryIsRegularIgnoresDirentTypeBits(t *testing.T) {
 	}
 }
 
-// TestUpgradeRejectsAssetSwappedBetweenVerifyAndExtract drives the real
-// upgrade flow end to end (adopt, fake GitHub release server, doUpgrade) and
-// swaps the downloaded asset with different-but-valid archive bytes inside
-// the exact verify→extract window: after publisher-checksum verification,
-// before archive.Extract opens the file (injected via
-// upgradeTestHookBeforeExtract). The post-extract re-hash must refuse the
-// swap, the tampered payload must never reach the store, and neither the
-// live binary nor the manifest may change.
-func TestUpgradeRejectsAssetSwappedBetweenVerifyAndExtract(t *testing.T) {
+// TestExtractReadsOnlyThroughProvidedHandle: Extract must consume the asset
+// exclusively through the caller's descriptor. A writer-side swap mid-read
+// (the pipe turns to garbage after a valid gzip+tar prefix) surfaces as a
+// read error inside extraction and aborts it; nothing is re-opened by any
+// pathname, so there is no verify→extract window left to attack.
+func TestExtractReadsOnlyThroughProvidedHandle(t *testing.T) {
+	// Valid tar.gz prefix: real gzip stream with one complete member, so the
+	// reader gets past format detection and into the tar body before the
+	// sabotage kicks in.
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	hdr := &tar.Header{Name: "fakebin", Mode: 0o755, Size: int64(len("payload")), Typeflag: tar.TypeReg}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+	go func() {
+		_, _ = pw.Write(buf.Bytes())
+		// Mid-read tamper: everything after the valid archive is garbage.
+		_, _ = pw.Write(bytes.Repeat([]byte{0xFF}, 4096))
+		pw.Close()
+	}()
+	// os.File.Name is fixed at creation, so rebind the read end of the pipe
+	// under an explicit .tar.gz name: DetectFormat routes it into the
+	// multi-pass tar path while reads still come from the tampered pipe.
+	pr = os.NewFile(pr.Fd(), "tampered.tar.gz")
+	dest := t.TempDir()
+	if _, err := archive.Extract(pr, dest, "fakebin"); err == nil {
+		t.Fatal("extraction over a tampered handle succeeded; want a read error")
+	}
+}
+
+// TestUpgradeRejectsAssetTamperedMidExtraction drives the real upgrade flow
+// end to end (adopt, fake GitHub release server, doUpgrade) with the asset
+// served over an HTTP body that is corrupted partway through. The download
+// completes but the stored bytes cannot match what the publisher checksum
+// demands, so verification refuses before anything is extracted or stored:
+// the tampered payload never reaches the store, neither the live binary nor
+// the manifest may change.
+func TestUpgradeRejectsAssetTamperedMidExtraction(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("HUKOU_DATA_DIR", dataDir)
 
@@ -97,39 +149,27 @@ func TestUpgradeRejectsAssetSwappedBetweenVerifyAndExtract(t *testing.T) {
 
 	assetName := platformAssetName("fakebin")
 	assetData := makeTarGz(t, "fakebin", []byte("v2.0.0-body\n"))
+	// The publisher checksum describes the intact asset; the server serves a
+	// body whose tail was corrupted in flight.
+	corrupt := append([]byte{}, assetData[:len(assetData)/2]...)
+	corrupt = append(corrupt, bytes.Repeat([]byte{0xFF}, len(assetData)-len(corrupt))...)
 	checksum := fmt.Sprintf("%x  %s\n", sha256.Sum256(assetData), assetName)
-	server := fakeGitHubServer(t, assetName, assetData, checksum, "v2.0.0")
-	defer server.Close()
-	client := &ghrelease.Client{
-		BaseURL:    server.URL,
-		HTTPClient: server.Client(),
-		Sleep:      func(time.Duration) {},
-	}
+	// Pin the "system proxy" away: this host has a real macOS system proxy,
+	// so a transient transport failure would otherwise trigger ghrelease's
+	// proxy retry against 127.0.0.1:7890 (which refuses), turning the
+	// expected checksum refusal into a connection error. Also close the
+	// server only after the upgrade attempt finishes.
+	origProxy := sysproxy.SystemProxyURL
+	sysproxy.SystemProxyURL = func() *url.URL { return nil }
+	t.Cleanup(func() { sysproxy.SystemProxyURL = origProxy })
 
-	// A second, structurally valid archive whose extraction succeeds but
-	// whose bytes differ from the verified asset: the swap must be caught by
-	// the post-extract re-hash, not by a format error.
-	evilData := makeTarGz(t, "fakebin", []byte("evil-v2-body\n"))
-	swapped := false
-	upgradeTestHookBeforeExtract = func(assetPath string) {
-		if err := os.WriteFile(assetPath, evilData, 0o644); err != nil {
-			t.Errorf("swap asset %s: %v", assetPath, err)
-			return
-		}
-		swapped = true
-	}
-	t.Cleanup(func() { upgradeTestHookBeforeExtract = nil })
-
+	server := fakeGitHubServerWithBody(t, assetName, corrupt, checksum, "v2.0.0")
+	t.Cleanup(server.Close)
+	client := testGHClient(server)
 	out.Reset()
 	err = doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", client, false)
-	if err == nil {
-		t.Fatalf("upgrade with asset swapped after verification succeeded:\n%s", out.String())
-	}
-	if !swapped {
-		t.Fatal("pre-extract tamper hook did not run")
-	}
-	if !strings.Contains(err.Error(), "changed between checksum verification and extraction") {
-		t.Fatalf("upgrade error = %v, want the verify→extract mismatch refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("upgrade error = %v, want publisher-checksum mismatch refusal:\n%s", err, out.String())
 	}
 
 	// The tampered payload never reached the immutable store.
@@ -160,4 +200,45 @@ func TestUpgradeRejectsAssetSwappedBetweenVerifyAndExtract(t *testing.T) {
 	if cleanErr := statejournal.CheckClean(dataDir); cleanErr != nil {
 		t.Fatalf("transaction state not clean after rejected upgrade: %v", cleanErr)
 	}
+}
+
+// fakeGitHubServerWithBody serves one release whose asset body is supplied
+// verbatim (so a test can corrupt it in flight) while the published checksum
+// file stays independent of whatever was actually served. It mirrors
+// fakeGitHubServer's routing; only the served asset bytes differ.
+func fakeGitHubServerWithBody(t *testing.T, assetName string, body []byte, checksum string, tag string) *httptest.Server {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") || strings.HasSuffix(r.URL.Path, "/releases") {
+			assets := []map[string]any{
+				{
+					"name":                 assetName,
+					"browser_download_url": server.URL + "/assets/" + assetName,
+					"size":                 len(body),
+				},
+			}
+			if checksum != "" {
+				assets = append(assets, map[string]any{
+					"name":                 "checksums.txt",
+					"browser_download_url": server.URL + "/assets/checksums.txt",
+					"size":                 len(checksum),
+				})
+			}
+			writeFakeReleaseMetadata(t, w, r, map[string]any{
+				"tag_name": tag,
+				"assets":   assets,
+			})
+			return
+		}
+		switch r.URL.Path {
+		case "/assets/" + assetName:
+			_, _ = w.Write(body)
+		case "/assets/checksums.txt":
+			_, _ = w.Write([]byte(checksum))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return server
 }

@@ -157,13 +157,16 @@ real run persisted (see below).
     `HOMEBREW_NO_ENV_HINTS`, `NO_PROXY`/`no_proxy`, and the proxy variables.
     A fixed denylist — `HOMEBREW_GITHUB_API_TOKEN`,
     `HOMEBREW_GITHUB_PACKAGES_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`,
+    `GITHUB_ENTERPRISE_TOKEN`, `GH_ENTERPRISE_TOKEN`,
     `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `AWS_ACCESS_KEY_ID`,
     `AWS_SECRET_ACCESS_KEY` — is stripped before every other rule, so these
     never reach a manager subprocess even via passthru.
     `HUKOU_UP_ENV_PASSTHRU=FOO,BAR` passes additional named variables;
     `HUKOU_UP_ENV_PASSTHRU=*` restores full inheritance except for the
-    denylist (announced on stderr). Manager output is streamed through the
-    same control-character sanitizer as other untrusted text, so a
+    denylist (announced on stderr) — note this deliberately weakens the
+    isolation: every parent variable outside the denylist reaches the
+    subprocess. Manager output is streamed through the same
+    control-character sanitizer as other untrusted text, so a
     subprocess cannot paint fake reports with ANSI escape sequences.
 - A failing manager is reported and does **not** stop the rest; the report is
   still printed. An interrupt (SIGINT/Ctrl-C, or SIGTERM on unix) stops the run:

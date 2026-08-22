@@ -20,6 +20,62 @@ import (
 	"github.com/rtwsvj/hukou/internal/sysproxy"
 )
 
+func TestDownloadRefusesNegativeExpectedSize(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		io.WriteString(w, "x")
+	}))
+	defer server.Close()
+
+	client := testClient(server)
+	client.BaseURL = server.URL
+	if _, err := client.Download(server.URL+"/tool.bin", t.TempDir(), -1); err == nil {
+		t.Fatal("expected negative declared size to be refused")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("refusal must happen before any request, saw %d", requests.Load())
+	}
+}
+
+func TestDownloadZeroByteAssetSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := testClient(server)
+	client.BaseURL = server.URL
+	path, err := client.Download(server.URL+"/empty.bin", t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("declared-unknown zero-byte asset must succeed: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("size=%d, want 0", info.Size())
+	}
+}
+
+func TestFetchJSONRejectsTrailingGarbage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"tag_name":"v1.0.0"} trailing junk`)
+	}))
+	defer server.Close()
+
+	c := testClient(server)
+	release, err := c.Latest("owner", "repo")
+	if err == nil {
+		t.Fatal("expected trailing garbage after the JSON value to fail closed")
+	}
+	if release.TagName != "" {
+		t.Fatalf("decoded despite trailing garbage: %+v", release)
+	}
+}
+
 func TestLatest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/owner/repo/releases/latest" {
