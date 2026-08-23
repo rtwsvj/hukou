@@ -159,7 +159,7 @@ $ hukou adopt opencode sst/opencode
 note: opencode ships its own updater (opencode upgrade).
       recommended: hukou policy set opencode drift=adopt
       (hukou will verify and record its updates instead of fighting them)
-Adopted opencode (v0.4.0) at /Users/eric/.opencode/bin/opencode
+Adopted opencode (v0.4.0) at ~/.opencode/bin/opencode
 ```
 
 `doctor` grows a check: entries with `drift=refuse` whose tool has a detected
