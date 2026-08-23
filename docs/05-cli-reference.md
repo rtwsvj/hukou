@@ -217,10 +217,10 @@ real run persisted (see below).
 
 ### `--dry-run` semantics
 
-- Detects the participating managers from the v1 registry (brew, npm, pnpm,
-  rustup, uv, gh-extensions, hukou) by resolving each manager's detect binary
-  on `PATH` via `exec.LookPath`. The internal `hukou` row always participates
-  and is never probed.
+- Detects the participating managers from the registry (brew, npm, pnpm,
+  rustup, cargo-install, uv, pipx, gh-extensions, hukou) by resolving each
+  manager's detect binary on `PATH` via `exec.LookPath`. The internal `hukou`
+  row always participates and is never probed.
 - Prints the plan table (`NAME / SOURCE-BINARY / COMMANDS`; the hukou row shows
   `internal`), then the same inventory summary line as `hukou scan` (from the
   shared read-only scan), then the trailer
@@ -577,6 +577,45 @@ hukou support bundle --output <report.json>
 
 Exactly one of the two output modes must be chosen. stdout mode performs zero writes; file mode writes only a single `0600` JSON file.
 The report is generated offline and never uploaded; it contains only safe build/platform values, redacted doctor findings, anonymized policy/history summaries, and transaction/store counts — it does not contain raw paths/repos/tags/names, user information, environment variables, binaries, or WAL payloads.
+
+## GitHub Enterprise Server and mirrors
+
+Release lookups (`upgrade`, `outdated`, `up`'s internal hukou step) default to
+the public GitHub API at `https://api.github.com`. Two override knobs exist,
+with the precedence **flag > env > default**:
+
+- `--github-base-url <url>` — root persistent flag, inherited by every
+  subcommand that talks to the release API.
+- `HUKOU_GITHUB_BASE_URL` — environment variable with the same effect; the
+  flag wins when both are set.
+
+A GHES instance serves its REST API under a path prefix, so the value usually
+carries one, e.g. `https://ghe.example.com/api/v3`. Validation is fail-closed:
+the URL must be absolute http(s); plain HTTP is accepted only for
+`localhost` or `127.0.0.1` (test-server parity with the client's own custom
+base-host rules); embedded credentials, query strings, and fragments are
+refused. An unusable value aborts the command before any network use — it
+never silently falls back to github.com.
+
+### Token handling
+
+`GITHUB_TOKEN` (or `GH_TOKEN`) continues to work against a custom base: the
+token is attached as `Authorization: Bearer …` **only when the request host
+matches the configured base host** (or `api.github.com`). It is never sent to
+asset-download hosts or redirect targets, and it never reaches manager
+subprocesses under `hukou up` (see the environment allowlist above). For GHES,
+use a token minted by that instance — a github.com token has no meaning there.
+
+### Scope of the override
+
+The base-URL override covers release metadata lookups and release-asset
+downloads for adopted tools. It deliberately does **not** cover:
+
+- `hukou suggest` and repository search — GitHub.com-only;
+- installer attestation verification (`gh attestation verify`) — pinned to
+  the official release workflow identity on github.com;
+- the external package managers run by `hukou up` — each manager's own
+  network configuration applies.
 
 ## Exit status
 

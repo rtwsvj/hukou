@@ -150,6 +150,28 @@ func validSHA256Hex(digest string) bool {
 	return err == nil
 }
 
+// APIDigestPrefixSHA256 is the only asset-digest algorithm prefix this round
+// extracts from GitHub API digest values.
+const APIDigestPrefixSHA256 = "sha256:"
+
+// ParseAPIDigest extracts the hex digest from a raw GitHub API asset digest
+// value of the form "<algorithm>:<hex>" (currently "sha256:" only). It
+// returns the lowercase hex part and ok=true when the prefix is recognized
+// and the remainder is a valid 64-character SHA-256 hex string. Any other
+// shape — unknown algorithm prefix, missing separator, wrong length, or
+// non-hex characters — fails closed with ok=false so callers treat it as
+// absent evidence rather than trusting it.
+func ParseAPIDigest(raw string) (string, bool) {
+	rest, found := strings.CutPrefix(strings.ToLower(raw), APIDigestPrefixSHA256)
+	if !found {
+		return "", false
+	}
+	if !validSHA256Hex(rest) {
+		return "", false
+	}
+	return rest, true
+}
+
 // VerifyAsset checks assetPath against the checksum entry for assetName in the
 // checksum map. It returns ErrNoChecksum if assetName is not present, or an
 // error describing the mismatch if the digest does not match.

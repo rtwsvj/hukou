@@ -104,8 +104,8 @@ func TestUp_dryRunTableListsDetectedManagers(t *testing.T) {
 		t.Fatalf("dry-run missing zero-effect trailer:\n%s", out)
 	}
 	// Detection only probes external managers via the injected lookPath.
-	if len(probed) != 6 {
-		t.Fatalf("lookPath probes = %d (%v), want 6 externals", len(probed), probed)
+	if len(probed) != 8 {
+		t.Fatalf("lookPath probes = %d (%v), want 8 externals", len(probed), probed)
 	}
 }
 
@@ -125,8 +125,8 @@ func TestUp_dryRunJSONParses(t *testing.T) {
 	if doc.SchemaVersion != 1 {
 		t.Fatalf("schema_version = %d, want 1", doc.SchemaVersion)
 	}
-	if len(doc.Managers) != 7 {
-		t.Fatalf("managers len = %d, want the full registry of 7", len(doc.Managers))
+	if len(doc.Managers) != 9 {
+		t.Fatalf("managers len = %d, want the full registry of 9", len(doc.Managers))
 	}
 	byName := map[string]plan.ManagerJSON{}
 	for _, m := range doc.Managers {
@@ -188,8 +188,8 @@ func TestUp_onlyAndSkipFilterThePlan(t *testing.T) {
 			t.Fatalf("--skip brew still present: %+v", doc.Managers)
 		}
 	}
-	if len(doc.Managers) != 6 {
-		t.Fatalf("--skip left %d managers, want 6", len(doc.Managers))
+	if len(doc.Managers) != 8 {
+		t.Fatalf("--skip left %d managers, want 8", len(doc.Managers))
 	}
 }
 

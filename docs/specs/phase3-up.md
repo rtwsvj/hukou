@@ -34,10 +34,10 @@ hukou up show [<id>] [--json]
   version-changed binaries per source) → append snapshot pair to history.
 - `--only`/`--skip`: filter the manager set by registry name.
 
-## Manager registry (v1, table-driven like the detector table)
+## Manager registry (table-driven like the detector table)
 
 A manager participates when its binary is found on PATH (exec.LookPath) —
-no config file in v1.
+no config file for built-in rows.
 
 | Name | Detect | Upgrade command |
 |---|---|---|
@@ -47,11 +47,27 @@ no config file in v1.
 | rustup | `rustup` | `rustup update` |
 | uv | `uv` | `uv tool upgrade --all` |
 | gh-extensions | `gh` | `gh extension upgrade --all` |
+| cargo-install | `cargo-install-update` | `cargo install-update -a` (the cargo-update helper; the row is gated on the helper binary, not on `cargo`) |
+| pipx | `pipx` | `pipx upgrade-all` |
 | hukou | always | internal `upgrade --all` (in-process, not a subprocess) |
 
-Adding a manager is one table row + one fixture test. Breadth is explicitly
-NOT a goal; rows are added only when this machine's scan attributes binaries
-to that source.
+Rows are admitted under a layered policy, not a breadth goal:
+
+1. **Built-in rows** (the table above) are managers with an atomic-ish
+   inventory — the manager keeps its own install ledger, so the snapshot diff
+   can attribute what the upgrade changed — and no root requirement. Each row
+   documents its diff limitations (see registry.go row comments; e.g.
+   cargo-install covers registry crates only, pipx changes can hide inside
+   venvs when launcher stubs do not change).
+2. **System package managers** (apt/dnf/pacman/apk) stay out: they need a
+   privilege model hukou's executor does not have, plus per-family ADRs (the
+   G5 parking note in docs/specs/portability-plan.md).
+3. **Delegated/user rows** land via `managers.json` (coexistence spec P-B,
+   with ADR-0007) rather than growing this table per machine.
+
+The go toolchain has no bulk-update verb (`go install -u` does not exist;
+per-module paths would need module discovery outside the executor seam), so
+there is no go-install row; the same reasoning skips deno.
 
 ## Snapshot & diff (U2)
 

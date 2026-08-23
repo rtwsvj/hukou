@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 	"os"
 	"path/filepath"
 	"strings"
@@ -354,4 +356,162 @@ func TestExtractPoisonCandidateBudgetYieldsToExactMatch(t *testing.T) {
 			t.Fatalf("err=%v, want candidate-budget error", err)
 		}
 	})
+}
+
+// buildTarXzStream is buildTarGzStream for the xz codec: full header
+// control, including hostile ones.
+func buildTarXzStream(t *testing.T, entries []tar.Header, bodies [][]byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hostile.tar.xz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xw, err := xz.NewWriter(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := tar.NewWriter(xw)
+	for i, h := range entries {
+		if err := w.WriteHeader(&h); err != nil {
+			t.Fatal(err)
+		}
+		if i < len(bodies) && bodies[i] != nil {
+			if _, err := w.Write(bodies[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestExtractPoisonTarXzMemberBudget proves the MaxHeaderEntries discovery
+// budget applies to the xz path identically to the gzip path.
+func TestExtractPoisonTarXzMemberBudget(t *testing.T) {
+	var headers []tar.Header
+	for i := range MaxHeaderEntries + 1 {
+		headers = append(headers, regularHeader(fmt.Sprintf("f%05d.txt", i), 0, 0o644))
+	}
+
+	path := buildTarXzStream(t, headers, nil)
+	dest := t.TempDir()
+	if _, err := Extract(openArchive(t, path), dest, "tool"); err == nil || !strings.Contains(err.Error(), "member budget") {
+		t.Fatalf("expected member-budget error, got %v", err)
+	}
+}
+
+func TestExtractPoisonTarXzTraversal(t *testing.T) {
+	for _, name := range []string{"../evil", "/abs/evil", "a/../../evil"} {
+		path := buildTarXzStream(t, []tar.Header{regularHeader(name, 4, 0o755)}, [][]byte{[]byte("evil")})
+		dest := t.TempDir()
+		if _, err := Extract(openArchive(t, path), dest, "evil"); err == nil {
+			t.Fatalf("traversal %q: expected rejection", name)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "evil")); !os.IsNotExist(err) {
+			t.Fatalf("traversal %q wrote outside dest", name)
+		}
+	}
+}
+
+// TestExtractZstRoundTrip covers the single-file zstd reader end to end:
+// decode, rename to wantName, executable mode, exact content.
+func TestExtractZstRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"tool.zst", "tool.tzst"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, name)
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			zw, err := zstd.NewWriter(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := zw.Write([]byte("zstd binary data")); err != nil {
+				t.Fatal(err)
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			dest := t.TempDir()
+			out, err := Extract(openArchive(t, path), dest, "tool")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := filepath.Base(out); got != "tool" {
+				t.Fatalf("want tool, got %s", got)
+			}
+			if got := readFile(t, out); got != "zstd binary data" {
+				t.Fatalf("unexpected content: %q", got)
+			}
+			info, err := os.Stat(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm()&0o111 == 0 {
+				t.Fatalf("extracted zst not executable: %v", info.Mode())
+			}
+		})
+	}
+}
+
+// TestExtractPoisonZstJunk fails closed on bytes that are not a zstd
+// stream instead of producing an empty or partial binary.
+func TestExtractPoisonZstJunk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "junk.zst")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{0x00}, 64), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if _, err := Extract(openArchive(t, path), dest, "tool"); err == nil {
+		t.Fatal("junk zstd stream must fail")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "tool")); !os.IsNotExist(err) {
+		t.Fatalf("junk zstd left an output file behind: %v", err)
+	}
+}
+
+// TestExtractPoisonBz2StillUnsupported locks the documented G1 boundary:
+// bz2 stays unsupported (restic-class demand only) and must fail closed
+// with an error naming the format, never degrade to a bare install.
+func TestExtractPoisonBz2StillUnsupported(t *testing.T) {
+	for _, name := range []string{"tool.bz2", "tool.tar.bz2", "tool.tbz", "tool.tbz2"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("BZh fake bz2 payload"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			dest := t.TempDir()
+			out, err := Extract(openArchive(t, path), dest, "tool")
+			if err == nil {
+				t.Fatalf("%s must remain unsupported", name)
+			}
+			if !strings.Contains(err.Error(), "unsupported archive format") || !strings.Contains(err.Error(), name) {
+				t.Fatalf("%s: error must name the format as unsupported, got %v", name, err)
+			}
+			if out != "" {
+				t.Fatalf("%s: extraction returned a path %q", name, out)
+			}
+			if _, statErr := os.Stat(filepath.Join(dest, "tool")); !os.IsNotExist(statErr) {
+				t.Fatalf("%s was treated as a bare binary", name)
+			}
+		})
+	}
 }

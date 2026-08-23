@@ -3,6 +3,8 @@ package assetpick
 import (
 	"strings"
 	"testing"
+
+	"github.com/rtwsvj/hukou/internal/archive"
 )
 
 // Real-world release asset name lists, all evaluated from the darwin/arm64
@@ -245,10 +247,27 @@ func TestPickSkipsTXZWhenZipAvailable(t *testing.T) {
 	}
 }
 
-func TestPickOnlyXZReturnsUnsupported(t *testing.T) {
+func TestPickOnlyXZCapabilityDependent(t *testing.T) {
 	assets := []string{
 		"tool_1.2.3_darwin_arm64.tar.xz",
 		"tool_1.2.3_darwin_arm64.txz",
+	}
+	if archive.FormatTarXz.Supported() {
+		// Both candidates are installable and the tiebreak waterfall has no
+		// preference between tar.xz spellings, so this must fail closed with
+		// an explicit --asset demand rather than guess.
+		_, _, err := Pick(assets, "darwin", "arm64", "")
+		if err == nil || !strings.Contains(err.Error(), "multiple matching assets") {
+			t.Fatalf("expected ambiguity error, got %v", err)
+		}
+		got, note, err := Pick(assets, "darwin", "arm64", "txz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != assets[1] || !strings.Contains(note, "asset-filter") {
+			t.Fatalf("got %q note %q; want filtered %q", got, note, assets[1])
+		}
+		return
 	}
 	_, _, err := Pick(assets, "darwin", "arm64", "")
 	if err == nil {
@@ -261,14 +280,35 @@ func TestPickOnlyXZReturnsUnsupported(t *testing.T) {
 	}
 }
 
-func TestPickAssetFilterCannotForceUnsupportedXZ(t *testing.T) {
+func TestPickAssetFilterHonorsFormatCapability(t *testing.T) {
 	assets := []string{
 		"tool_1.2.3_darwin_arm64.tar.xz",
 		"tool_1.2.3_darwin_arm64.zip",
 	}
-	_, _, err := Pick(assets, "darwin", "arm64", "tar.xz")
-	if err == nil {
+	if archive.FormatTarXz.Supported() {
+		// Since ADR-0008 tar.xz is installable, so an explicit --asset filter
+		// may legitimately select it over the zip.
+		got, note, err := Pick(assets, "darwin", "arm64", "tar.xz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "tool_1.2.3_darwin_arm64.tar.xz" || !strings.Contains(note, "asset-filter") {
+			t.Fatalf("got %q note %q; want filtered tar.xz", got, note)
+		}
+		return
+	}
+	if _, _, err := Pick(assets, "darwin", "arm64", "tar.xz"); err == nil {
 		t.Fatal("asset filter must not force an unsupported archive")
+	}
+}
+
+func TestPickAssetFilterCannotForceUnsupportedBZ2(t *testing.T) {
+	assets := []string{
+		"tool_1.2.3_darwin_arm64.bz2",
+		"tool_1.2.3_darwin_arm64.zip",
+	}
+	if _, _, err := Pick(assets, "darwin", "arm64", "bz2"); err == nil {
+		t.Fatal("asset filter must not force a genuinely unsupported format")
 	}
 }
 

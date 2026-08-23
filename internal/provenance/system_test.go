@@ -7,8 +7,12 @@ import (
 	"github.com/rtwsvj/hukou/internal/scan"
 )
 
-func TestSystemDetector(t *testing.T) {
+// TestSystemDetector_darwin exercises the full macOS prefix set (Apple
+// system roots, Xcode CLT, /System/Volumes carve-out) via the injected-goos
+// hook, so it runs identically on every host.
+func TestSystemDetector_darwin(t *testing.T) {
 	d := NewSystemDetector()
+	d.goos = "darwin"
 	env := Env{XcodeCLT: "/Library/Developer/CommandLineTools"}
 	if err := d.Load(env); err != nil {
 		t.Fatal(err)
@@ -41,6 +45,77 @@ func TestSystemDetector(t *testing.T) {
 		if a != nil && a.Source != "system" {
 			t.Errorf("%s: source=%s", tc.path, a.Source)
 		}
+	}
+}
+
+// TestSystemDetector_goosMatrix asserts the MS-6 gating: macOS-only inputs
+// (/System, /Library/Apple, Xcode CLT) are registered on darwin only; other
+// GOOSes keep the portable Unix core prefixes and never attribute Apple
+// paths. Runs on every host via the injected-goos hook.
+func TestSystemDetector_goosMatrix(t *testing.T) {
+	cases := []struct {
+		name    string
+		goos    string
+		xcode   string // XcodeCLT env value ("" = unset)
+		path    string
+		wantHit bool
+	}{
+		{name: "linux-core-bin", goos: "linux", path: "/bin/ls", wantHit: true},
+		{name: "linux-core-usrbin", goos: "linux", path: "/usr/bin/env", wantHit: true},
+		{name: "linux-core-sbin", goos: "linux", path: "/sbin/ip", wantHit: true},
+		{name: "linux-core-libexec", goos: "linux", path: "/usr/libexec/Thing", wantHit: true},
+		{name: "linux-no-system-prefix", goos: "linux", path: "/System/Library/CoreServices/foo", wantHit: false},
+		{name: "linux-no-apple-library", goos: "linux", path: "/Library/Apple/usr/bin/python3", wantHit: false},
+		{name: "linux-no-xcodeclt", goos: "linux", path: "/Library/Developer/CommandLineTools/usr/bin/clang", wantHit: false},
+		{name: "windows-no-core", goos: "windows", path: "/usr/bin/env", wantHit: false},
+		{
+			name:    "darwin-system-hit",
+			goos:    "darwin",
+			xcode:   "/Library/Developer/CommandLineTools",
+			path:    "/System/Library/CoreServices/foo",
+			wantHit: true,
+		},
+		{
+			name:    "darwin-volumes-carveout",
+			goos:    "darwin",
+			xcode:   "/Library/Developer/CommandLineTools",
+			path:    "/System/Volumes/Data/usr/local/bin/foo",
+			wantHit: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewSystemDetector()
+			d.goos = tc.goos
+			env := Env{}
+			if tc.xcode != "" {
+				env.XcodeCLT = tc.xcode
+			}
+			if err := d.Load(env); err != nil {
+				t.Fatal(err)
+			}
+			a := d.Match(scan.Binary{Name: "x", Path: tc.path, RealPath: tc.path})
+			if tc.wantHit && a == nil {
+				t.Errorf("goos %s: expected system hit for %s", tc.goos, tc.path)
+			}
+			if !tc.wantHit && a != nil {
+				t.Errorf("goos %s: unexpected hit %+v for %s", tc.goos, a, tc.path)
+			}
+		})
+	}
+}
+
+// TestSystemDetector_windowsInert: with the windows gate, Load registers no
+// prefixes at all — the detector cannot attribute anything.
+func TestSystemDetector_windowsInert(t *testing.T) {
+	d := NewSystemDetector()
+	d.goos = "windows"
+	if err := d.Load(Env{}); err != nil {
+		t.Fatal(err)
+	}
+	a := d.Match(scan.Binary{Name: "ls", Path: "/bin/ls", RealPath: "/bin/ls"})
+	if a != nil {
+		t.Fatalf("windows detector must be inert, got %+v", a)
 	}
 }
 

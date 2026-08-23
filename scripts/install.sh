@@ -314,6 +314,11 @@ fi
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar >/dev/null 2>&1 || die "tar is required"
 
+# Dependency floor (PF-6, see README "Documented floors"): beyond curl and
+# tar above, atomic activation additionally requires Perl or GNU/BusyBox
+# ln/mv with -T support; activate_* below refuses with that named dependency
+# when neither primitive exists rather than installing non-atomically.
+
 if [ "$VERSION" = latest ]; then
   EFFECTIVE_URL=$(curl -fsSL --proto "$CURL_PROTOCOLS" --proto-redir "$CURL_PROTOCOLS" \
     -o /dev/null -w '%{url_effective}' "${RELEASE_BASE_URL}/latest") || die "cannot resolve latest release"

@@ -19,7 +19,7 @@ func TestResolvePublisherChecksumMatch(t *testing.T) {
 	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
 	checksums := map[string]string{assetName: digest}
 
-	verified, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, false)
+	verified, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, "", false)
 	if err != nil {
 		t.Fatalf("match: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestResolvePublisherChecksumMismatch(t *testing.T) {
 	want := strings.Repeat("b", 64)
 	checksums := map[string]string{assetName: want}
 
-	verified, err := resolvePublisherChecksum(got, assetName, "checksums.txt", checksums, false)
+	verified, err := resolvePublisherChecksum(got, assetName, "checksums.txt", checksums, "", false)
 	if err == nil {
 		t.Fatal("expected mismatch error")
 	}
@@ -45,7 +45,7 @@ func TestResolvePublisherChecksumMismatch(t *testing.T) {
 		t.Fatalf("error = %v, want checksum mismatch", err)
 	}
 	// --allow-unverified must not bypass a present-but-mismatched publisher digest.
-	if _, err := resolvePublisherChecksum(got, assetName, "checksums.txt", checksums, true); err == nil {
+	if _, err := resolvePublisherChecksum(got, assetName, "checksums.txt", checksums, "", true); err == nil {
 		t.Fatal("allow-unverified must not bypass checksum mismatch")
 	}
 }
@@ -55,7 +55,7 @@ func TestResolvePublisherChecksumMissingEntry(t *testing.T) {
 	digest := strings.Repeat("a", 64)
 	checksums := map[string]string{"other.tar.gz": digest}
 
-	verified, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, false)
+	verified, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, "", false)
 	if err == nil {
 		t.Fatal("expected missing-entry error")
 	}
@@ -69,7 +69,7 @@ func TestResolvePublisherChecksumMissingEntry(t *testing.T) {
 		t.Fatalf("error = %v, want ErrNoChecksum class", err)
 	}
 	// Present checksum asset with a missing selected-entry is still fail-closed.
-	if _, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, true); err == nil {
+	if _, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, "", true); err == nil {
 		t.Fatal("allow-unverified must not bypass missing entry in a present checksum asset")
 	}
 }
@@ -78,7 +78,7 @@ func TestResolvePublisherChecksumSourceMissingFailClosed(t *testing.T) {
 	assetName := "tool.tar.gz"
 	digest := strings.Repeat("c", 64)
 
-	verified, err := resolvePublisherChecksum(digest, assetName, "", nil, false)
+	verified, err := resolvePublisherChecksum(digest, assetName, "", nil, "", false)
 	if err == nil {
 		t.Fatal("expected fail-closed error when no checksum asset")
 	}
@@ -97,12 +97,72 @@ func TestResolvePublisherChecksumSourceMissingAllowUnverified(t *testing.T) {
 	assetName := "tool.tar.gz"
 	digest := strings.Repeat("d", 64)
 
-	verified, err := resolvePublisherChecksum(digest, assetName, "", nil, true)
+	verified, err := resolvePublisherChecksum(digest, assetName, "", nil, "", true)
 	if err != nil {
 		t.Fatalf("allow-unverified: %v", err)
 	}
 	if verified {
 		t.Fatal("bypass must keep checksum_verified=false")
+	}
+}
+
+func TestResolvePublisherChecksumAPIDigestMatch(t *testing.T) {
+	assetName := "tool.tar.gz"
+	digest := strings.Repeat("e", 64)
+	upper := strings.ToUpper(digest)
+
+	verified, err := resolvePublisherChecksum(digest, assetName, "", nil, upper, false)
+	if err != nil {
+		t.Fatalf("api-digest match: %v", err)
+	}
+	if !verified {
+		t.Fatal("api-digest match must report verified=true")
+	}
+}
+
+func TestResolvePublisherChecksumAPIDigestMismatchHardRefusal(t *testing.T) {
+	assetName := "tool.tar.gz"
+	got := strings.Repeat("a", 64)
+	apiDigest := strings.Repeat("b", 64)
+
+	for _, allowUnverified := range []bool{false, true} {
+		verified, err := resolvePublisherChecksum(got, assetName, "", nil, apiDigest, allowUnverified)
+		if err == nil {
+			t.Fatalf("allowUnverified=%v: expected hard refusal on contradictory evidence", allowUnverified)
+		}
+		if verified {
+			t.Fatalf("allowUnverified=%v: mismatch must not report verified", allowUnverified)
+		}
+		if !strings.Contains(err.Error(), apiDigest) || !strings.Contains(err.Error(), got) {
+			t.Fatalf("allowUnverified=%v: error = %v, must name both digests", allowUnverified, err)
+		}
+		if !strings.Contains(err.Error(), "digest mismatch") {
+			t.Fatalf("allowUnverified=%v: error = %v, want digest mismatch", allowUnverified, err)
+		}
+	}
+}
+
+func TestResolvePublisherChecksumChecksumAssetWinsOverAPI(t *testing.T) {
+	assetName := "tool.tar.gz"
+	digest := strings.Repeat("f", 64)
+	checksums := map[string]string{assetName: digest}
+
+	// checksumAsset present wins even when the API carries no digest.
+	verified, err := resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, "", false)
+	if err != nil {
+		t.Fatalf("checksum asset path: %v", err)
+	}
+	if !verified {
+		t.Fatal("checksum asset path must report verified=true")
+	}
+	// A wrong API digest must not matter while the checksum asset verifies:
+	// the map is authoritative when present.
+	verified, err = resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, strings.Repeat("9", 64), false)
+	if err != nil {
+		t.Fatalf("checksum asset with unrelated api digest: %v", err)
+	}
+	if !verified {
+		t.Fatal("checksum asset must win over api digest")
 	}
 }
 

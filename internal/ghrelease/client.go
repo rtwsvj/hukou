@@ -51,6 +51,9 @@ type Asset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+	// Digest carries the raw GitHub API asset digest ("sha256:<hex>" when
+	// present). Empty for releases that do not publish one.
+	Digest string `json:"digest,omitempty"`
 }
 
 type Client struct {

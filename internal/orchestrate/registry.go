@@ -26,8 +26,13 @@ type Manager struct {
 	Internal bool
 }
 
-// Registry returns the v1 manager table in execution order. Adding a manager is
-// one row here plus one fixture test; breadth is deliberately not a goal.
+// Registry returns the manager table in execution order. Adding a manager is
+// one row here plus one fixture test, under the layered admission policy
+// documented in docs/specs/phase3-up.md: a built-in row requires an
+// atomic-ish inventory (the manager keeps its own install ledger, so the
+// snapshot diff can attribute what it changed) and no root requirement;
+// privileged system package managers stay out pending a privilege-model ADR;
+// user-delegated rows arrive via managers.json (P-B).
 //
 // The table mirrors docs/specs/phase3-up.md exactly.
 func Registry() []Manager {
@@ -36,7 +41,28 @@ func Registry() []Manager {
 		{Name: "npm", DetectBinary: "npm", Commands: [][]string{{"npm", "update", "-g"}}},
 		{Name: "pnpm", DetectBinary: "pnpm", Commands: [][]string{{"pnpm", "update", "-g"}}},
 		{Name: "rustup", DetectBinary: "rustup", Commands: [][]string{{"rustup", "update"}}},
+		// cargo-install upgrades `cargo install`ed crates through the
+		// third-party cargo-update helper. Detection is gated on the helper
+		// binary itself, not on cargo: registry detection is a PATH stat and
+		// cannot prove a subcommand exists, and `install-update` is not a
+		// first-class cargo subcommand — gating on cargo would activate the
+		// row on every rust machine without the helper, whose step then fails
+		// (StatusFailed, exit -1) and flips the aggregate `up` exit non-zero
+		// on every run. Detecting the helper keeps detect⇒run exact: the
+		// stat'ed binary is the executed argv[0].
+		//
+		// Diff limitation: `-a` updates registry crates only; git-installed
+		// crates are skipped (cargo-update's default) and can therefore never
+		// appear in a diff.
+		{Name: "cargo-install", DetectBinary: "cargo-install-update", Commands: [][]string{{"cargo-install-update", "-a"}}},
 		{Name: "uv", DetectBinary: "uv", Commands: [][]string{{"uv", "tool", "upgrade", "--all"}}},
+		// pipx bulk-upgrades every pipx-managed venv with one verb. Diff
+		// limitation: the upgrade happens inside each venv while the diff
+		// observes only the PATH launcher stubs (reported version + sha256),
+		// so a venv-internal upgrade that leaves the stub byte-identical is
+		// invisible. Injected packages are not upgraded (no
+		// --include-injected).
+		{Name: "pipx", DetectBinary: "pipx", Commands: [][]string{{"pipx", "upgrade-all"}}},
 		{Name: "gh-extensions", DetectBinary: "gh", Commands: [][]string{{"gh", "extension", "upgrade", "--all"}}},
 		{Name: "hukou", DetectBinary: "", Internal: true, Commands: [][]string{{"hukou", "upgrade", "--all"}}},
 	}

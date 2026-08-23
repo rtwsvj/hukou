@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/rtwsvj/hukou/internal/durablefs"
-	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/orchestrate"
 	"github.com/rtwsvj/hukou/internal/orchestrate/executor"
@@ -199,7 +198,10 @@ func productionUpDeps(streamOut, stderr io.Writer, opts upOptions) upDeps {
 // for its own duration. ctx carries the step's soft budget, checked at tool
 // boundaries inside doUpgradeCtx.
 func defaultHukouStep(ctx context.Context, stdout, stderr io.Writer) error {
-	client := ghrelease.New(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
+	client, err := newGitHubClient(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
+	if err != nil {
+		return err
+	}
 	return doUpgradeCtx(ctx, stdout, stderr, nil, true, false, "", client, false)
 }
 

@@ -39,7 +39,10 @@ func init() {
 }
 
 func runSuggest(cmd *cobra.Command, args []string) error {
-	client := ghrelease.New(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
+	client, err := newGitHubClient(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
+	if err != nil {
+		return fail(err)
+	}
 	return doSuggest(cmd.OutOrStdout(), args[0], client, suggestJSON)
 }
 

@@ -20,7 +20,7 @@ The following defects already have implementations and local tests, but can only
 | Default rollback selection | The V0.3 subject now uses the manifest v2 activation parent and no longer reads mtime; the lineage fault matrix and fixed-commit regression have passed; v0.2 still has the old behavior | Continue observing real-user migration before public release |
 | Manifest corruption | The V0.3 branch already has fingerprint-bound backup restore, but it only accepts cases where main is missing/invalid, the backup is semantically valid, the transaction is clean, and all live SHAs match | Keep the action narrow; do not expand into automatic merge/guessed recovery |
 | Orphaned store versions | doctor distinguishes tools outside the manifest from legitimately retained versions, and only reports without deleting | Explicit, item-by-item quarantine + undo, not a repair-all |
-| tar.xz | Explicitly unsupported | Decide whether to introduce an xz dependency |
+| Archive codecs | tar.xz/.txz and zst/.tzst are extracted via the pure-Go codec allowlist adopted in [ADR-0008](adr/ADR-0008-archive-codec-policy.md); bz2, bare xz/zst containers, plain tar, and installer images (dmg/msi/deb/rpm) remain recognized-but-refused fail-closed | Any further codec enters only through the ADR-0008 allowlist; revisit bz2 only when a demanded upstream ships it |
 | Version comparison | The V0.3 subject already has SemVer/GitHub-latest, channel, pin, and downgrade protection; local/isolated Linux gating passes, but no public-fixture network smoke test has been done | Only claim public stability after a public-fixture smoke test |
 | Fixed retention of 3 versions | The V0.3 subject switched to global/entry rollback depth plus a lineage/pin/pending protection set; the fixed-commit fault matrix passes | Observe history growth, then design compression/archiving rather than guessed deletion |
 | Real network coverage | PRs use httptest only | Independent fixture smoke test |
@@ -66,6 +66,22 @@ The following defects already have implementations and local tests, but can only
 - Ownership attribution for npm wrappers, nvm, and custom prefixes cannot always be precisely reconstructed.
 - Empty PATH segments are deliberately skipped, not interpreted as CWD per POSIX.
 - Detection results are an evidence-driven best judgment, not a software-supply-chain proof.
+
+## Portability Floors (Explicit Known Limits)
+
+The portability audit ([docs/specs/portability-plan.md](specs/portability-plan.md))
+records two environment floors. They are accepted design boundaries — visible
+refusals, not silent degradation — and are documented in the README platform
+matrix:
+
+- **PF-6 — BusyBox/minimal hosts (installer activation).** The shell
+  installer's final commit needs atomic `link(2)`/`rename(2)` semantics that
+  POSIX `ln`/`mv` cannot express. Hosts without Perl or GNU/BusyBox
+  `-T`-mode tools get a named dependency error instead of an installation.
+- **PF-1 — Archive-format ceiling.** Extraction supports tar.gz/tgz, zip,
+  single-file gz, bare binaries, and (since ADR-0008's codec allowlist)
+  tar.xz/.txz plus zst/.tzst. Assets in other formats fail closed with a
+  clear error naming the format.
 
 ## Release and Engineering Risks
 

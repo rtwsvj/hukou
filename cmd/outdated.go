@@ -5,7 +5,6 @@ import (
 	"io"
 	"sort"
 
-	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/i18n"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/output"
@@ -32,7 +31,10 @@ func init() {
 }
 
 func runOutdated(cmd *cobra.Command, args []string) error {
-	client := ghrelease.New(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
+	client, err := newGitHubClient(firstEnv("GITHUB_TOKEN", "GH_TOKEN"))
+	if err != nil {
+		return fail(err)
+	}
 	return fail(doOutdated(cmd.OutOrStdout(), args, outdatedJSON, outdatedAsset, client))
 }
 

@@ -1,9 +1,11 @@
 // Package archive extracts binary assets from various archive formats.
 //
-// Supported formats: tar.gz/tgz, zip, single-file gz (renamed to the wanted
-// binary name), and bare files. tar.xz/txz are intentionally unsupported
-// because the Go standard library does not include an xz decompressor; callers
-// receive a clear error rather than treating either format as a bare binary.
+// Supported formats: tar.gz/tgz, zip, single-file gz, tar.xz/txz, single-file
+// zst, and bare files. Known-but-unpackable formats (bz2 variants, bare xz,
+// tar-over-zstd containers, exotic installers) fail closed with a clear
+// error rather than being treated as bare binaries. The xz and zstd codecs
+// are admitted under the dependency allowlist in
+// docs/adr/ADR-0008-archive-codec-policy.md (reader-only, pure Go).
 package archive
 
 import (
@@ -11,7 +13,9 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"errors"
+	"github.com/klauspost/compress/zstd"
 	"github.com/rtwsvj/hukou/internal/i18n"
+	"github.com/ulikunitz/xz"
 	"io"
 	"os"
 	"path/filepath"
@@ -72,7 +76,9 @@ func Extract(f *os.File, destDir, wantName string) (string, error) {
 	case FormatTarGz:
 		return extractTarGz(f, destDir, wantName)
 	case FormatTarXz:
-		return "", i18n.Errorf("xz archives are not supported yet (.tar.xz/.txz)")
+		return extractTarXz(f, destDir, wantName)
+	case FormatZst:
+		return extractZst(f, destDir, wantName)
 	case FormatUnsupported:
 		return "", i18n.Errorf("unsupported archive format: %s", filepath.Base(f.Name()))
 	case FormatZip:
@@ -117,6 +123,64 @@ func extractTarGz(f *os.File, destDir, wantName string) (string, error) {
 	return extractTarEntry(f, destDir, target)
 }
 
+// extractTarXz extracts a tar archive compressed with xz (.tar.xz/.txz).
+//
+// Like extractTarGz this is two passes over the SAME verified descriptor,
+// but xz readers are single-shot: once a pass has drained the stream to EOF
+// the decoder cannot be rewound, so pass 2 seeks back to offset 0 and opens
+// a fresh decoder. Both passes still consume only the bytes already hashed
+// by the caller — nothing is reopened by path.
+func extractTarXz(f *os.File, destDir, wantName string) (string, error) {
+	// First pass: inspect headers without writing anything.
+	target, err := findTarTargetXz(f, wantName)
+	if err != nil {
+		return "", err
+	}
+
+	// Second pass: rewind and extract the chosen entry with a fresh xz
+	// stream.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", i18n.Wrapf("rewind archive: %w", err)
+	}
+	return extractTarEntryXz(f, destDir, target)
+}
+
+// extractZst decodes a single-file zstd stream (.zst/.tzst) and renames the
+// decoded output to wantName, mirroring extractGz for the zstd codec
+// admitted by docs/adr/ADR-0008-archive-codec-policy.md.
+func extractZst(f *os.File, destDir, wantName string) (string, error) {
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return "", i18n.Wrapf("open zstd: %w", err)
+	}
+	defer zr.Close()
+
+	outPath, err := safeJoin(destDir, wantName)
+	if err != nil {
+		return "", err
+	}
+	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return "", err
+	}
+	n, err := io.Copy(out, io.LimitReader(zr, MaxEntryBytes+1))
+	if err != nil {
+		out.Close()
+		os.Remove(outPath)
+		return "", err
+	}
+	if n > MaxEntryBytes {
+		out.Close()
+		os.Remove(outPath)
+		return "", i18n.Errorf("archive entry exceeds size limit of %d bytes", MaxEntryBytes)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(outPath)
+		return "", err
+	}
+	return outPath, nil
+}
+
 type tarEntry struct {
 	name string
 	mode int64
@@ -128,13 +192,31 @@ func findTarTarget(f *os.File, wantName string) (string, error) {
 		return "", i18n.Wrapf("open gzip: %w", err)
 	}
 	defer gz.Close()
+	return findTarTargetStream(gz, wantName)
+}
 
+// findTarTargetXz runs the discovery pass over an xz-compressed tar stream.
+// The decoder is single-shot, but that is fine here: discovery reads each
+// byte exactly once.
+func findTarTargetXz(f *os.File, wantName string) (string, error) {
+	xr, err := xz.NewReader(f)
+	if err != nil {
+		return "", i18n.Wrapf("open xz: %w", err)
+	}
+	return findTarTargetStream(xr, wantName)
+}
+
+// findTarTargetStream applies the documented selection rule (exact basename
+// match first, then the sole executable-looking entry) to a decompressed
+// tar stream. It enforces every discovery budget: MaxHeaderEntries,
+// MaxDeclaredBytes, and MaxExecCandidates.
+func findTarTargetStream(r io.Reader, wantName string) (string, error) {
 	// Discovery-pass budgets: refuse pathological archives before any body
 	// is read. Fail closed, naming the violated budget.
 	var examined int
 	var declared int64
 
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(r)
 
 	var exact *tarEntry
 	var candidates []tarEntry
@@ -209,8 +291,25 @@ func extractTarEntry(f *os.File, destDir, wantEntry string) (string, error) {
 		return "", i18n.Wrapf("open gzip: %w", err)
 	}
 	defer gz.Close()
+	return extractTarEntryStream(gz, destDir, wantEntry)
+}
 
-	tr := tar.NewReader(gz)
+// extractTarEntryXz extracts the chosen entry from an xz-compressed tar
+// stream using a fresh decoder; see extractTarXz for why pass 2 cannot
+// reuse pass 1's reader.
+func extractTarEntryXz(f *os.File, destDir, wantEntry string) (string, error) {
+	xr, err := xz.NewReader(f)
+	if err != nil {
+		return "", i18n.Wrapf("open xz: %w", err)
+	}
+	return extractTarEntryStream(xr, destDir, wantEntry)
+}
+
+// extractTarEntryStream walks a decompressed tar stream and writes exactly
+// one regular entry — the one matching wantEntry — through writeLimited,
+// which enforces safeJoin and the per-entry/total byte caps.
+func extractTarEntryStream(r io.Reader, destDir, wantEntry string) (string, error) {
+	tr := tar.NewReader(r)
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {

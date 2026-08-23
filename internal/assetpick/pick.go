@@ -46,28 +46,42 @@ var darwinBlacklistExts = map[string]bool{
 // when non-empty, narrows the candidates by substring (a leading '^' inverts
 // the match). It returns the chosen asset name, a note describing which
 // tiebreak path (if any) produced the choice, and an error only when nothing
-// remains after filtering.
+// installable remains after filtering.
+//
+// Before any ranking runs, candidates are partitioned by installability:
+// extractable archives and true bare executables are preferred, while
+// application containers (.appimage/.dmg/.pkg), archive formats hukou cannot
+// extract, and platform-less archives that look like upstream source trees
+// are demoted. The demoted partition is considered only when nothing
+// preferred exists, and selecting from it emits a warning note naming the
+// limitation. This partitioning keeps the vendored detector's OS-priority
+// shortcut (e.g. the Linux .AppImage preference) from beating the real
+// archive the same release also ships (PF-4), and keeps the detector's
+// all-assets last resort from silently installing a source tarball.
+//
+// detect.go is intentionally left untouched (vendored eget): the fix lives
+// entirely in this waterfall layer.
 func Pick(assets []string, goos, goarch, assetFilter string) (string, string, error) {
-	original := assets
-
-	// (1) capability + blacklist prefilter. Known archive formats that hukou
-	// cannot extract must be removed before the system detector can select a
-	// direct match (which would otherwise bypass the tiebreak waterfall).
-	var filtered []string
-	for _, a := range assets {
-		if !archive.DetectFormat(a).Supported() {
-			continue
-		}
-		if blacklisted(a, goos) {
-			continue
-		}
-		filtered = append(filtered, a)
-	}
-	if len(filtered) == 0 {
-		return "", "", noCandidatesErr(original, goos, goarch)
+	sd, err := NewSystemDetector(goos, goarch)
+	if err != nil {
+		return "", "", err
 	}
 
-	// (2) optional --asset substring filter (reuses eget SingleAssetDetector).
+	preferred, demoted := partition(assets, goos)
+
+	pool := preferred
+	var notes []string
+	if len(preferred) == 0 {
+		if len(demoted) == 0 {
+			return "", "", noCandidatesErr(assets, goos, goarch)
+		}
+		pool = demotedNames(demoted)
+		notes = fallbackNotes(demoted)
+	}
+
+	// Optional --asset substring filter (reuses eget SingleAssetDetector),
+	// applied inside the selected partition: a filter can narrow the choice
+	// but never promote a demoted candidate back over a preferred one.
 	if assetFilter != "" {
 		anti := false
 		needle := assetFilter
@@ -76,41 +90,171 @@ func Pick(assets []string, goos, goarch, assetFilter string) (string, string, er
 			needle = needle[1:]
 		}
 		d := &SingleAssetDetector{Asset: needle, Anti: anti}
-		choice, cands, _ := d.Detect(filtered)
+		choice, cands, _ := d.Detect(pool)
 		switch {
 		case choice != "":
-			return choice, "asset-filter", nil
+			notes = append(notes, "asset-filter")
+			return choice, strings.Join(notes, ","), nil
 		case len(cands) > 0:
-			filtered = cands
+			pool = cands
 		default:
-			return "", "", noCandidatesErr(original, goos, goarch)
+			return "", "", noCandidatesErr(assets, goos, goarch)
 		}
 	}
 
-	// (3) primary OS/Arch match via the vendored SystemDetector.
-	sd, err := NewSystemDetector(goos, goarch)
-	if err != nil {
-		return "", "", err
-	}
-	choice, cands, _ := sd.Detect(filtered)
+	// Primary OS/Arch match via the vendored SystemDetector.
+	choice, cands, _ := sd.Detect(pool)
 	if choice != "" {
-		return choice, "", nil
+		return choice, strings.Join(notes, ","), nil
 	}
 	if len(cands) == 0 {
-		return "", "", noCandidatesErr(original, goos, goarch)
+		return "", "", noCandidatesErr(assets, goos, goarch)
 	}
 
-	// (4) deterministic tiebreak waterfall on the remaining candidates.
-	var notes []string
+	// Deterministic tiebreak waterfall on the remaining candidates. The
+	// fallback notes (if any) are carried through: they must survive the
+	// tiebreak's note accumulation, not be overwritten by it.
 	cands, notes = tiebreak(cands, goos, goarch, notes)
 
 	if len(cands) == 1 {
 		return cands[0], strings.Join(notes, ","), nil
 	}
 
-	// (5) still ambiguous: fail closed and require an explicit --asset filter.
+	// Still ambiguous: fail closed and require an explicit --asset filter.
 	sort.Strings(cands)
 	return "", strings.Join(notes, ","), i18n.Errorf("multiple matching assets; use --asset to choose one: %s", strings.Join(cands, ", "))
+}
+
+// appContainerExts are single-file application containers: self-mounting or
+// runtime-dependent bundles that DetectFormat classifies as bare files but
+// that hukou cannot install as a working binary (an AppImage needs libfuse2
+// and a mount; .dmg/.pkg are OS image/installer formats). They are demoted
+// below every extractable archive and every true bare executable.
+var appContainerExts = map[string]bool{
+	".appimage": true,
+	".dmg":      true,
+	".pkg":      true,
+}
+
+// refusal pairs a rejected asset with the reason it can never be installed
+// correctly, so a total refusal can name every dropped candidate.
+type refusal struct {
+	name   string
+	reason string
+}
+
+// partition splits assets into the installable-preferred pool and the demoted
+// pool, applying the OS-specific extension blacklist to both. Demotion
+// reasons, most specific first:
+//
+//   - unsupported format: DetectFormat says hukou cannot extract it;
+//   - likely source archive: an archive whose stem names neither any known
+//     operating system nor any known architecture (release engineering
+//     attaches platform tokens to compiled artifacts);
+//   - application container: .appimage/.dmg/.pkg (see appContainerExts).
+func partition(assets []string, goos string) (preferred []string, demoted []refusal) {
+	for _, a := range assets {
+		if blacklisted(a, goos) {
+			continue
+		}
+		switch {
+		case !archive.DetectFormat(a).Supported():
+			demoted = append(demoted, refusal{a, "unsupported format " + formatLimit(a)})
+		case looksLikeSourceArchive(a):
+			demoted = append(demoted, refusal{a, "likely source archive"})
+		case appContainerExts[effectiveExt(a)]:
+			demoted = append(demoted, refusal{a, "application container"})
+		default:
+			preferred = append(preferred, a)
+		}
+	}
+	return preferred, demoted
+}
+
+// demotedNames extracts the asset names from a partition result.
+func demotedNames(demoted []refusal) []string {
+	names := make([]string, 0, len(demoted))
+	for _, r := range demoted {
+		names = append(names, r.name)
+	}
+	return names
+}
+
+// fallbackNotes builds the warning lines emitted when selection had to
+// settle for demoted candidates. Each distinct limiting format contributes
+// one "<format>-fallback" note through the standard note channel; the
+// source-archive demotion contributes "source-fallback". Notes are sorted
+// so the warning does not depend on API asset order.
+func fallbackNotes(demoted []refusal) []string {
+	seen := map[string]bool{}
+	var notes []string
+	for _, r := range demoted {
+		var limit string
+		switch {
+		case strings.HasPrefix(r.reason, "unsupported format "):
+			limit = strings.TrimPrefix(r.reason, "unsupported format ")
+		case r.reason == "application container":
+			limit = strings.TrimPrefix(effectiveExt(r.name), ".")
+		default:
+			limit = "source"
+		}
+		if seen[limit] {
+			continue
+		}
+		seen[limit] = true
+		notes = append(notes, limit+"-fallback")
+	}
+	sort.Strings(notes)
+	return notes
+}
+
+// noInstallableErr explains a total refusal: every non-blacklisted candidate
+// was demoted, so downloading any of them cannot yield a working install.
+func noInstallableErr(goos, goarch string, demoted []refusal) error {
+	parts := make([]string, 0, len(demoted))
+	for _, r := range demoted {
+		parts = append(parts, r.name+" ("+r.reason+")")
+	}
+	sort.Strings(parts)
+	return i18n.Errorf("no installable asset for %s/%s; all candidates were refused: %s", goos, goarch, strings.Join(parts, ", "))
+}
+
+// formatLimit names the concrete archive format of an asset DetectFormat
+// refuses to install, for use in refusal errors and warning notes.
+func formatLimit(name string) string {
+	if ext := effectiveExt(name); ext != "" {
+		return strings.TrimPrefix(ext, ".")
+	}
+	return "unrecognized"
+}
+
+// looksLikeSourceArchive reports whether name is a compressed or multi-file
+// archive whose stem names neither any known operating system nor any known
+// architecture. Compiled release artifacts carry platform tokens; a
+// platform-less archive is almost certainly the upstream source tree, which
+// hukou cannot install. Bare files are exempt: they are installed directly,
+// so there is nothing to mis-extract.
+func looksLikeSourceArchive(name string) bool {
+	if archive.DetectFormat(name) == archive.FormatBare {
+		return false
+	}
+	return !namesAnyPlatform(name)
+}
+
+// namesAnyPlatform reports whether s matches any known OS or architecture
+// matcher from the vendored detector tables.
+func namesAnyPlatform(s string) bool {
+	for _, osm := range goosmap {
+		if ok, _ := osm.Match(s); ok {
+			return true
+		}
+	}
+	for _, arch := range goarchmap {
+		if arch.Match(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // tiebreak applies the arch-preference, 32-bit drop, and archive-format

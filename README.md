@@ -219,6 +219,25 @@ where it runs daily; the other targets are cross-compiled release builds, with
 release-archive smoke checks on Linux amd64. Independent verification on real
 hardware is welcome — please open an issue with what you saw.
 
+### Documented floors
+
+Two environment floors are deliberate design boundaries rather than bugs; see
+[docs/specs/portability-plan.md](docs/specs/portability-plan.md) for the full
+portability audit.
+
+**BusyBox / minimal hosts (installer).** The shell installer's final
+activation step commits the destination entry atomically (`link(2)` /
+`rename(2)` semantics), which POSIX `ln`/`mv` cannot express. A host therefore
+needs either `perl` or GNU/BusyBox `ln -T`/`mv -T`; without one of them the
+installer **refuses with a named dependency error** instead of performing a
+non-atomic install.
+
+**Archive formats.** Release assets are extracted for tar.gz/tgz, zip,
+gz-single-file, and bare binaries, plus tar.xz/.txz and zst/.tzst via pure-Go
+codecs. Formats outside that set (bz2, bare xz/zst, plain tar, and installer
+images such as dmg/msi/deb/rpm) are recognized but refused with a clear error
+rather than guessed at.
+
 ## Security model
 
 hukou rewrites executable files and stores rollback material, so integrity,
@@ -271,6 +290,7 @@ hukou/
 | `HUKOU_DATA_DIR` | Override the entire hukou data root |
 | `XDG_DATA_HOME` | Select the default data root |
 | `GITHUB_TOKEN`, `GH_TOKEN` | Raise GitHub API limits; never forwarded to download hosts |
+| `HUKOU_GITHUB_BASE_URL` | Point release lookups at a GitHub Enterprise Server or mirror (e.g. `https://ghe.example.com/api/v3`); HTTPS enforced except localhost/127.0.0.1. The `--github-base-url` flag wins when both are set; see the [CLI reference](docs/05-cli-reference.md#github-enterprise-server-and-mirrors) |
 | `HUKOU_REQUIRE_ATTESTATION` | Require installer attestation verification (`1`/`true`/`yes`) |
 | `HUKOU_LANG` | Select the UI language (`zh` for Chinese); when unset, hukou follows the system locale, including the macOS GUI locale (a Chinese system shows a Chinese UI automatically) |
 | `HUKOU_DOWNLOAD_MIN_SPEED` | Download throughput floor (bytes/s, default 32768); below it for the grace period a download counts as stalled |

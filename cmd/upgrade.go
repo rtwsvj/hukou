@@ -73,7 +73,10 @@ func init() {
 
 func runUpgrade(cmd *cobra.Command, args []string) error {
 	token := firstEnv("GITHUB_TOKEN", "GH_TOKEN")
-	client := ghrelease.New(token)
+	client, err := newGitHubClient(token)
+	if err != nil {
+		return fail(err)
+	}
 	// Surface advisory download retries (system-proxy fallback) on stderr.
 	client.Log = func(msg string) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", msg)
@@ -243,10 +246,14 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 
 	var assetURL string
 	var assetSize int64
+	var apiDigestHex string
 	for _, a := range release.Assets {
 		if a.Name == chosen {
 			assetURL = a.BrowserDownloadURL
 			assetSize = a.Size
+			if hex, ok := verify.ParseAPIDigest(a.Digest); ok {
+				apiDigestHex = hex
+			}
 			break
 		}
 	}
@@ -302,13 +309,18 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 
 	// Fail closed: a publisher checksum must match when present; when absent,
 	// refuse unless the operator explicitly opted into --allow-unverified.
-	// There is no silent-pass path when tools or data are missing.
-	checksumVerified, err := resolvePublisherChecksum(assetSHA, chosen, checksumAsset, checksums, allowUnverified)
+	// There is no silent-pass path when tools or data are missing. An API
+	// digest that contradicts the downloaded asset is also a hard refusal.
+	checksumVerified, err := resolvePublisherChecksum(assetSHA, chosen, checksumAsset, checksums, apiDigestHex, allowUnverified)
 	if err != nil {
 		return err
 	}
 	if checksumVerified {
-		fmt.Fprintf(stderr, "%s\n", i18n.T("checksum ok: %s sha256=%s (from %s)", chosen, assetSHA, checksumAsset))
+		source := checksumAsset
+		if source == "" {
+			source = "(api-digest)"
+		}
+		fmt.Fprintf(stderr, "%s\n", i18n.T("checksum ok: %s sha256=%s (from %s)", chosen, assetSHA, source))
 	} else {
 		// allow-unverified path only — resolvePublisherChecksum returns an error
 		// for every other unverified case.
@@ -460,7 +472,14 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 	}
 	newEntry.AssetName = chosen
 	newEntry.AssetSHA256 = assetSHA
+	// The api-digest evidence path verifies without a downloaded checksum
+	// asset; the audit marker "(api-digest)" keeps checksum_verified entries
+	// carrying complete provenance (manifest validateEntry requires a non-empty
+	// ChecksumAsset) while remaining distinguishable from file-based evidence.
 	newEntry.ChecksumAsset = checksumAsset
+	if newEntry.ChecksumAsset == "" && checksumVerified {
+		newEntry.ChecksumAsset = "(api-digest)"
+	}
 	newEntry.ChecksumVerified = checksumVerified
 	afterManifest := cloneManifest(m)
 	afterManifest.Put(newEntry)
@@ -546,23 +565,39 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 }
 
 // resolvePublisherChecksum enforces the fail-closed publisher-checksum policy
-// for a downloaded release asset.
+// for a downloaded release asset. Two independent evidence sources exist:
 //
-//   - When a checksum asset is present, the selected asset must have a valid
-//     matching entry. Mismatch, missing entry, or invalid digest all fail.
-//     --allow-unverified does not bypass a present-but-unusable checksum.
-//   - When no checksum asset is present, installation is refused unless
-//     allowUnverified is true. There is no silent pass path.
+//   - checksumAsset: a checksums.txt / sidecar asset downloaded from the
+//     release and parsed into checksums. When present it wins as before: the
+//     selected asset must have a valid matching entry, and mismatch, missing
+//     entry, or invalid digest all fail. --allow-unverified does not bypass a
+//     present-but-unusable checksum.
+//   - apiDigestHex: the digest published in the release API's own asset
+//     metadata (same Release struct the asset URL came from — nothing new is
+//     fetched). When no checksum asset exists but an apiDigestHex was
+//     extracted from that metadata, it must EqualFold-match assetSHA:
+//     match records verified evidence ("(api-digest)"), mismatch is a hard
+//     error naming both digests — --allow-unverified cannot override
+//     contradictory evidence.
+//   - With neither source, installation stays refused unless allowUnverified
+//     is true. There is no silent pass path.
 //
-// On success, verified is true only when a publisher digest was compared and
+// On success, verified is true only when publisher evidence was compared and
 // matched. Callers must record assetSHA / checksumAsset / verified into the
-// manifest audit fields (AssetSHA256, ChecksumAsset, ChecksumVerified).
-func resolvePublisherChecksum(assetSHA, assetName, checksumAsset string, checksums map[string]string, allowUnverified bool) (verified bool, err error) {
+// manifest audit fields (AssetSHA256, ChecksumAsset, ChecksumVerified); the
+// api-digest path reports checksumAsset="(api-digest)".
+func resolvePublisherChecksum(assetSHA, assetName, checksumAsset string, checksums map[string]string, apiDigestHex string, allowUnverified bool) (verified bool, err error) {
 	if checksumAsset != "" {
 		if err := verify.VerifyAssetDigest(assetSHA, assetName, checksums); err != nil {
 			return false, i18n.Wrapf("verify checksum from %s: %w", err, checksumAsset)
 		}
 		return true, nil
+	}
+	if apiDigestHex != "" {
+		if strings.EqualFold(assetSHA, apiDigestHex) {
+			return true, nil
+		}
+		return false, i18n.Errorf("release asset %s digest mismatch: API digest sha256=%s does not match downloaded asset sha256=%s; refusing install (--allow-unverified does not override contradictory evidence)", assetName, strings.ToLower(apiDigestHex), strings.ToLower(assetSHA))
 	}
 	if allowUnverified {
 		return false, nil

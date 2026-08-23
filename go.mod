@@ -5,8 +5,10 @@ go 1.26.2
 toolchain go1.26.6
 
 require (
+	github.com/klauspost/compress v1.19.2
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
+	github.com/ulikunitz/xz v0.5.16
 	golang.org/x/mod v0.38.0
 )
 

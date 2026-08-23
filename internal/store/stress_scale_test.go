@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -109,20 +108,10 @@ func TestVersionFloodAndPrune(t *testing.T) {
 // Leak smoke: repeated adopt+store transactions must not leak file descriptors
 // or leave transaction residue.
 func TestRepeatedAdoptNoFdLeak(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("fd counting via lsof is macOS-specific here")
-	}
-	countFD := func() int {
-		out, err := exec.Command("lsof", "-p", fmt.Sprintf("%d", os.Getpid())).Output()
-		if err != nil {
-			t.Skipf("lsof unavailable: %v", err)
-		}
-		return strings.Count(string(out), "\n")
-	}
 	root := t.TempDir()
 	s := &Store{Root: root}
-	before := countFD()
-	for i := 0; i < 300; i++ {
+	before := countFDs(t)
+	for i := range 300 {
 		name := fmt.Sprintf("tool%d", i)
 		src := filepath.Join(t.TempDir(), name)
 		if err := os.WriteFile(src, []byte("x"), 0o755); err != nil {
@@ -135,8 +124,63 @@ func TestRepeatedAdoptNoFdLeak(t *testing.T) {
 			t.Fatalf("Put %d: %v", i, err)
 		}
 	}
-	after := countFD()
+	after := countFDs(t)
 	if after > before+8 {
 		t.Fatalf("fd leak: before=%d after=%d", before, after)
 	}
+}
+
+// procSelfFD is the Linux procfs directory listing this process's open file
+// descriptors. It is a variable so tests can exercise the counting logic on
+// hosts without procfs.
+var procSelfFD = "/proc/self/fd"
+
+// countFDs reports how many file descriptors this process holds open, using
+// whichever source the running platform provides: procfs on Linux, lsof
+// elsewhere (macOS). The calling test is skipped only when neither source
+// exists, so the regression genuinely executes on Linux CI instead of
+// silently passing behind a GOOS gate.
+func countFDs(t *testing.T) int {
+	t.Helper()
+	if entries, err := os.ReadDir(procSelfFD); err == nil {
+		// Reading /proc/self/fd momentarily holds the directory fd itself,
+		// so the count can exceed the steady-state by one; the leak
+		// comparison tolerates far more than that.
+		return len(entries)
+	}
+	out, err := exec.Command("lsof", "-p", fmt.Sprintf("%d", os.Getpid())).Output()
+	if err != nil {
+		t.Skipf("no fd-counting source available (no readable %s; lsof: %v)", procSelfFD, err)
+	}
+	return strings.Count(string(out), "\n")
+}
+
+// The leak comparison above is only as trustworthy as its fd counter. Pin the
+// counter down on every platform: the procfs branch must count a synthetic
+// directory exactly, and the live probe must return a plausible positive
+// number wherever a source exists.
+func TestCountFDsCounter(t *testing.T) {
+	t.Run("procfs counts synthetic directory entries", func(t *testing.T) {
+		fake := filepath.Join(t.TempDir(), "fd")
+		if err := os.Mkdir(fake, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"0", "1", "2"} {
+			if err := os.WriteFile(filepath.Join(fake, name), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prev := procSelfFD
+		procSelfFD = fake
+		t.Cleanup(func() { procSelfFD = prev })
+		if got := countFDs(t); got != 3 {
+			t.Fatalf("countFDs = %d, want 3", got)
+		}
+	})
+	t.Run("live probe finds a counting source", func(t *testing.T) {
+		// Skips by itself on hosts with neither procfs nor lsof.
+		if got := countFDs(t); got < 1 {
+			t.Fatalf("countFDs = %d, want at least the stdio descriptors", got)
+		}
+	})
 }

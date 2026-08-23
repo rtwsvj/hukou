@@ -34,7 +34,7 @@ func writeExe(t *testing.T, dir, name string) {
 func TestRegistry_v1TableMatchesSpec(t *testing.T) {
 	got := Registry()
 
-	wantNames := []string{"brew", "npm", "pnpm", "rustup", "uv", "gh-extensions", "hukou"}
+	wantNames := []string{"brew", "npm", "pnpm", "rustup", "cargo-install", "uv", "pipx", "gh-extensions", "hukou"}
 	if len(got) != len(wantNames) {
 		t.Fatalf("registry size = %d, want %d", len(got), len(wantNames))
 	}
@@ -62,6 +62,19 @@ func TestRegistry_v1TableMatchesSpec(t *testing.T) {
 	if !hukou.Internal || hukou.DetectBinary != "" {
 		t.Fatalf("hukou row = %+v, want internal with empty DetectBinary", hukou)
 	}
+	// cargo-install detects via the cargo-update helper binary, not via
+	// `cargo`: detection cannot probe subcommands, so gating on cargo would
+	// activate the row (and then fail) on every rust machine lacking the
+	// helper.
+	if byName["cargo-install"].DetectBinary != "cargo-install-update" {
+		t.Fatalf("cargo-install DetectBinary = %q, want cargo-install-update", byName["cargo-install"].DetectBinary)
+	}
+	if want := [][]string{{"cargo-install-update", "-a"}}; !reflect.DeepEqual(byName["cargo-install"].Commands, want) {
+		t.Fatalf("cargo-install commands = %v, want %v", byName["cargo-install"].Commands, want)
+	}
+	if want := [][]string{{"pipx", "upgrade-all"}}; !reflect.DeepEqual(byName["pipx"].Commands, want) {
+		t.Fatalf("pipx commands = %v, want %v", byName["pipx"].Commands, want)
+	}
 
 	// Every command must be a non-empty argv slice (never a shell string).
 	for _, m := range got {
@@ -78,9 +91,12 @@ func TestRegistry_v1TableMatchesSpec(t *testing.T) {
 
 func TestDetect_fakePATHExactMatch(t *testing.T) {
 	dir := t.TempDir()
-	// Only brew and npm are "installed" on this fake PATH.
+	// brew, npm, and the cargo-update helper are "installed" on this fake
+	// PATH; cargo itself is deliberately absent to prove the cargo-install
+	// row keys on the helper, not on cargo.
 	writeExe(t, dir, "brew")
 	writeExe(t, dir, "npm")
+	writeExe(t, dir, "cargo-install-update")
 
 	detected := Detect(Registry(), dirLookPath(dir))
 
@@ -89,7 +105,9 @@ func TestDetect_fakePATHExactMatch(t *testing.T) {
 		"npm":           true,
 		"pnpm":          false,
 		"rustup":        false,
+		"cargo-install": true, // helper present, even though `cargo` is not
 		"uv":            false,
+		"pipx":          false,
 		"gh-extensions": false,
 		"hukou":         true, // internal: always available.
 	}
@@ -125,9 +143,9 @@ func TestDetect_internalNeverProbesPATH(t *testing.T) {
 	if !hukou.Available || hukou.BinaryPath != "" {
 		t.Fatalf("internal hukou = %+v, want available with no binary path", hukou)
 	}
-	// lookPath is called once per external manager (6), never for hukou.
-	if len(probed) != 6 {
-		t.Fatalf("lookPath calls = %d (%v), want 6 externals only", len(probed), probed)
+	// lookPath is called once per external manager (8), never for hukou.
+	if len(probed) != 8 {
+		t.Fatalf("lookPath calls = %d (%v), want 8 externals only", len(probed), probed)
 	}
 	for _, name := range probed {
 		if name == "" {
@@ -156,8 +174,8 @@ func TestFilter_skip(t *testing.T) {
 			t.Fatalf("skip left %s in the set", m.Name)
 		}
 	}
-	if len(got) != 5 {
-		t.Fatalf("skip result size = %d, want 5", len(got))
+	if len(got) != 7 {
+		t.Fatalf("skip result size = %d, want 7", len(got))
 	}
 }
 
@@ -177,6 +195,46 @@ func TestFilter_unknownName(t *testing.T) {
 	}
 	if _, err := Filter(Registry(), nil, []string{"nope"}); err == nil {
 		t.Fatal("expected error for unknown --skip name")
+	}
+}
+
+// TestRegistry_orderingStable: the table order is execution order; inserting
+// new rows must not reshuffle the existing ones. Pins the full sequence.
+func TestRegistry_orderingStable(t *testing.T) {
+	want := []string{"brew", "npm", "pnpm", "rustup", "cargo-install", "uv", "pipx", "gh-extensions", "hukou"}
+	if names := managerNames(Registry()); !reflect.DeepEqual(names, want) {
+		t.Fatalf("registry order = %v, want %v (order is execution order)", names, want)
+	}
+}
+
+// TestFilter_newRows: the added rows behave like any other registry key in
+// --only/--skip, including the helper-gated cargo-install row.
+func TestFilter_newRows(t *testing.T) {
+	got, err := Filter(Registry(), []string{"pipx", "cargo-install"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := managerNames(got); !reflect.DeepEqual(names, []string{"cargo-install", "pipx"}) {
+		t.Fatalf("only [pipx cargo-install] = %v, want registry order preserved", names)
+	}
+
+	got, err = Filter(Registry(), nil, []string{"cargo-install"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range got {
+		if m.Name == "cargo-install" {
+			t.Fatal("skip left cargo-install in the set")
+		}
+	}
+
+	// UnknownManagerError semantics are unchanged for the new rows' neighbors:
+	// a name that was unknown before this change stays unknown after it.
+	if _, err := Filter(Registry(), []string{"go-install"}, nil); err == nil {
+		t.Fatal("go-install must not be a registry key")
+	}
+	if _, err := Filter(Registry(), nil, []string{"deno"}); err == nil {
+		t.Fatal("deno must not be a registry key")
 	}
 }
 

@@ -202,6 +202,16 @@ upstream/asset/event ID, environment variables, username, HOME, binaries, or
 WAL payload. `--format json` writes to stdout; `--output` writes exactly one
 `0600` file; neither one connects to the network or uploads anything.
 
+## Provenance detector environment
+
+The scan attributes binaries through a fixed detector chain whose roots are
+built per GOOS: macOS-only inputs (Homebrew, MacPorts, Xcode CLT,
+`/Applications`, Apple system prefixes) are registered on darwin only, and
+`pip install --user` scripts are attributed from `~/Library/Python/<ver>/bin`
+(darwin) or the flat `~/.local/bin` (Linux). The local-project detector uses
+`~/Projects` by default; setting `HUKOU_PROJECTS_DIR=<dir>` overrides it, and
+the value is trusted as given (an operator override may point outside HOME).
+
 ## GitHub API
 
 - metadata: legacy stable uses `GET /repos/{owner}/{repo}/releases/latest`;

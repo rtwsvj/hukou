@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"github.com/ulikunitz/xz"
 	"io"
 	"os"
 	"path/filepath"
@@ -443,39 +444,66 @@ func TestExtractBareFile(t *testing.T) {
 	}
 }
 
-func TestExtractTarXzUnsupported(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "archive.tar.xz")
-	if err := os.WriteFile(path, []byte("not real xz"), 0o644); err != nil {
+// xzEntry is one regular-file member of a test xz tarball.
+type xzEntry struct {
+	name string
+	body string
+	mode int64
+}
+
+// writeTarXzFile writes a real xz-compressed tar archive at path.
+func writeTarXzFile(t *testing.T, path string, entries []xzEntry) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	_, err := Extract(openArchive(t, path), t.TempDir(), "tool")
-	if err == nil {
-		t.Fatal("expected xz error")
+	defer f.Close()
+	xw, err := xz.NewWriter(f)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "xz archives are not supported") {
-		t.Fatalf("unexpected error: %v", err)
+	w := tar.NewWriter(xw)
+	for _, e := range entries {
+		if err := w.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode, Size: int64(len(e.body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(e.body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestExtractTXZUnsupported(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "archive.txz")
-	if err := os.WriteFile(path, []byte("not real xz"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// TestExtractTarXzExtractsTool covers the G1 reader: a legitimate .tar.xz
+// release asset must extract exactly like its tar.gz counterpart.
+func TestExtractTarXzExtractsTool(t *testing.T) {
+	for _, name := range []string{"archive.tar.xz", "archive.txz", "archive.TXZ"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, name)
+			writeTarXzFile(t, src, []xzEntry{
+				{"docs/README.md", "docs", 0o644},
+				{"tool", "xz binary data", 0o755},
+			})
 
-	dest := t.TempDir()
-	_, err := Extract(openArchive(t, path), dest, "tool")
-	if err == nil {
-		t.Fatal("expected xz error")
-	}
-	if !strings.Contains(err.Error(), "xz archives are not supported") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(dest, "tool")); !os.IsNotExist(statErr) {
-		t.Fatalf("txz was treated as a bare binary: %v", statErr)
+			dest := t.TempDir()
+			out, err := Extract(openArchive(t, src), dest, "tool")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := filepath.Base(out); got != "tool" {
+				t.Fatalf("want tool, got %s", got)
+			}
+			if got := readFile(t, out); got != "xz binary data" {
+				t.Fatalf("unexpected content: %q", got)
+			}
+		})
 	}
 }
 
@@ -489,16 +517,31 @@ func TestDetectFormatSupport(t *testing.T) {
 		{"tool.TGZ", FormatTarGz, true},
 		{"tool.zip", FormatZip, true},
 		{"tool.gz", FormatGz, true},
-		{"tool.tar.xz", FormatTarXz, false},
-		{"tool.TXZ", FormatTarXz, false},
+		{"tool.tar.xz", FormatTarXz, true},
+		{"tool.TXZ", FormatTarXz, true},
+		{"tool.zst", FormatZst, true},
+		{"tool.ZST", FormatZst, true},
+		{"tool.tzst", FormatZst, true},
 		{"tool.tar.zst", FormatUnsupported, false},
 		{"tool.tar.bz2", FormatUnsupported, false},
+		{"tool.tbz", FormatUnsupported, false},
+		{"tool.tbz2", FormatUnsupported, false},
+		{"tool.bz2", FormatUnsupported, false},
+		{"tool.xz", FormatUnsupported, false},
 		{"tool.tar", FormatUnsupported, false},
 		{"tool.tar.lz4", FormatUnsupported, false},
 		{"tool.7z", FormatUnsupported, false},
+		{"tool.rar", FormatUnsupported, false},
 		{"tool.dmg", FormatUnsupported, false},
+		{"tool.pkg", FormatUnsupported, false},
 		{"tool.deb", FormatUnsupported, false},
+		{"tool.rpm", FormatUnsupported, false},
+		{"tool.apk", FormatUnsupported, false},
+		{"tool.msi", FormatUnsupported, false},
 		{"tool.iso", FormatUnsupported, false},
+		{"tool.cab", FormatUnsupported, false},
+		{"tool.lz4", FormatUnsupported, false},
+		{"tool.something.tar.suffix", FormatUnsupported, false},
 		{"tool", FormatBare, true},
 	}
 	for _, tc := range cases {

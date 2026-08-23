@@ -39,8 +39,8 @@ type Env struct {
 	MiseData           string
 	AsdfDir            string
 	NixStore           string // /nix/store
-	MacPorts           string // /opt/local
-	XcodeCLT           string // /Library/Developer/CommandLineTools
+	MacPorts           string // /opt/local (registered on darwin only)
+	XcodeCLT           string // /Library/Developer/CommandLineTools (darwin only)
 	PipxVenvs          []string
 	UVTools            string
 	PipUserBase        string
@@ -48,9 +48,11 @@ type Env struct {
 	GemBinDirs         []string
 	CurlInstallerRoots []CurlInstallerRoot
 
-	// macOS .app bundles and local project trees.
-	ApplicationsDirs []string // /Applications, ~/Applications
-	ProjectsDir      string   // ~/Projects
+	// macOS .app bundle directories (populated on darwin only) and the local
+	// project tree. ProjectsDir defaults to ~/Projects; HUKOU_PROJECTS_DIR
+	// overrides it and is trusted as given.
+	ApplicationsDirs []string
+	ProjectsDir      string
 
 	HukouManifest string // Path to hukou's own manifest.json.
 }
@@ -60,9 +62,16 @@ type CurlInstallerRoot struct {
 	Package string
 }
 
-// DefaultEnv builds Env from the process environment and fixed candidate paths.
-// This is the only place os.Getenv is allowed for provenance configuration.
+// DefaultEnv builds Env from the process environment and fixed candidate
+// paths for runtime.GOOS. This is the only place os.Getenv is allowed for
+// provenance configuration.
 func DefaultEnv() Env {
+	return goosEnv(runtime.GOOS)
+}
+
+// goosEnv builds DefaultEnv for an explicit GOOS so tests can assert the
+// full darwin/linux/windows matrix on any host.
+func goosEnv(goos string) Env {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		home = os.Getenv("HOME")
@@ -81,8 +90,6 @@ func DefaultEnv() Env {
 		GoBin:       os.Getenv("GOBIN"),
 		GoPath:      os.Getenv("GOPATH"),
 		NixStore:    "/nix/store",
-		MacPorts:    "/opt/local",
-		XcodeCLT:    "/Library/Developer/CommandLineTools",
 		CargoHome:   filepath.Join(home, ".cargo"),
 		RustupHome:  filepath.Join(home, ".rustup"),
 		LocalShare:  xdgData,
@@ -93,20 +100,38 @@ func DefaultEnv() Env {
 		KrewRoot:    filepath.Join(home, ".krew"),
 		MiseData:    filepath.Join(xdgData, "mise"),
 		AsdfDir:     filepath.Join(home, ".asdf"),
-		UVTools:     filepath.Join(xdgData, "uv", "tools"),
-		PipUserBase: filepath.Join(home, "Library", "Python"),
+	}
+	switch goos {
+	case "darwin":
+		e.MacPorts = "/opt/local"
+		e.XcodeCLT = "/Library/Developer/CommandLineTools"
+		e.PipUserBase = filepath.Join(home, "Library", "Python")
+		e.ApplicationsDirs = []string{
+			"/Applications",
+			filepath.Join(home, "Applications"),
+		}
+	case "windows":
+		// pip user scripts land in %APPDATA%\Python\Scripts; no detector
+		// models that layout yet — PipUserBase stays unset (detector inert).
+	default:
+		// Linux and the rest: `pip install --user` scripts land directly in
+		// ~/.local/bin with no version component.
+		if home != "" {
+			e.PipUserBase = filepath.Join(home, ".local")
+		}
+	}
+	switch goos {
+	case "darwin":
+		e.BrewPrefixes = []string{"/opt/homebrew", "/usr/local"}
+		e.PnpmHome = filepath.Join(home, "Library", "pnpm")
+	default:
+		e.BrewPrefixes = []string{"/home/linuxbrew/.linuxbrew", "/usr/local"}
+		e.PnpmHome = filepath.Join(xdgData, "pnpm")
 	}
 	if v := os.Getenv("HUKOU_DATA_DIR"); v != "" {
 		e.HukouManifest = filepath.Join(v, "manifest.json")
 	} else {
 		e.HukouManifest = filepath.Join(xdgData, "hukou", "manifest.json")
-	}
-	if runtime.GOOS == "darwin" {
-		e.BrewPrefixes = []string{"/opt/homebrew", "/usr/local"}
-		e.PnpmHome = filepath.Join(home, "Library", "pnpm")
-	} else {
-		e.BrewPrefixes = []string{"/home/linuxbrew/.linuxbrew", "/usr/local"}
-		e.PnpmHome = filepath.Join(xdgData, "pnpm")
 	}
 	e.YarnBin = filepath.Join(home, ".yarn", "bin")
 	e.BunHome = filepath.Join(home, ".bun")
@@ -160,11 +185,11 @@ func DefaultEnv() Env {
 		{Dir: filepath.Join(home, ".codex", "packages"), Package: "codex"},
 		{Dir: filepath.Join(home, ".hermes"), Package: "hermes"},
 	}
-	e.ApplicationsDirs = []string{
-		"/Applications",
-		filepath.Join(home, "Applications"),
+	if v := os.Getenv("HUKOU_PROJECTS_DIR"); v != "" {
+		e.ProjectsDir = v
+	} else if home != "" {
+		e.ProjectsDir = filepath.Join(home, "Projects")
 	}
-	e.ProjectsDir = filepath.Join(home, "Projects")
 	return e
 }
 

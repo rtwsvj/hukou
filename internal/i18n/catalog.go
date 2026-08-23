@@ -948,10 +948,12 @@ errors and always exit non-zero after the report is written.`: `receipt 从本�
 	"executable not found on PATH":     "PATH 上找不到该程序",
 	"apply update policy: %v":          "应用更新策略：%v",
 	" (policy reapplied)":              "（策略已重新应用）",
-	"warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q":                                                                         "警告：%s：导出标签 %q 无法离线验证；改记二进制实际版本 %q",
-	"warning: %s: exported tag %q and the binary's actual version %q are both semantic versions but disagree; recording the actual version %q":                                     "警告：%s：导出标签 %q 与二进制实际版本 %q 均为语义化版本但不一致；改记实际版本 %q",
-	"warning: %s: binary carries no usable build metadata; untrusted semantic tag %q replaced by the neutral sentinel imported (offline import cannot bind a digest to a release)": "警告：%s：二进制不携带可用的构建元数据；不可信的语义化标签 %q 已替换为中立哨兵值 imported（离线导入无法将摘要绑定到某个发布版本）",
-	"warning: %s: exported tag %q could not be verified offline; recording it as an advisory label only":                                                                           "警告：%s：导出标签 %q 无法离线验证；仅作为参考标签记录",
+	"warning: %s: exported tag %q could not be verified offline; recording the binary's actual version %q":                                                                             "警告：%s：导出标签 %q 无法离线验证；改记二进制实际版本 %q",
+	"warning: %s: exported tag %q and the binary's actual version %q are both semantic versions but disagree; recording the actual version %q":                                         "警告：%s：导出标签 %q 与二进制实际版本 %q 均为语义化版本但不一致；改记实际版本 %q",
+	"warning: %s: binary carries no usable build metadata; untrusted semantic tag %q replaced by the neutral sentinel imported (offline import cannot bind a digest to a release)":     "警告：%s：二进制不携带可用的构建元数据；不可信的语义化标签 %q 已替换为中立哨兵值 imported（离线导入无法将摘要绑定到某个发布版本）",
+	"warning: %s: exported tag %q could not be verified offline; recording it as an advisory label only":                                                                               "警告：%s：导出标签 %q 无法离线验证；仅作为参考标签记录",
+	"GitHub API base URL override (default https://api.github.com); overrides HUKOU_GITHUB_BASE_URL; HTTPS enforced except localhost/127.0.0.1":                                        "GitHub API 基址覆盖（默认 https://api.github.com）；优先于 HUKOU_GITHUB_BASE_URL；localhost/127.0.0.1 之外强制 HTTPS",
+	"release asset %s digest mismatch: API digest sha256=%s does not match downloaded asset sha256=%s; refusing install (--allow-unverified does not override contradictory evidence)": "发布资产 %s 指纹不符：API 指纹 sha256=%s 与下载资产指纹 sha256=%s 不一致；拒绝安装（--allow-unverified 不能覆盖相互矛盾的证据）",
 	`export writes a portable, machine-readable list of every adopted tool
 (its repository, tag, archive-internal name, SHA-256, and update policy) so
 the same set can be re-registered on another machine with "hukou import".
@@ -976,16 +978,19 @@ skipped with a warning; a missing executable is a per-tool error. The exported
 update policy (channel/pin) is re-applied when it differs from the adopt
 default.
 
-The exported tag is advisory: import records the binary's honest local
+The exported tag is advisory only: import records the binary's honest local
 version (from its Go build information) whenever one can be derived, and
-falls back to the exported tag — with an explicit warning that its
-provenance is unverified — only for builds without usable version metadata.
+replaces an exported semantic version tag with the neutral "imported"
+sentinel when the binary carries no usable build metadata — offline import
+cannot bind a digest to a release, so untrusted semantic tags are never
+recorded. Non-semantic exported tags survive as advisory labels with an
+explicit unverified-provenance warning.
 --dry-run prints the whole plan and writes nothing; --only restricts
 the run to the named tools. The exit status is non-zero when any tool fails.`: `import 在本机重新登记 "hukou export" 清单中记录的工具。
 
 对每个 github 条目，该可执行文件必须已在 PATH 上存在：import 会完整重跑收编检查（含归属门，可用 --force 覆盖），绝不下载任何东西。已收编的条目以警告跳过；本地条目（无仓库）无法重建，以警告跳过；找不到可执行文件是逐工具错误。导出的更新策略（通道/锁定）与收编默认值不同时会被重新应用。
 
-导出标签仅供参考：只要能推导出二进制的真实本地版本（来自其 Go 构建信息），import 就会记录真实版本；仅当构建没有可用的版本元数据时，才回退到导出标签——并显式警告其来源未经核实。--dry-run 打印完整计划且不写任何内容；--only 限定只处理指定工具。任一工具失败时退出码非零。`,
+导出标签仅供参考：只要能推导出二进制的真实本地版本（来自其 Go 构建信息），import 就会记录真实版本；当二进制不携带可用的构建元数据时，不可信的语义化标签会被替换为中立的 "imported" 哨兵值——离线导入无法将摘要绑定到某个发布版本，因此绝不记录不可信的语义化标签。非语义化的导出标签仅作为参考标签保留，并显式警告来源未经核实。--dry-run 打印完整计划且不写任何内容；--only 限定只处理指定工具。任一工具失败时退出码非零。`,
 	// ---- suggest (B2) ----
 	"Suggest GitHub repositories for an unmanaged binary (read-only)": "为无人管理的程序建议 GitHub 仓库（只读）",
 	"search GitHub repositories: %w":                                  "搜索 GitHub 仓库：%w",

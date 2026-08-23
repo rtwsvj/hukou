@@ -179,15 +179,6 @@ func saveManifest(m *manifest.Manifest) error {
 
 func rfc3339Now() string { return time.Now().Format(time.RFC3339) }
 
-func firstEnv(names ...string) string {
-	for _, n := range names {
-		if v := os.Getenv(n); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func splitRepo(repo string) (owner, repoName string, ok bool) {
 	parts := strings.Split(repo, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
