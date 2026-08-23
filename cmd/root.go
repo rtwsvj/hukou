@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/rtwsvj/hukou/internal/i18n"
+	"github.com/rtwsvj/hukou/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -22,18 +23,18 @@ deterministic rollback, and inspectable local state.`,
 }
 
 // Seams for tests: unit tests swap these out to avoid needing a real
-// character-device stdout or a live menu.
+// interactive terminal or a live menu.
 var (
-	stdoutStatFunc = func() (os.FileInfo, error) { return os.Stdout.Stat() }
-	menuRunner     = runInteractiveMenu
+	stdoutIsTTY = func() bool { return ui.IsTerminal(os.Stdout) }
+	stdinIsTTY  = func() bool { return ui.IsTerminal(os.Stdin) }
+	menuRunner  = runInteractiveMenu
 )
 
 // runRoot implements the root command's bare-invocation branch: enter the
 // interactive menu when shouldEnterMenu says the session looks interactive,
 // and print help exactly as before otherwise.
 func runRoot(cmd *cobra.Command, args []string) error {
-	fi, err := stdoutStatFunc()
-	if err == nil && shouldEnterMenu(args, os.Getenv, fi) {
+	if shouldEnterMenu(args, os.Getenv, stdoutIsTTY(), stdinIsTTY()) {
 		return menuRunner(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 	return cmd.Help()
@@ -43,17 +44,17 @@ func runRoot(cmd *cobra.Command, args []string) error {
 // interactive menu instead of printing help. Every condition must hold:
 //
 //   - no positional arguments (any explicit subcommand wins),
-//   - stdout is a character device (an interactive terminal),
+//   - BOTH stdin and stdout are interactive terminals. A plain character-
+//     device check is not sufficient: /dev/null is a character device, and a
+//     raw-mode menu fed from it hangs (EOF without a quit event). The x/term
+//     ioctl check distinguishes real terminals,
 //   - HUKOU_NO_MENU is unset or empty (explicit opt-out),
 //   - TERM is not "dumb" (no usable terminal rendering).
-func shouldEnterMenu(args []string, getenv func(string) string, stdoutStat os.FileInfo) bool {
+func shouldEnterMenu(args []string, getenv func(string) string, stdoutTTY, stdinTTY bool) bool {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
-	if len(args) != 0 || stdoutStat == nil {
-		return false
-	}
-	if stdoutStat.Mode()&os.ModeCharDevice == 0 {
+	if len(args) != 0 || !stdoutTTY || !stdinTTY {
 		return false
 	}
 	if getenv("HUKOU_NO_MENU") != "" {

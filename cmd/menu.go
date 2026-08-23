@@ -27,7 +27,7 @@ or a file) the command refuses to start. Bare ` + "`hukou`" + ` opens the
 same menu automatically when the session looks interactive; set
 HUKOU_NO_MENU=1 to keep the plain help output instead.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if !isInteractiveWriter(cmd.OutOrStdout()) {
+		if !isInteractiveWriter(cmd.OutOrStdout()) || !ui.IsTerminal(os.Stdin) {
 			return fail(i18n.Errorf("menu needs an interactive terminal; rerun without redirecting stdout"))
 		}
 		return runInteractiveMenu(cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -52,6 +52,13 @@ func init() {
 //   - external output streams naturally (nothing intercepts the terminal
 //     while an action runs), and
 //   - the menu redraws from a clean slate on every re-entry.
+//
+// Known limitation (accepted): bubbletea consumes stdin in raw mode, and the
+// Enter-pause after an action uses a separate buffered reader. Keys typed
+// during the handoff window can be swallowed by whichever reader exits last,
+// so a stray keystroke may be needed to dismiss the pause. A single
+// owner/reader abstraction across both phases would remove this; deferred
+// until it bothers someone in practice.
 func runInteractiveMenu(stdout, stderr io.Writer) error {
 	console := bufio.NewReader(os.Stdin)
 	for {
@@ -111,14 +118,14 @@ func pauseForEnter(r *bufio.Reader, w io.Writer) bool {
 	return true
 }
 
-// isInteractiveWriter reports whether w is an open character device —
+// isInteractiveWriter reports whether w is an open interactive terminal —
 // cobra's out writer is only usable for terminal UI when it is an *os.File
-// backed by a TTY; buffers and pipes refuse.
+// backed by a TTY; buffers and pipes refuse. A plain ModeCharDevice check
+// would also accept /dev/null, which is not a terminal.
 func isInteractiveWriter(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
 		return false
 	}
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return ui.IsTerminal(f)
 }

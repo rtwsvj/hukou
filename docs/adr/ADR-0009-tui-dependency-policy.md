@@ -47,6 +47,8 @@ hukou's original stance was zero third-party dependencies. ADR-0008 relaxed it t
 
 ## Consequences
 
-- The menu loop lives in the caller (`cmd` layer): `ui.Run` is single-pass — it returns either the selected item's key (whose execution happens outside the model via `tea.ExecProcess`) or `ui.ErrQuit`. This keeps bubbletea confined to navigation/rendering and lets action output stream naturally.
+- The menu loop lives in the caller (`cmd` layer): `ui.Run` is single-pass — it returns either the selected item's key or `ui.ErrQuit`, and the caller executes actions synchronously outside any tea program (loop-out/loop-in), then re-enters `ui.Run`. This keeps bubbletea confined to navigation/rendering and lets action output stream naturally. Known accepted trade-off: keys typed during the handoff between the tea reader and the post-action Enter-pause can be dropped (documented in cmd/menu.go).
+- Terminal detection uses a real ioctl (`x/term.IsTerminal`), not ModeCharDevice: /dev/null is a character device, and a raw-mode menu fed from it hangs. Both stdin and stdout must be interactive for the menu to start.
+- The design of record is `docs/specs/interactive-menu.md`; its per-machine tool survey lives in Appendix A of `docs/specs/agent-coexistence.md`.
 - `go.mod` grows by one direct require plus the transitives above. All are leaf-pure (no cgo); build targets are unaffected.
 - Any future styling need (colors, borders) requires amending this ADR first; the default remains monochrome even where the terminal could do more.

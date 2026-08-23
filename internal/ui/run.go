@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/rtwsvj/hukou/internal/i18n"
 )
@@ -127,12 +128,16 @@ func (m model) outcome() (string, error) {
 // re-invokes Run after each action completes (passing any result message as
 // notice to surface it above the help footer).
 //
-// A non-TTY stdin fails closed before the terminal program starts.
+// A non-TTY stdin fails closed before the terminal program starts. The
+// check is a real terminal ioctl, not ModeCharDevice: /dev/null is a
+// character device too, and handing it to a raw-mode reader hangs the menu
+// (EOF arrives without a quit event).
 func Run(stdin io.Reader, stdout, stderr io.Writer, title string, items []Item) (selected string, err error) {
 	if len(items) == 0 {
 		return "", fmt.Errorf("ui: %s", i18n.T("menu has no items"))
 	}
-	if f, ok := stdin.(*os.File); !ok || !isCharDevice(f) {
+	f, ok := stdin.(*os.File)
+	if !ok || !isTTY(f) {
 		return "", fmt.Errorf("ui: %s", i18n.T("interactive menu requires a terminal (TTY) on stdin"))
 	}
 	p := tea.NewProgram(newModel(title, items, ""), tea.WithInput(stdin), tea.WithOutput(stdout))
@@ -143,8 +148,13 @@ func Run(stdin io.Reader, stdout, stderr io.Writer, title string, items []Item) 
 	return final.(model).outcome()
 }
 
-// isCharDevice reports whether f refers to a character device (terminal).
-func isCharDevice(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+// isTTY reports whether f refers to an interactive terminal. A plain
+// ModeCharDevice check is not enough — /dev/null is a character device too,
+// and feeding it to a raw-mode reader hangs the menu (EOF arrives without a
+// quit event).
+func isTTY(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	return term.IsTerminal(f.Fd())
 }

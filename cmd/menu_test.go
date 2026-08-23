@@ -48,29 +48,30 @@ func TestShouldEnterMenu(t *testing.T) {
 		}
 		return ""
 	}
-	tty := fakeFileInfo{mode: ttyFileInfoMode}
-	pipe := fakeFileInfo{mode: pipeFileInfoMode}
+	ttyOut, pipeOut := true, false
+	ttyIn, pipeIn := true, false
 
 	tests := []struct {
 		name string
 		args []string
 		env  func(string) string
-		fi   os.FileInfo
+		outT bool
+		inT  bool
 		want bool
 	}{
-		{"interactive tty", nil, cleanEnv, tty, true},
-		{"nil getenv treated as clean", nil, nil, tty, true},
-		{"empty HUKOU_NO_MENU still enters", nil, emptyNoMenuEnv, tty, true},
-		{"HUKOU_NO_MENU set opts out", nil, noMenuEnv, tty, false},
-		{"dumb TERM opts out", nil, dumbTermEnv, tty, false},
-		{"piped stdout falls back to help", nil, cleanEnv, pipe, false},
-		{"nil stat falls back to help", nil, cleanEnv, nil, false},
-		{"positional args skip menu", []string{"list"}, cleanEnv, tty, false},
+		{"interactive tty", nil, cleanEnv, ttyOut, ttyIn, true},
+		{"nil getenv treated as clean", nil, nil, ttyOut, ttyIn, true},
+		{"empty HUKOU_NO_MENU still enters", nil, emptyNoMenuEnv, ttyOut, ttyIn, true},
+		{"HUKOU_NO_MENU set opts out", nil, noMenuEnv, ttyOut, ttyIn, false},
+		{"dumb TERM opts out", nil, dumbTermEnv, ttyOut, ttyIn, false},
+		{"piped stdout falls back to help", nil, cleanEnv, pipeOut, ttyIn, false},
+		{"non-tty stdin falls back to help", nil, cleanEnv, ttyOut, pipeIn, false},
+		{"positional args skip menu", []string{"list"}, cleanEnv, ttyOut, ttyIn, false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldEnterMenu(tc.args, tc.env, tc.fi); got != tc.want {
+			if got := shouldEnterMenu(tc.args, tc.env, tc.outT, tc.inT); got != tc.want {
 				t.Fatalf("shouldEnterMenu(%q) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
@@ -78,10 +79,10 @@ func TestShouldEnterMenu(t *testing.T) {
 }
 
 func TestBareRootDispatch(t *testing.T) {
-	origStat, origRunner := stdoutStatFunc, menuRunner
+	origOutT, origInT, origRunner := stdoutIsTTY, stdinIsTTY, menuRunner
 	origOut, origErr := rootCmd.OutOrStdout(), rootCmd.ErrOrStderr()
 	defer func() {
-		stdoutStatFunc, menuRunner = origStat, origRunner
+		stdoutIsTTY, stdinIsTTY, menuRunner = origOutT, origInT, origRunner
 		rootCmd.SetOut(origOut)
 		rootCmd.SetErr(origErr)
 	}()
@@ -97,8 +98,9 @@ func TestBareRootDispatch(t *testing.T) {
 	var ran int
 	menuRunner = func(_, _ io.Writer) error { ran++; return nil }
 
-	// Interactive stdout + bare invocation -> menu runner called, no help.
-	stdoutStatFunc = func() (os.FileInfo, error) { return fakeFileInfo{mode: ttyFileInfoMode}, nil }
+	// Interactive stdin+stdout + bare invocation -> menu runner called, no help.
+	stdoutIsTTY = func() bool { return true }
+	stdinIsTTY = func() bool { return true }
 	if err := runRoot(rootCmd, nil); err != nil {
 		t.Fatalf("runRoot (tty) = %v, want nil", err)
 	}
@@ -109,9 +111,9 @@ func TestBareRootDispatch(t *testing.T) {
 		t.Fatalf("help unexpectedly printed on tty path: %q", out.String())
 	}
 
-	// Piped stdout (stat ok, not char device) -> help, runner untouched.
+	// Piped stdout -> help, runner untouched.
 	ran = 0
-	stdoutStatFunc = func() (os.FileInfo, error) { return fakeFileInfo{mode: pipeFileInfoMode}, nil }
+	stdoutIsTTY = func() bool { return false }
 	if err := runRoot(rootCmd, nil); err != nil {
 		t.Fatalf("runRoot (pipe) = %v, want nil", err)
 	}
@@ -122,10 +124,11 @@ func TestBareRootDispatch(t *testing.T) {
 		t.Fatalf("help output missing on pipe path: %q", out.String())
 	}
 
-	// Stat failure behaves like a non-terminal.
+	// Stdin not a terminal behaves like a non-terminal even with tty stdout.
 	ran = 0
 	out.Reset()
-	stdoutStatFunc = func() (os.FileInfo, error) { return nil, os.ErrInvalid }
+	stdoutIsTTY = func() bool { return true }
+	stdinIsTTY = func() bool { return false }
 	if err := runRoot(rootCmd, nil); err != nil {
 		t.Fatalf("runRoot (stat error) = %v, want nil", err)
 	}
@@ -135,7 +138,8 @@ func TestBareRootDispatch(t *testing.T) {
 
 	// Positional args never reach the menu.
 	ran = 0
-	stdoutStatFunc = func() (os.FileInfo, error) { return fakeFileInfo{mode: ttyFileInfoMode}, nil }
+	stdoutIsTTY = func() bool { return true }
+	stdinIsTTY = func() bool { return true }
 	if err := runRoot(rootCmd, []string{"list"}); err != nil {
 		t.Fatalf("runRoot (with args) = %v, want nil", err)
 	}
