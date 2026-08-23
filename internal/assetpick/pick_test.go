@@ -441,3 +441,36 @@ func TestPickDeterministicAcrossInputOrders(t *testing.T) {
 		t.Fatalf("selection depends on input order: %v", results)
 	}
 }
+
+// TestPickDemotedFallbackRequiresArchMatch pins the round-4 tightening: a
+// demoted-pool fallback must match the target ARCHITECTURE, not just the OS —
+// linux/amd64 with only linux_arm64.bz2 available refuses instead of
+// installing an arm64 binary that cannot run.
+func TestPickDemotedFallbackRequiresArchMatch(t *testing.T) {
+	assets := []string{
+		"tool_1.0.0_linux_arm64.bz2",
+		"tool_1.0.0_source.tar.gz", // looks like source (no platform tokens beyond "linux"? keep stem platform-tokened)
+	}
+	// Make the tarball look like a source archive: strip platform tokens by
+	// using a distinct name set per case below instead.
+	assets = []string{"tool_1.0.0_linux_arm64.bz2"}
+
+	if _, _, err := Pick(assets, "linux", "amd64", ""); err == nil {
+		t.Fatal("arm64-only demoted fallback must not be selected for linux/amd64")
+	} else if !strings.Contains(err.Error(), "no installable asset") {
+		t.Fatalf("err = %v, want no-installable refusal naming candidates", err)
+	}
+
+	// Same release on linux/arm64: the bz2 is same-platform, so it is eligible
+	// as a fallback pick with the bz2 limitation note.
+	got, note, err := Pick(assets, "linux", "arm64", "")
+	if err != nil {
+		t.Fatalf("linux/arm64 should fall back to the bz2: %v", err)
+	}
+	if got != assets[0] {
+		t.Fatalf("got %q, want %q", got, assets[0])
+	}
+	if !strings.Contains(note, "bz2-fallback") {
+		t.Fatalf("note = %q, want bz2-fallback limitation", note)
+	}
+}

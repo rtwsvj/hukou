@@ -90,7 +90,9 @@ func Pick(assets []string, goos, goarch, assetFilter string) (string, string, er
 			if r.reason == "likely source archive" {
 				continue
 			}
-			if osMatch, _ := sd2.Os.Match(r.name); !osMatch {
+			osMatch, _ := sd2.Os.Match(r.name)
+			archMatch := sd2.Arch.Match(r.name)
+			if !osMatch || !archMatch {
 				continue
 			}
 			pool = append(pool, r.name)
