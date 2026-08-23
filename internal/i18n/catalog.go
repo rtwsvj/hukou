@@ -1104,4 +1104,27 @@ you re-run adopt yourself with the repository you choose.`: `suggest 在 GitHub 
 	"No problems found.":                           "未发现问题。",
 	// Severity tokens ([ERROR]/[WARNING]/[INFO]) stay English: stable log-style
 	// enum markers shared with the JSON contract.
+
+	// ---- interactive menu ----
+	"Open the interactive menu": "打开交互式菜单",
+	"Open hukou's interactive menu.\n\nThe menu offers a status overview and a quick update of adopted tools.\nIt requires an interactive terminal; when stdout is redirected (a pipe\nor a file) the command refuses to start. Bare `hukou` opens the\nsame menu automatically when the session looks interactive; set\nHUKOU_NO_MENU=1 to keep the plain help output instead.": "打开 hukou 的交互式菜单。\n\n菜单提供状态总览与已收编工具的快速更新。它需要交互式终端；当标准输出被重定向（管道或文件）时，命令会拒绝启动。会话看似可交互时，裸命令 `hukou` 也会自动打开同一菜单；设置 HUKOU_NO_MENU=1 可保持原有的纯帮助输出。",
+	"%s: release has no publisher checksum asset and no API digest; refuse to install without verification (pass --allow-unverified to override)": "%s：发布既无校验文件也无 API 指纹；拒绝未经校验安装（可用 --allow-unverified 覆盖）",
+	"menu has no items": "菜单没有任何条目",
+	"menu quit":         "退出菜单",
+	"ui: %s":            "界面：%s",
+	"ui: %w":            "界面：%w",
+	"Enter select":      "Enter 选择",
+	"q quit":            "q 退出",
+	"interactive menu requires a terminal (TTY) on stdin":                  "交互式菜单需要标准输入连接到终端（TTY）",
+	"menu needs an interactive terminal; rerun without redirecting stdout": "menu 需要交互式终端；请在不重定向标准输出的情况下重新运行",
+	"hukou menu":                           "hukou menu",
+	"Press Enter to return to the menu...": "按 Enter 返回菜单……",
+	"Quick update (adopted tools)":         "快速更新（已收编工具）",
+	"Quit":                                 "退出",
+	"Status overview":                      "状态总览",
+	"%d adopted tool(s): %d up to date, %d drifted": "已收编 %d 个工具：%d 个正常，%d 个漂移",
+	"DRIFTED":                   "已漂移",
+	"hash live file for %s: %w": "计算 %s 的活动文件指纹：%w",
+	"render status table: %w":   "渲染状态表格：%w",
+	"ok":                        "正常",
 }
