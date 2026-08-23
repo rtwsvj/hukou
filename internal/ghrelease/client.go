@@ -568,10 +568,17 @@ func (c *Client) hostAllowed(u *url.URL) bool {
 	// Full host (with port) for custom BaseURL matching (httptest uses host:port).
 	fullHost := u.Host
 
-	// Custom BaseURL host is permitted (tests).
+	// Custom BaseURL host is permitted (tests / GHES mirrors), but a custom
+	// base never licenses a scheme downgrade: an https-configured base must
+	// not be redirected to http, where the Bearer token would cross the wire
+	// unencrypted. Plain http stays reachable only when the CONFIGURED BASE
+	// is itself http (loopback test servers), preserving scheme end to end.
 	if c.baseURL() != defaultBaseURL {
 		if base, err := url.Parse(c.baseURL()); err == nil && base.Host != "" {
 			if fullHost == base.Host || host == base.Hostname() {
+				if base.Scheme == "https" {
+					return u.Scheme == "https"
+				}
 				return u.Scheme == "http" || u.Scheme == "https"
 			}
 		}

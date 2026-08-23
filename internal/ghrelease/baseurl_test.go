@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -128,4 +129,33 @@ func TestNewWithBaseURLKeepsTimeoutsAndSleep(t *testing.T) {
 		t.Fatal("Sleep seam not configured")
 	}
 	client.Sleep(time.Millisecond) // must not panic
+}
+
+// TestHostAllowedBlocksHTTPSDowngradeOnCustomBase pins the scheme-preservation
+// rule: a custom base configured as https must refuse http redirects on the
+// same host (the Bearer token would otherwise cross the wire unencrypted),
+// while an http-configured loopback base keeps both schemes usable.
+func TestHostAllowedBlocksHTTPSDowngradeOnCustomBase(t *testing.T) {
+	client, err := NewWithBaseURL("token", "https://ghes.example.com/api/v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	httpRedirect := &url.URL{Scheme: "http", Host: "ghes.example.com"}
+	if client.hostAllowed(httpRedirect) {
+		t.Fatal("https base must not allow an http redirect on the same host")
+	}
+	httpsSame := &url.URL{Scheme: "https", Host: "ghes.example.com"}
+	if !client.hostAllowed(httpsSame) {
+		t.Fatal("https base must allow https on the same host")
+	}
+
+	loopback, err := NewWithBaseURL("", "http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopbackHTTP := &url.URL{Scheme: "http", Host: "127.0.0.1:8080"}
+	if !loopback.hostAllowed(loopbackHTTP) {
+		t.Fatal("http loopback base must keep http allowed end to end")
+	}
 }

@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Generalization wave (G0–G3 of the portability plan) plus the adversarial
+review hardening rounds that preceded it.
+
+### Added
+
+- Archive support for `tar.xz`/`.txz` and `.zst`/`.tzst` release assets via
+  pure-Go codecs (`ulikunitz/xz`, `klauspost/compress`), admitted through
+  ADR-0008's codec allowlist; discovery budgets and traversal guards apply
+  identically across formats. `.bz2` remains unsupported with a clear refusal.
+- GitHub API per-asset SHA-256 digest accepted as publisher-checksum evidence
+  when a release ships no checksum asset: verified installs record the
+  `(api-digest)` marker; a digest MISMATCH is a hard refusal that
+  `--allow-unverified` cannot override (contradictory evidence).
+- `HUKOU_GITHUB_BASE_URL` environment variable and `--github-base-url` flag:
+  point the release client at GitHub Enterprise Server or a mirror. The token
+  contract is unchanged (Bearer only to the configured base host or
+  api.github.com, never to download hosts); suggest/search and installer
+  attestation remain github.com-only by scope.
+- `pipx` and `cargo-install` rows in the `up` manager registry (the latter
+  gated on detecting the `cargo-install-update` helper), with documented
+  diff-semantics limits and a layered breadth policy.
+- Provenance detectors are platform-aware: macOS-only inputs (MacPorts,
+  Xcode CLT, Applications dirs) register only on darwin; pip-user detection
+  now covers both the darwin versioned layout and Linux `~/.local` flat
+  scripts; `HUKOU_PROJECTS_DIR` overrides the local-project convention.
+- Documented floors: BusyBox-class hosts need perl or GNU `ln -T`/`mv -T`
+  for atomic activation; the archive-format ceiling is stated in README and
+  tracked as an explicit known limit.
+
+### Fixed
+
+- Asset selection no longer lets OS-priority regexes pick `.AppImage`/`.dmg`/
+  `.pkg` containers over real archives (helix linux used to mis-install an
+  AppImage needing libfuse2); source-tarball look-alikes can no longer win as
+  a last resort; unsupported-format fallbacks emit a named warning.
+- Candidate-budget overflow during archive discovery no longer masks a later
+  exact basename match.
+
+### Changed
+
+- fd-leak regression test runs on Linux CI (`/proc/self/fd`) instead of
+  skipping outside darwin.
+
 ## [v0.4.0] — 2026-08-20
 
 Reliability and trust-boundary release, driven by an adversarial review round

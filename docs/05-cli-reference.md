@@ -608,14 +608,18 @@ use a token minted by that instance — a github.com token has no meaning there.
 
 ### Scope of the override
 
-The base-URL override covers release metadata lookups and release-asset
-downloads for adopted tools. It deliberately does **not** cover:
+The base-URL override covers release metadata lookups, release-asset
+downloads for adopted tools, and the repository search behind `hukou
+suggest` (the search request rides the configured base). It deliberately
+does **not** cover:
 
-- `hukou suggest` and repository search — GitHub.com-only;
 - installer attestation verification (`gh attestation verify`) — pinned to
   the official release workflow identity on github.com;
 - the external package managers run by `hukou up` — each manager's own
   network configuration applies.
+
+Suggest results are GitHub-shaped; against GHES they are untested and may
+return nothing useful.
 
 ## Exit status
 

@@ -75,7 +75,29 @@ func Pick(assets []string, goos, goarch, assetFilter string) (string, string, er
 		if len(demoted) == 0 {
 			return "", "", noCandidatesErr(assets, goos, goarch)
 		}
-		pool = demotedNames(demoted)
+		// The demoted pool is a last resort, not a free-for-all: only
+		// demoted candidates whose name still matches the TARGET platform
+		// are eligible (a linux/amd64 install must never fall back to a
+		// windows zip or a foreign-OS artifact). Source-tarball refusals
+		// never re-enter selection at all — they cannot yield a working
+		// binary for any platform. If nothing eligible remains, refuse with
+		// noInstallableErr naming every candidate and its reason.
+		sd2, err := NewSystemDetector(goos, goarch)
+		if err != nil {
+			return "", "", err
+		}
+		for _, r := range demoted {
+			if r.reason == "likely source archive" {
+				continue
+			}
+			if osMatch, _ := sd2.Os.Match(r.name); !osMatch {
+				continue
+			}
+			pool = append(pool, r.name)
+		}
+		if len(pool) == 0 {
+			return "", "", noInstallableErr(goos, goarch, demoted)
+		}
 		notes = fallbackNotes(demoted)
 	}
 

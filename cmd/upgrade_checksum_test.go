@@ -155,14 +155,22 @@ func TestResolvePublisherChecksumChecksumAssetWinsOverAPI(t *testing.T) {
 	if !verified {
 		t.Fatal("checksum asset path must report verified=true")
 	}
-	// A wrong API digest must not matter while the checksum asset verifies:
-	// the map is authoritative when present.
+	// A wrong API digest now HARD-REFUSES even while the checksum asset
+	// verifies: contradictory evidence can never be rehabilitated by a second
+	// source (the API names the asset; if it disagrees with what was
+	// downloaded, one of the two channels is lying). --allow-unverified means
+	// "no evidence available", not "ignore contradicting evidence".
 	verified, err = resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, strings.Repeat("9", 64), false)
-	if err != nil {
-		t.Fatalf("checksum asset with unrelated api digest: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("contradicting api digest must refuse regardless of checksum asset: err=%v", err)
 	}
-	if !verified {
-		t.Fatal("checksum asset must win over api digest")
+	if _, err = resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, strings.Repeat("9", 64), true); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("allow-unverified must not override contradicting api digest: err=%v", err)
+	}
+	// An AGREEING api digest plus the checksum asset stays verified.
+	verified, err = resolvePublisherChecksum(digest, assetName, "checksums.txt", checksums, digest, true)
+	if err != nil || !verified {
+		t.Fatalf("agreeing api digest + checksum asset: verified=%v err=%v", verified, err)
 	}
 }
 

@@ -230,11 +230,24 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 			fmt.Fprintf(stdout, " (%s)", note)
 		}
 		if findChecksumAsset(chosen, release.Assets) == "" {
-			if allowUnverified {
-				fmt.Fprintf(stdout, "%s", i18n.T(" [UNVERIFIED: no publisher checksum; --allow-unverified]"))
-			} else {
-				fmt.Fprintln(stdout)
-				return i18n.Errorf("%s: release has no publisher checksum asset; refuse to install without verification (pass --allow-unverified to override)", e.Name)
+			// The GitHub API publishes a per-asset sha256 digest; when
+			// present, the real run can verify against it even without a
+			// checksum asset, so dry-run must not claim a refusal that will
+			// not happen.
+			hasAPIDigest := false
+			for _, a := range release.Assets {
+				if a.Name == chosen {
+					_, hasAPIDigest = verify.ParseAPIDigest(a.Digest)
+					break
+				}
+			}
+			if !hasAPIDigest {
+				if allowUnverified {
+					fmt.Fprintf(stdout, "%s", i18n.T(" [UNVERIFIED: no publisher checksum; --allow-unverified]"))
+				} else {
+					fmt.Fprintln(stdout)
+					return i18n.Errorf("%s: release has no publisher checksum asset and no API digest; refuse to install without verification (pass --allow-unverified to override)", e.Name)
+				}
 			}
 		}
 		fmt.Fprintln(stdout)
@@ -587,6 +600,14 @@ func upgradeOne(stdout, stderr io.Writer, s *store.Store, client *ghrelease.Clie
 // manifest audit fields (AssetSHA256, ChecksumAsset, ChecksumVerified); the
 // api-digest path reports checksumAsset="(api-digest)".
 func resolvePublisherChecksum(assetSHA, assetName, checksumAsset string, checksums map[string]string, apiDigestHex string, allowUnverified bool) (verified bool, err error) {
+	// Contradiction check runs FIRST and is unconditional: if the release
+	// API publishes a digest for this asset and it disagrees with the bytes
+	// we downloaded, no other evidence source can rehabilitate the download.
+	// --allow-unverified means "no evidence available", never "ignore
+	// contradicting evidence".
+	if apiDigestHex != "" && !strings.EqualFold(assetSHA, apiDigestHex) {
+		return false, i18n.Errorf("release asset %s digest mismatch: API digest sha256=%s does not match downloaded asset sha256=%s; refusing install (--allow-unverified does not override contradictory evidence)", assetName, strings.ToLower(apiDigestHex), strings.ToLower(assetSHA))
+	}
 	if checksumAsset != "" {
 		if err := verify.VerifyAssetDigest(assetSHA, assetName, checksums); err != nil {
 			return false, i18n.Wrapf("verify checksum from %s: %w", err, checksumAsset)
@@ -594,10 +615,7 @@ func resolvePublisherChecksum(assetSHA, assetName, checksumAsset string, checksu
 		return true, nil
 	}
 	if apiDigestHex != "" {
-		if strings.EqualFold(assetSHA, apiDigestHex) {
-			return true, nil
-		}
-		return false, i18n.Errorf("release asset %s digest mismatch: API digest sha256=%s does not match downloaded asset sha256=%s; refusing install (--allow-unverified does not override contradictory evidence)", assetName, strings.ToLower(apiDigestHex), strings.ToLower(assetSHA))
+		return true, nil
 	}
 	if allowUnverified {
 		return false, nil
@@ -700,7 +718,7 @@ func findChecksumAsset(chosen string, assets []ghrelease.Asset) string {
 
 func archiveExt(name string) string {
 	lower := strings.ToLower(name)
-	for _, ext := range []string{".tar.gz", ".tgz", ".tar.xz", ".txz", ".zip", ".gz"} {
+	for _, ext := range []string{".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".zip", ".gz", ".zst", ".bz2"} {
 		if strings.HasSuffix(lower, ext) {
 			return ext
 		}
