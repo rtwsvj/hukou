@@ -2,7 +2,7 @@ module github.com/rtwsvj/hukou
 
 go 1.26.2
 
-toolchain go1.26.6
+toolchain go1.27.0
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
