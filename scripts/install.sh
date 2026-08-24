@@ -46,7 +46,6 @@ hukou_is_strict_semver() {
 REPO=${HUKOU_REPO:-rtwsvj/hukou}
 RELEASE_BASE_URL=${HUKOU_RELEASE_BASE_URL:-https://github.com/${REPO}/releases}
 VERSION=latest
-VERSION_PINNED=0
 PREFIX=${HUKOU_PREFIX:-${HOME}/.local}
 DRY_RUN=0
 FORCE=0
@@ -238,7 +237,6 @@ while [ "$#" -gt 0 ]; do
     --version)
       [ "$#" -ge 2 ] || die "--version requires a value"
       VERSION=$2
-      VERSION_PINNED=1
       shift 2
       ;;
     --prefix)
