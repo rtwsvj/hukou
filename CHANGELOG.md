@@ -5,12 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.5.0] — 2026-08-24
 
 Generalization wave (G0–G3 of the portability plan) plus the adversarial
 review hardening rounds that preceded it.
 
-### Added
+- Interactive menu: bare `hukou` (in an interactive terminal) opens a menu
+  loop — status overview of adopted tools and one-key quick update; all
+  subcommands unchanged, scripts unaffected (non-TTY falls back to help;
+  `HUKOU_NO_MENU=1` opts out). Admitted via ADR-0009 (bubbletea).
+- `hukou menu` subcommand for explicit opt-in.
 
 - Archive support for `tar.xz`/`.txz` and `.zst`/`.tzst` release assets via
   pure-Go codecs (`ulikunitz/xz`, `klauspost/compress`), admitted through
