@@ -132,13 +132,13 @@ func (fs FileSystem) MkdirAll(path string, mode os.FileMode) error {
 		}
 		current = parent
 	}
-	// The deepest directory that already exists may be the visible result of a
-	// previous mkdir whose parent sync never completed. Re-sync every ancestor
-	// entry from the filesystem root down before relying on that directory. This
-	// makes a retry repair an indeterminate mkdir instead of merely observing it.
-	if err := fs.syncAncestorEntries(current); err != nil {
-		return i18n.Wrapf("persist existing directory ancestry for %s: %w", err, clean)
-	}
+	// Pre-existing ancestors are assumed durable: they were created (and
+	// survived) by an earlier process, so re-syncing them here would reach
+	// outside hukou's namespace — /tmp, /var, / — where fsync/close on a
+	// directory we do not own can fail with EBADF depending on the platform
+	// and mount. Each directory this walk CREATES is synced individually in
+	// the loop below, which is the durability that matters for the new
+	// subtree.
 
 	for i := len(missing) - 1; i >= 0; i-- {
 		if err := fs.Mkdir(missing[i], mode); err != nil {
@@ -155,32 +155,6 @@ func (fs FileSystem) MkdirAll(path string, mode os.FileMode) error {
 			if syncErr := fs.SyncParent(missing[i]); syncErr != nil {
 				return i18n.Wrapf("persist concurrently created directory %s: %w", syncErr, missing[i])
 			}
-		}
-	}
-	return nil
-}
-
-// syncAncestorEntries persists every directory entry needed to reach path.
-// Syncing root-to-leaf ensures that an interruption partway through still
-// leaves the longest possible durable prefix for the next retry.
-func (fs FileSystem) syncAncestorEntries(path string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	current := filepath.Clean(abs)
-	var parents []string
-	for {
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		parents = append(parents, parent)
-		current = parent
-	}
-	for i := len(parents) - 1; i >= 0; i-- {
-		if err := fs.SyncDir(parents[i]); err != nil {
-			return err
 		}
 	}
 	return nil

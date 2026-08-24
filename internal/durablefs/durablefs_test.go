@@ -83,39 +83,38 @@ func TestMkdirAllAndDurableMutations(t *testing.T) {
 	}
 }
 
-func TestMkdirAllReaffirmsExistingAncestorEntriesRootToLeaf(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "already", "present")
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
+// The ancestor re-sync was removed: pre-existing ancestors are assumed
+// durable (they were created and survived an earlier process), and syncing
+// them reached outside hukou's namespace where fsync can fail with EBADF
+// depending on platform and mount. This test now pins the replacement
+// contract: MkdirAll on a fully-existing path performs NO syncs at all.
+func TestMkdirAllExistingPathPerformsNoSyncs(t *testing.T) {
 	var synced []string
 	fs := FileSystem{syncDirFn: func(path string) error {
-		synced = append(synced, filepath.Clean(path))
+		synced = append(synced, path)
 		return nil
 	}}
-	if err := fs.MkdirAll(path, 0o755); err != nil {
+
+	base := t.TempDir()
+	existing := filepath.Join(base, "already")
+	if err := os.Mkdir(existing, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	abs, err := filepath.Abs(path)
-	if err != nil {
+	if err := fs.MkdirAll(existing, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var want []string
-	for current := filepath.Clean(abs); ; {
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		want = append(want, parent)
-		current = parent
+	if len(synced) != 0 {
+		t.Fatalf("syncs on fully-existing path: %v", synced)
 	}
-	for left, right := 0, len(want)-1; left < right; left, right = left+1, right-1 {
-		want[left], want[right] = want[right], want[left]
+
+	// One missing leaf below the existing dir: only that creation is synced.
+	target := filepath.Join(existing, "created")
+	if err := fs.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(synced, want) {
-		t.Fatalf("synced=%v want root-to-leaf %v", synced, want)
+	if len(synced) != 1 || synced[0] != existing {
+		t.Fatalf("synced=%v, want exactly [%s]", synced, existing)
 	}
 }
 
