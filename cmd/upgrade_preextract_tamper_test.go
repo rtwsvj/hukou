@@ -6,9 +6,9 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/rtwsvj/hukou/internal/archive"
+	"github.com/rtwsvj/hukou/internal/ghrelease"
 	"github.com/rtwsvj/hukou/internal/manifest"
 	"github.com/rtwsvj/hukou/internal/sysproxy"
 	statejournal "github.com/rtwsvj/hukou/internal/transaction"
@@ -124,12 +125,17 @@ func TestExtractReadsOnlyThroughProvidedHandle(t *testing.T) {
 }
 
 // TestUpgradeRejectsAssetTamperedMidExtraction drives the real upgrade flow
-// end to end (adopt, fake GitHub release server, doUpgrade) with the asset
-// served over an HTTP body that is corrupted partway through. The download
+// end to end (adopt, release client, doUpgrade) with the asset served over a
+// scripted transport whose body is corrupted partway through. The download
 // completes but the stored bytes cannot match what the publisher checksum
 // demands, so verification refuses before anything is extracted or stored:
 // the tampered payload never reaches the store, neither the live binary nor
 // the manifest may change.
+//
+// The transport is a plain http.RoundTripper instead of an httptest.Server:
+// a live loopback listener proved flaky on shared CI runners (the listener
+// vanished between requests), while a scripted RoundTripper is fully
+// deterministic and exercises the identical client code path.
 func TestUpgradeRejectsAssetTamperedMidExtraction(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("HUKOU_DATA_DIR", dataDir)
@@ -149,23 +155,33 @@ func TestUpgradeRejectsAssetTamperedMidExtraction(t *testing.T) {
 
 	assetName := platformAssetName("fakebin")
 	assetData := makeTarGz(t, "fakebin", []byte("v2.0.0-body\n"))
-	// The publisher checksum describes the intact asset; the server serves a
-	// body whose tail was corrupted in flight.
+	// The publisher checksum describes the intact asset; the transport serves
+	// a body whose tail was corrupted in flight.
 	corrupt := append([]byte{}, assetData[:len(assetData)/2]...)
 	corrupt = append(corrupt, bytes.Repeat([]byte{0xFF}, len(assetData)-len(corrupt))...)
 	checksum := fmt.Sprintf("%x  %s\n", sha256.Sum256(assetData), assetName)
 	// Pin the "system proxy" away: this host has a real macOS system proxy,
 	// so a transient transport failure would otherwise trigger ghrelease's
 	// proxy retry against 127.0.0.1:7890 (which refuses), turning the
-	// expected checksum refusal into a connection error. Also close the
-	// server only after the upgrade attempt finishes.
+	// expected checksum refusal into a connection error.
 	origProxy := sysproxy.SystemProxyURL
 	sysproxy.SystemProxyURL = func() *url.URL { return nil }
 	t.Cleanup(func() { sysproxy.SystemProxyURL = origProxy })
 
-	server := fakeGitHubServerWithBody(t, assetName, corrupt, checksum, "v2.0.0")
-	t.Cleanup(server.Close)
-	client := testGHClient(server)
+	metadata := fmt.Sprintf(`{"tag_name":"v2.0.0","assets":[{"name":%q,"browser_download_url":"https://ghes.test/assets/%s","size":%d},{"name":"checksums.txt","browser_download_url":"https://ghes.test/assets/checksums.txt","size":%d}]}`,
+		assetName, assetName, len(corrupt), len(checksum))
+	listMetadata := "[" + metadata + "]"
+	rt := scriptedTransport{host: "ghes.test", routes: map[string]scriptedResponse{
+		"/repos/owner/repo/releases":        {body: []byte(listMetadata)},
+		"/repos/owner/repo/releases/latest": {body: []byte(metadata)},
+		"/assets/" + assetName:              {body: corrupt},
+		"/assets/checksums.txt":             {body: []byte(checksum)},
+	}}
+	client := &ghrelease.Client{
+		Token:      "",
+		BaseURL:    "https://ghes.test",
+		HTTPClient: &http.Client{Transport: rt},
+	}
 	out.Reset()
 	err = doUpgrade(&out, &out, []string{"fakebin"}, false, false, "", client, false)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
@@ -202,43 +218,31 @@ func TestUpgradeRejectsAssetTamperedMidExtraction(t *testing.T) {
 	}
 }
 
-// fakeGitHubServerWithBody serves one release whose asset body is supplied
-// verbatim (so a test can corrupt it in flight) while the published checksum
-// file stays independent of whatever was actually served. It mirrors
-// fakeGitHubServer's routing; only the served asset bytes differ.
-func fakeGitHubServerWithBody(t *testing.T, assetName string, body []byte, checksum string, tag string) *httptest.Server {
-	t.Helper()
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/releases/latest") || strings.HasSuffix(r.URL.Path, "/releases") {
-			assets := []map[string]any{
-				{
-					"name":                 assetName,
-					"browser_download_url": server.URL + "/assets/" + assetName,
-					"size":                 len(body),
-				},
-			}
-			if checksum != "" {
-				assets = append(assets, map[string]any{
-					"name":                 "checksums.txt",
-					"browser_download_url": server.URL + "/assets/checksums.txt",
-					"size":                 len(checksum),
-				})
-			}
-			writeFakeReleaseMetadata(t, w, r, map[string]any{
-				"tag_name": tag,
-				"assets":   assets,
-			})
-			return
-		}
-		switch r.URL.Path {
-		case "/assets/" + assetName:
-			_, _ = w.Write(body)
-		case "/assets/checksums.txt":
-			_, _ = w.Write([]byte(checksum))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	return server
+// scriptedResponse pairs a response body with its content type.
+type scriptedResponse struct {
+	body []byte
+}
+
+// scriptedTransport routes request paths to fixed responses without any
+// networking. Unrouted paths fail the request outright.
+type scriptedTransport struct {
+	host   string
+	routes map[string]scriptedResponse
+}
+
+func (s scriptedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host != s.host {
+		return nil, fmt.Errorf("scriptedTransport: unexpected host %s", req.URL.Host)
+	}
+	resp, ok := s.routes[req.URL.Path]
+	if !ok {
+		return nil, fmt.Errorf("scriptedTransport: unexpected path %s", req.URL.Path)
+	}
+	return &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/octet-stream"}},
+		Body:       io.NopCloser(bytes.NewReader(resp.body)),
+		Request:    req,
+	}, nil
 }
